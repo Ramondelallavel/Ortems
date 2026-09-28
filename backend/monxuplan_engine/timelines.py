@@ -45,11 +45,12 @@ class Block:
 
 
 class UnaryTimeline:
-    __slots__ = ("res", "starts", "blocks")
+    __slots__ = ("res", "starts", "ends", "blocks")
 
     def __init__(self, res: int) -> None:
         self.res = res
         self.starts: list[int] = []
+        self.ends: list[int] = []
         self.blocks: list[Block] = []
 
     def prev_index(self, t: int) -> int:
@@ -59,13 +60,35 @@ class UnaryTimeline:
     def insert(self, block: Block) -> int:
         i = bisect_right(self.starts, block.setup_start)
         self.starts.insert(i, block.setup_start)
+        self.ends.insert(i, block.end)
         self.blocks.insert(i, block)
         return i
+
+    def skip(self, t: int, need: int) -> tuple[int, int]:
+        """First instant >= ``t`` outside every block and followed by at least ``need`` raw minutes
+        before the next block: a necessary condition for any job needing ``need`` minutes. Returns
+        ``(instant, index of the last block jumped over or -1)``. Runs over plain integer lists, so a
+        timeline with thousands of jobs is crossed in microseconds instead of block by block."""
+        starts, ends = self.starts, self.ends
+        n = len(starts)
+        k = bisect_right(starts, t) - 1
+        last = -1
+        if k >= 0 and ends[k] > t:
+            t = ends[k]
+            last = k
+        j = k + 1
+        while j < n and starts[j] - t < need:
+            if ends[j] > t:
+                t = ends[j]
+                last = j
+            j += 1
+        return t, last
 
     def remove_op(self, op: int) -> Block | None:
         for i, b in enumerate(self.blocks):
             if b.op == op:
                 del self.starts[i]
+                del self.ends[i]
                 del self.blocks[i]
                 return b
         return None

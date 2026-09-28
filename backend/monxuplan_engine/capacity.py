@@ -247,6 +247,10 @@ def bottlenecks(cp: CompiledProblem, placements, timing, unscheduled: dict, orde
                     key = ("MATERIAL", d["material_id"])
                     late_orders_by_ref[key].add(cp.ops[i].order)
 
+    by_res: dict[int, list] = defaultdict(list)
+    for p in placements:  # group once: the loop below is per resource
+        if p is not None:
+            by_res[p.res].append(p)
     for r in cp.resources:
         if not r.finite or r.kind in ("LABOR_POOL", "TOOL"):
             continue
@@ -256,9 +260,7 @@ def bottlenecks(cp: CompiledProblem, placements, timing, unscheduled: dict, orde
         sched = 0
         setup_min = 0
         fam_minutes: dict[str, int] = defaultdict(int)
-        for p in placements:
-            if p is None or p.res != r.idx:
-                continue
+        for p in by_res.get(r.idx, ()):
             m = cp.ops[p.op].modes[p.mode]
             w = m.cal.working_between(max(p.setup_start, a), min(p.end, b))
             sched += w

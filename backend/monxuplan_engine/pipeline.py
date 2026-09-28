@@ -21,6 +21,7 @@ from contextlib import contextmanager
 from .assemble import assemble
 from .compile import ENGINE_VERSION, compile_problem
 from .contract import PhaseLog, Problem, Solution, SolverMetadata
+from .perf import paused_gc
 from .providers import available as available_providers
 from .providers import get_provider
 from .providers.base import SolveContext
@@ -58,6 +59,11 @@ def time_limit_for(problem: Problem) -> float:
 
 
 def solve(problem: Problem, progress: Progress | None = None, cancelled: Callable[[], bool] | None = None) -> Solution:
+    with paused_gc():
+        return _solve(problem, progress, cancelled)
+
+
+def _solve(problem: Problem, progress: Progress | None = None, cancelled: Callable[[], bool] | None = None) -> Solution:
     t0 = time.monotonic()
     phases: list[PhaseLog] = []
 

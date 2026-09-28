@@ -53,6 +53,32 @@ class Push:
         self.data = data or {}
 
 
+class BusyPush(Push):
+    """"Resource busy with another job": the most frequent push. Its texts are only built when an
+    explanation actually reads them (a large run creates millions of these)."""
+
+    __slots__ = ("_cp", "_res", "_op")
+
+    def __init__(self, cp: CompiledProblem, res_code: str, op_idx: int, at: int) -> None:
+        self.type = "RESOURCE"
+        self.at = at
+        self._cp = cp
+        self._res = res_code
+        self._op = op_idx
+
+    @property
+    def ref(self) -> str:  # type: ignore[override]
+        return self._cp.ops[self._op].id
+
+    @property
+    def detail(self) -> str:  # type: ignore[override]
+        return f"{self._res} busy with {self._cp.ops[self._op].id}"
+
+    @property
+    def data(self) -> dict:  # type: ignore[override]
+        return {"order": self._cp.orders[self._cp.ops[self._op].order].number}
+
+
 class Slot:
     __slots__ = ("mode", "feasible", "setup_start", "start", "end", "setup", "prev_op", "pushes", "reason", "detail", "score", "next_adjust")
 
@@ -624,7 +650,14 @@ class ScheduleBuilder:
             return slot
         detached = setup_lb is not None
         t = min(lb, setup_lb) if detached else lb
+        need = m.run + m.teardown  # raw minutes any placement needs on the machine (setup >= 0)
         for _ in range(MAX_SLOT_ITERATIONS):
+            if res.unary:
+                tl = self.unary[m.res]
+                t_skip, jb = tl.skip(t, need)
+                if t_skip > t:
+                    pushes.append(BusyPush(cp, res.code, tl.blocks[jb].op, t_skip))
+                    t = t_skip
             base_work = m.setup_base + m.run + m.teardown
             if op.interruptible:
                 t2 = cal.next_work(t)
@@ -649,7 +682,7 @@ class ScheduleBuilder:
                 k = tl.prev_index(t)
                 if k >= 0 and tl.blocks[k].end > t:
                     b = tl.blocks[k]
-                    pushes.append(Push("RESOURCE", cp.ops[b.op].id, b.end, f"{res.code} busy with {cp.ops[b.op].id}", {"order": cp.orders[cp.ops[b.op].order].number}))
+                    pushes.append(BusyPush(cp, res.code, b.op, b.end))
                     t = b.end
                     continue
                 prev_state = tl.blocks[k].state_key if k >= 0 else res.initial_state
@@ -705,7 +738,7 @@ class ScheduleBuilder:
                 continue
             if res.unary and nb is not None:
                 if nb.setup_start < e:
-                    pushes.append(Push("RESOURCE", cp.ops[nb.op].id, nb.end, f"{res.code} busy with {cp.ops[nb.op].id}", {"order": cp.orders[cp.ops[nb.op].order].number}))
+                    pushes.append(BusyPush(cp, res.code, nb.op, nb.end))
                     t = nb.end
                     continue
                 if self._forbidden(m.res, sk, nb.state_key):

@@ -62,6 +62,9 @@ class SetupModel:
         self.matrices = {m.id: CompiledMatrix(m) for m in matrices}
         self.rules = rules
         self._cache: dict[tuple, int] = {}
+        self._sig: dict[int, tuple] = {}
+        self._sig_ids: dict[tuple, int] = {}
+        self._proj: dict[tuple, tuple] = {}
         # per resource index: (matrix list, combine, resource id)
         self._res: dict[int, tuple[list[CompiledMatrix], str, str]] = {}
 
@@ -76,8 +79,36 @@ class SetupModel:
         entry = self._res.get(res_idx)
         return bool(entry and entry[0])
 
+    def _signature(self, res_idx: int) -> tuple:
+        """Resources with the same matrices and no resource-specific rule share cached values, and
+        only the attributes their matrices read are part of the key. Returns (small id, attributes)."""
+        sig = self._sig.get(res_idx)
+        if sig is None:
+            mats, combine, res_id = self._res.get(res_idx, ([], "MAX", ""))
+            specific = any(not r.resource_ids or res_id in r.resource_ids for r in self.rules)
+            attrs = tuple(sorted({m.attribute for m in mats})) if mats and not specific else None
+            full = (tuple(m.id for m in mats), combine, attrs, res_idx if specific or not mats else None)
+            sid = self._sig_ids.setdefault(full, len(self._sig_ids))
+            sig = (sid, attrs)
+            self._sig[res_idx] = sig
+        return sig
+
+    def _project(self, state: StateKey | None, attrs: tuple[str, ...]) -> tuple | None:
+        """Only the attributes the matrices read; memoised per state object (states are shared
+        tuples, looked up by identity, which avoids re-hashing them on every call)."""
+        if state is None:
+            return None
+        hit = self._proj.get((id(state), attrs))
+        if hit is not None and hit[0] is state:
+            return hit[1]
+        d = dict(state)
+        v = tuple(d.get(a) for a in attrs)
+        self._proj[(id(state), attrs)] = (state, v)
+        return v
+
     def setup(self, res_idx: int, prev: StateKey | None, nxt: StateKey | None, base: int) -> int:
-        key = (res_idx, prev, nxt, base)
+        sid, attrs = self._signature(res_idx)
+        key = (sid, self._project(prev, attrs), self._project(nxt, attrs)) if attrs is not None else (sid, prev, nxt, base)
         v = self._cache.get(key)
         if v is not None:
             return v

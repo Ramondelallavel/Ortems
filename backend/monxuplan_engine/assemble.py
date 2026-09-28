@@ -67,12 +67,12 @@ def assemble(result: BuildResult, meta: SolverMetadata, validation: ValidationRe
         o = cp.orders[op.order]
         c = result.order_completion(op.order)
         schedule.append(
-            ScheduledOperation(
+            ScheduledOperation.fast(
                 op_id=op.id,
                 order_id=o.id,
                 resource_id=cp.resources[p.res].id,
                 mode_index=p.mode,
-                secondary=[SecondaryAllocation(resource_id=cp.resources[r].id, units=u) for r, u in m.sec],
+                secondary=[SecondaryAllocation.fast(resource_id=cp.resources[r].id, units=u) for r, u in m.sec],
                 setup_start=cp.dt(p.setup_start),
                 start=cp.dt(p.start),
                 end=cp.dt(p.end),
@@ -96,12 +96,12 @@ def assemble(result: BuildResult, meta: SolverMetadata, validation: ValidationRe
     schedule.sort(key=lambda s: (s.resource_id, s.setup_start))
 
     unscheduled = [
-        UnscheduledOperation(op_id=cp.ops[i].id, order_id=cp.orders[cp.ops[i].order].id, reason=u.reason, message=u.message, details=u.details)
+        UnscheduledOperation.fast(op_id=cp.ops[i].id, order_id=cp.orders[cp.ops[i].order].id, reason=u.reason, message=u.message, details=u.details)
         for i, u in sorted(result.unscheduled.items())
     ]
 
     violations = [
-        Violation(
+        Violation.fast(
             severity=v.severity,
             hardness=v.hardness,
             type=v.type,
@@ -129,7 +129,7 @@ def assemble(result: BuildResult, meta: SolverMetadata, validation: ValidationRe
         if row["lateness"]:
             order_late[o.idx] = row["lateness"]
         order_results.append(
-            OrderResult(
+            OrderResult.fast(
                 order_id=o.id,
                 number=o.number,
                 status=row["status"],
@@ -183,7 +183,7 @@ def assemble(result: BuildResult, meta: SolverMetadata, validation: ValidationRe
             kind = s.meta.get("kind", "SUPPLY")
             supply_order = s.meta.get("order")
             pegging.append(
-                PegLink(
+                PegLink.fast(
                     material_id=mat.id,
                     supply_id=s.ref,
                     supply_kind=kind,

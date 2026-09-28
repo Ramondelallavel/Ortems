@@ -26,7 +26,7 @@ def fmt_minutes(m: int) -> str:
 def binding_out(cp: CompiledProblem, b) -> Binding | None:
     if b is None:
         return None
-    return Binding(type=b.type, ref=b.ref, detail=b.detail, at=cp.dt(b.at) if b.at is not None else None, wait_minutes=int(b.wait))
+    return Binding.fast(type=b.type, ref=b.ref, detail=b.detail, at=cp.dt(b.at) if b.at is not None else None, wait_minutes=int(b.wait))
 
 
 def _block_reasons(cp: CompiledProblem, slot) -> list[Reason]:

@@ -95,6 +95,13 @@ class BuildInfo:
     frozen_until: datetime | None = None
 
 
+def _chunks(ids, size: int = 10_000):
+    """Split an id collection for IN lists (databases cap the number of bound parameters)."""
+    lst = list(ids)
+    for i in range(0, len(lst), size):
+        yield lst[i : i + size]
+
+
 def op_key(order_number: str, seq: int) -> str:
     return f"{order_number}/{seq:03d}"
 
@@ -359,25 +366,30 @@ def build_problem(
             frontier.append(c.parent_id)
 
     # ------------------------------------------------------------------ orders
-    orders = list(s.scalars(select(ProductionOrder).where(ProductionOrder.plant_id == plant.id, ProductionOrder.status.in_(OPEN_STATUSES + ("BLOCKED",)))))
+    # high-volume tables are read as plain rows (attribute access like ORM objects, no identity map)
+    # and restricted with joins/subqueries rather than id lists (100 000 orders exceed any IN list)
+    PO, POO = ProductionOrder.__table__, ProductionOrderOperation.__table__
+    open_orders = select(PO.c.id).where(PO.c.plant_id == plant.id, PO.c.status.in_(OPEN_STATUSES))
+    orders = list(s.execute(select(PO).where(PO.c.plant_id == plant.id, PO.c.status.in_(OPEN_STATUSES + ("BLOCKED",)))))
     for o in [o for o in orders if o.status == "BLOCKED"]:
         info.excluded_orders.append({"order_id": str(o.id), "number": o.number, "reason": "BLOCKED"})
         info.issues.append({"severity": "WARNING", "type": "ORDER_BLOCKED", "message": f"{o.number} is blocked and not scheduled", "order_id": str(o.id)})
     orders = [o for o in orders if o.status != "BLOCKED"]
     item_ids = {o.item_id for o in orders}
-    ops_all = list(s.scalars(select(ProductionOrderOperation).where(ProductionOrderOperation.order_id.in_([o.id for o in orders])))) if orders else []
-    ops_by_order: dict[uuid.UUID, list[ProductionOrderOperation]] = defaultdict(list)
+    ops_all = list(s.execute(select(POO).where(POO.c.order_id.in_(open_orders)))) if orders else []
+    ops_by_order: dict[uuid.UUID, list] = defaultdict(list)
     for op in ops_all:
         ops_by_order[op.order_id].append(op)
-    rops = {r.id: r for r in s.scalars(select(RoutingOperation).where(RoutingOperation.id.in_({op.routing_operation_id for op in ops_all if op.routing_operation_id})))} if ops_all else {}
+    used_rops = select(POO.c.routing_operation_id).where(POO.c.order_id.in_(open_orders), POO.c.routing_operation_id.is_not(None)).distinct()
+    rops = {r.id: r for r in s.scalars(select(RoutingOperation).where(RoutingOperation.id.in_(used_rops)))} if ops_all else {}
     op_res: dict[uuid.UUID, list[OperationResource]] = defaultdict(list)
     if rops:
-        for orr in s.scalars(select(OperationResource).where(OperationResource.routing_operation_id.in_(list(rops)))):
+        for orr in s.scalars(select(OperationResource).where(OperationResource.routing_operation_id.in_(used_rops))):
             op_res[orr.routing_operation_id].append(orr)
     precs: dict[uuid.UUID, list[OperationPrecedence]] = defaultdict(list)
     routing_ids = {o.routing_id for o in orders if o.routing_id}
     if routing_ids:
-        for pr in s.scalars(select(OperationPrecedence).where(OperationPrecedence.routing_id.in_(routing_ids))):
+        for pr in s.scalars(select(OperationPrecedence).where(OperationPrecedence.routing_id.in_(select(PO.c.routing_id).where(PO.c.id.in_(open_orders)).distinct()))):
             precs[pr.routing_id].append(pr)
     tool_compat: dict[uuid.UUID, set[uuid.UUID]] = defaultdict(set)
     for tc in s.scalars(select(ToolCompatibility)):
@@ -399,19 +411,21 @@ def build_problem(
     for b in order_bom.values():
         if b is not None:
             comp_ids.update(ln.component_id for ln in lines.get(b.id, []))
-    items = {i.id: i for i in s.scalars(select(Item).where(Item.id.in_(item_ids | comp_ids)))} if (item_ids | comp_ids) else {}
+    items = {i.id: i for chunk in _chunks(item_ids | comp_ids) for i in s.scalars(select(Item).where(Item.id.in_(chunk)))}
     families = {f.id: f for f in s.scalars(select(ProductFamily))}
     info.item_codes = {str(i.id): i.code for i in items.values()}
 
     # ------------------------------------------------------------------ baseline / frozen / locked positions
-    base_positions: dict[str, ScheduledOperation] = {}
+    SO = ScheduledOperation.__table__
+    pos_cols = (SO.c.op_key, SO.c.resource_id, SO.c.setup_start, SO.c.start, SO.c.end, SO.c.is_locked, SO.c.setup_minutes)
+    base_positions: dict[str, Any] = {}
     if baseline_plan is not None:
-        for so in s.scalars(select(ScheduledOperation).where(ScheduledOperation.plan_id == baseline_plan.id)):
+        for so in s.execute(select(*pos_cols).where(SO.c.plan_id == baseline_plan.id)):
             base_positions[so.op_key] = so
-    frozen_positions: dict[str, ScheduledOperation] = {}
+    frozen_positions: dict[str, Any] = {}
     fp = frozen_plan
     if fp is not None and frozen_until is not None and (cfg.get("constraints") or {}).get("frozen", "HARD") == "HARD":
-        for so in s.scalars(select(ScheduledOperation).where(ScheduledOperation.plan_id == fp.id, ScheduledOperation.setup_start < frozen_until)):
+        for so in s.execute(select(*pos_cols).where(SO.c.plan_id == fp.id, SO.c.setup_start < frozen_until)):
             frozen_positions[so.op_key] = so
 
     order_specs, op_specs, prec_specs = [], [], []
@@ -593,14 +607,15 @@ def build_problem(
         if os_["produces_material_id"]:
             mat_ids.add(uuid.UUID(os_["produces_material_id"]))
     inv = defaultdict(float)
-    for row in s.scalars(select(Inventory).where(Inventory.plant_id == plant.id, Inventory.item_id.in_(mat_ids))) if mat_ids else []:
-        inv[row.item_id] += row.available
+    for chunk in _chunks(mat_ids):
+        for row in s.scalars(select(Inventory).where(Inventory.plant_id == plant.id, Inventory.item_id.in_(chunk))):
+            inv[row.item_id] += row.available
     po_lines = []
-    if mat_ids:
-        po_lines = s.execute(
+    for chunk in _chunks(mat_ids):
+        po_lines += s.execute(
             select(PurchaseOrderLine, PurchaseOrder)
             .join(PurchaseOrder, PurchaseOrder.id == PurchaseOrderLine.purchase_order_id)
-            .where(PurchaseOrderLine.item_id.in_(mat_ids), PurchaseOrderLine.status == "OPEN", PurchaseOrder.status == "OPEN")
+            .where(PurchaseOrderLine.item_id.in_(chunk), PurchaseOrderLine.status == "OPEN", PurchaseOrder.status == "OPEN")
         ).all()
     supplies: dict[uuid.UUID, list[dict[str, Any]]] = defaultdict(list)
     for ln, po in po_lines:

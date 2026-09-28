@@ -11,7 +11,7 @@ import uuid
 from collections import defaultdict
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from ..core.clock import now
@@ -41,40 +41,48 @@ from ..models import (
 OPEN = ("PLANNED", "FIRMED", "RELEASED", "IN_PRODUCTION", "PARTIALLY_COMPLETED")
 
 
-def _check(code: str, title: str, level: str, items: list[dict[str, Any]], hint: str) -> dict[str, Any]:
+def _check(code: str, title: str, level: str, items: list[dict[str, Any]], hint: str, count: int | None = None) -> dict[str, Any]:
+    n = len(items) if count is None else count
     return {
         "code": code,
         "title": title,
-        "status": "OK" if not items else level,
-        "count": len(items),
+        "status": "OK" if not n else level,
+        "count": n,
         "examples": items[:25],
         "hint": hint,
     }
 
 
+def _count_examples(s: Session, stmt, order_by, fmt) -> tuple[int, list[dict[str, Any]]]:
+    """Counted in the database, with the first examples only — the order book can hold 100 000+ rows."""
+    n = s.scalar(select(func.count()).select_from(stmt.subquery())) or 0
+    rows = s.execute(stmt.order_by(*order_by).limit(25)).all() if n else []
+    return n, [fmt(r) for r in rows]
+
+
 def run_checks(s: Session, plant_id: uuid.UUID) -> dict[str, Any]:
     plant = s.get(Plant, plant_id)
-    items = {i.id: i for i in s.scalars(select(Item))}
-    boms = list(s.scalars(select(Bom).where(Bom.is_active.is_(True))))
+    t_now = now()
+    items = {r.id: r for r in s.execute(select(Item.id, Item.code, Item.uom, Item.make_or_buy, Item.is_active, Item.item_type, Item.attributes))}
+    boms = s.execute(select(Bom.id, Bom.item_id).where(Bom.is_active.is_(True))).all()
     bom_items = {b.item_id for b in boms}
-    lines = list(s.scalars(select(BomLine)))
-    routings = list(s.scalars(select(Routing).where(Routing.is_active.is_(True))))
-    routing_items = {r.item_id for r in routings}
-    rops = list(s.scalars(select(RoutingOperation)))
+    lines = s.execute(select(BomLine.bom_id, BomLine.component_id)).all()
+    routing_items = set(s.scalars(select(Routing.item_id).where(Routing.is_active.is_(True))))
+    rops = s.execute(
+        select(RoutingOperation.id, RoutingOperation.routing_id, RoutingOperation.seq, RoutingOperation.code, RoutingOperation.name, RoutingOperation.run_minutes_per_unit, RoutingOperation.fixed_minutes, RoutingOperation.minutes_per_batch)
+    ).all()
     op_res = defaultdict(list)
-    for orr in s.scalars(select(OperationResource)):
+    for orr in s.execute(select(OperationResource.routing_operation_id, OperationResource.resource_id, OperationResource.group_id)):
         op_res[orr.routing_operation_id].append(orr)
     resources = list(s.scalars(select(Resource).where(Resource.plant_id == plant_id, Resource.is_active.is_(True))))
     res_ids = {r.id for r in resources}
     wcs = {w.id: w for w in s.scalars(select(WorkCenter))}
-    cals = {c.id for c in s.scalars(select(Calendar))}
-    orders = list(s.scalars(select(ProductionOrder).where(ProductionOrder.plant_id == plant_id, ProductionOrder.status.in_(OPEN))))
-    open_items = {o.item_id for o in orders}
-    order_ops = defaultdict(list)
-    if orders:
-        for op in s.scalars(select(ProductionOrderOperation).where(ProductionOrderOperation.order_id.in_([o.id for o in orders]))):
-            order_ops[op.order_id].append(op)
-    used_rops = {op.routing_operation_id for ops in order_ops.values() for op in ops if op.routing_operation_id}
+    cals = set(s.scalars(select(Calendar.id)))
+    PO, POO = ProductionOrder, ProductionOrderOperation
+    open_where = (PO.plant_id == plant_id, PO.status.in_(OPEN))
+    open_ids = select(PO.id).where(*open_where)
+    open_items = set(s.scalars(select(PO.item_id).where(*open_where).distinct()))
+    used_rops = set(s.scalars(select(POO.routing_operation_id).where(POO.order_id.in_(open_ids), POO.routing_operation_id.is_not(None)).distinct()))
     checks: list[dict[str, Any]] = []
 
     # ---- products without BOM / routing
@@ -83,8 +91,9 @@ def run_checks(s: Session, plant_id: uuid.UUID) -> dict[str, Any]:
     checks.append(_check("PRODUCT_WITHOUT_BOM", "Products without BOM", "WARNING", no_bom, "Make items need a bill of materials for material planning."))
     no_routing = [{"item_id": str(i.id), "code": i.code} for i in make_items if i.id not in routing_items and i.id in open_items]
     checks.append(_check("PRODUCT_WITHOUT_ROUTING", "Products with open orders but no routing", "ERROR", no_routing, "Orders of these products cannot be scheduled."))
-    orders_no_ops = [{"order_id": str(o.id), "number": o.number} for o in orders if not order_ops.get(o.id)]
-    checks.append(_check("ORDER_WITHOUT_OPERATIONS", "Open orders without operations", "ERROR", orders_no_ops, "Generate operations from the routing or import them."))
+    has_ops = select(POO.id).where(POO.order_id == PO.id).exists()
+    n, ex = _count_examples(s, select(PO.id, PO.number).where(*open_where, ~has_ops), (PO.number,), lambda r: {"order_id": str(r.id), "number": r.number})
+    checks.append(_check("ORDER_WITHOUT_OPERATIONS", "Open orders without operations", "ERROR", ex, "Generate operations from the routing or import them.", n))
 
     # ---- operations without resource
     no_res = []
@@ -95,7 +104,7 @@ def run_checks(s: Session, plant_id: uuid.UUID) -> dict[str, Any]:
     checks.append(_check("OPERATION_WITHOUT_RESOURCE", "Operations without a feasible resource", "ERROR", no_res, "Add a primary or alternative resource in the routing."))
     empty_groups = []
     grp_members = defaultdict(set)
-    for m in s.scalars(select(ResourceGroupMember)):
+    for m in s.execute(select(ResourceGroupMember.group_id, ResourceGroupMember.resource_id)):
         grp_members[m.group_id].add(m.resource_id)
     for ro in rops:
         for x in op_res.get(ro.id, []):
@@ -118,10 +127,12 @@ def run_checks(s: Session, plant_id: uuid.UUID) -> dict[str, Any]:
     checks.append(_check("MATERIAL_WITHOUT_UNIT", "Materials without unit of measure", "WARNING", no_uom, "Quantities cannot be interpreted without a unit."))
 
     # ---- orders
-    past_due = [{"order_id": str(o.id), "number": o.number, "due": o.due_date.isoformat()} for o in orders if _aw(o.due_date) < now()]
-    checks.append(_check("ORDER_PAST_DUE", "Open orders already past their due date", "WARNING", past_due, "Review promised dates with the customer."))
-    bad_qty = [{"order_id": str(o.id), "number": o.number} for o in orders if (o.quantity or 0) <= 0]
-    checks.append(_check("ORDER_INVALID_QUANTITY", "Orders with zero or negative quantity", "ERROR", bad_qty, "Correct the quantity."))
+    n, ex = _count_examples(
+        s, select(PO.id, PO.number, PO.due_date).where(*open_where, PO.due_date < t_now), (PO.due_date,), lambda r: {"order_id": str(r.id), "number": r.number, "due": r.due_date.isoformat()}
+    )
+    checks.append(_check("ORDER_PAST_DUE", "Open orders already past their due date", "WARNING", ex, "Review promised dates with the customer.", n))
+    n, ex = _count_examples(s, select(PO.id, PO.number).where(*open_where, or_(PO.quantity.is_(None), PO.quantity <= 0)), (PO.number,), lambda r: {"order_id": str(r.id), "number": r.number})
+    checks.append(_check("ORDER_INVALID_QUANTITY", "Orders with zero or negative quantity", "ERROR", ex, "Correct the quantity.", n))
 
     # ---- invalid routing
     invalid = []
@@ -129,7 +140,7 @@ def run_checks(s: Session, plant_id: uuid.UUID) -> dict[str, Any]:
     for ro in rops:
         by_routing[ro.routing_id].append(ro)
     precs = defaultdict(list)
-    for pr in s.scalars(select(OperationPrecedence)):
+    for pr in s.execute(select(OperationPrecedence.routing_id, OperationPrecedence.pred_seq, OperationPrecedence.succ_seq)):
         precs[pr.routing_id].append(pr)
     for rid, lst in by_routing.items():
         seqs = [x.seq for x in lst]
@@ -183,25 +194,24 @@ def run_checks(s: Session, plant_id: uuid.UUID) -> dict[str, Any]:
     checks.append(_check("UNKNOWN_SKILLS", "Skill / labour pool inconsistencies", "WARNING", unknown, "Operations requiring these pools may be infeasible."))
 
     # ---- supply
-    overdue = []
-    for ln, po in s.execute(select(PurchaseOrderLine, PurchaseOrder).join(PurchaseOrder, PurchaseOrder.id == PurchaseOrderLine.purchase_order_id).where(PurchaseOrderLine.status == "OPEN")).all():
-        if _aw(ln.expected_date) < now() and (ln.quantity or 0) > (ln.received_quantity or 0):
-            overdue.append({"purchase_order": po.number, "line": ln.line_no, "item": items[ln.item_id].code if ln.item_id in items else None, "expected": ln.expected_date.isoformat()})
-    checks.append(_check("OVERDUE_RECEIPTS", "Overdue purchase receipts", "WARNING", overdue, "Confirm new dates with the supplier: planning assumes they arrive now."))
+    POL = PurchaseOrderLine
+    n, ex = _count_examples(
+        s,
+        select(PurchaseOrder.number, POL.line_no, POL.item_id, POL.expected_date)
+        .join(PurchaseOrder, PurchaseOrder.id == POL.purchase_order_id)
+        .where(POL.status == "OPEN", POL.expected_date < t_now, POL.quantity > func.coalesce(POL.received_quantity, 0)),
+        (POL.expected_date,),
+        lambda r: {"purchase_order": r.number, "line": r.line_no, "item": items[r.item_id].code if r.item_id in items else None, "expected": r.expected_date.isoformat()},
+    )
+    checks.append(_check("OVERDUE_RECEIPTS", "Overdue purchase receipts", "WARNING", ex, "Confirm new dates with the supplier: planning assumes they arrive now.", n))
 
     summary = {"ok": sum(1 for c in checks if c["status"] == "OK"), "warnings": sum(1 for c in checks if c["status"] == "WARNING"), "errors": sum(1 for c in checks if c["status"] == "ERROR")}
-    return {"plant_id": str(plant_id), "checked_at": now().isoformat(), "summary": summary, "checks": checks, "planning_blocked": summary["errors"] > 0}
+    return {"plant_id": str(plant_id), "checked_at": t_now.isoformat(), "summary": summary, "checks": checks, "planning_blocked": summary["errors"] > 0}
 
 
 def blocking_issues(s: Session, plant_id: uuid.UUID) -> list[dict[str, Any]]:
     res = run_checks(s, plant_id)
     return [{"code": c["code"], "title": c["title"], "count": c["count"]} for c in res["checks"] if c["status"] == "ERROR"]
-
-
-def _aw(dt):
-    from datetime import UTC
-
-    return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
 
 
 def _has_cycle(edges: list[tuple[int, int]]) -> bool:

@@ -22,8 +22,42 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 SCHEMA_VERSION = "1.0"
 
 
+_MISSING = object()
+
+
 class _Model(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    @classmethod
+    def fast(cls, **values: Any):
+        """Build an instance from values the engine produced itself (already typed): no validation,
+        ~20x cheaper than the constructor. Missing fields take their defaults."""
+        spec = cls.__dict__.get("_fast_spec")
+        if spec is None:
+            spec = []
+            for name, f in cls.model_fields.items():
+                if f.default_factory is not None:
+                    spec.append((name, True, None, f.default_factory))
+                elif not f.is_required():
+                    spec.append((name, True, f.default, None))
+                else:
+                    spec.append((name, False, None, None))
+            type.__setattr__(cls, "_fast_spec", spec)
+        data = {}
+        get = values.get
+        for name, has_default, default, factory in spec:  # schema order, like the constructor
+            v = get(name, _MISSING)
+            if v is _MISSING:
+                if has_default:
+                    data[name] = factory() if factory is not None else default
+            else:
+                data[name] = v
+        obj = cls.__new__(cls)
+        object.__setattr__(obj, "__dict__", data)
+        object.__setattr__(obj, "__pydantic_fields_set__", set(values))
+        object.__setattr__(obj, "__pydantic_extra__", None)
+        object.__setattr__(obj, "__pydantic_private__", None)
+        return obj
 
 
 # --------------------------------------------------------------------------------------------

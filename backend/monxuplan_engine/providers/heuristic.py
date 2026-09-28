@@ -17,6 +17,7 @@ Status is always ``HEURISTIC``: this provider never claims optimality.
 from __future__ import annotations
 
 import random
+import time
 from collections import defaultdict
 
 from ..compile import CompiledProblem
@@ -62,10 +63,15 @@ class HeuristicProvider(OptimizationProvider):
         best_msel = cp.solver.mode_selection
         tried = 0
         ctx.report("Generating initial plan", 0.0, f"{len(starts)} dispatching strategies")
+        decode_s = 0.0
         for k, (rules, msel) in enumerate(starts):
-            if k > 0 and ctx.expired():
+            if k > 0 and (ctx.expired() or ctx.remaining() < 1.2 * decode_s):
+                if not ctx.expired():
+                    ctx.messages.append(f"{len(starts) - k} alternative dispatching strategies skipped: one construction takes {decode_s:.0f} s and would not fit in the time left")
                 break
+            t_dec = time.monotonic()
             res = decode(cp, timing, rules=rules, mode_selection=msel)
+            decode_s = max(decode_s, time.monotonic() - t_dec)
             tried += 1
             comp, _vec = ev.evaluate(res)
             if best is None:
@@ -78,8 +84,10 @@ class HeuristicProvider(OptimizationProvider):
         iterations = tried
         improved = 0
         decisions = {"rules": best_rules, "mode_selection": best_msel, "priority": None, "forced": None}
-        if cp.solver.local_search and not ctx.expired():
-            best, best_vec, best_comp, it, improved, prio, forced = local_search(cp, timing, ev, best, best_vec, best_comp, ctx, best_rules, best_msel)
+        if cp.solver.local_search and not ctx.expired() and ctx.remaining() < 1.2 * decode_s:
+            ctx.messages.append(f"Local search skipped: one full construction takes {decode_s:.0f} s and would not fit in the {ctx.remaining():.0f} s left (raise the time limit to improve this plan)")
+        elif cp.solver.local_search and not ctx.expired():
+            best, best_vec, best_comp, it, improved, prio, forced = local_search(cp, timing, ev, best, best_vec, best_comp, ctx, best_rules, best_msel, decode_s=decode_s)
             iterations += it
             if improved:
                 decisions.update(priority=prio, forced=forced or None)
@@ -95,7 +103,7 @@ class HeuristicProvider(OptimizationProvider):
         )
 
 
-def local_search(cp: CompiledProblem, timing: Timing, ev: Evaluator, best, best_vec, best_comp, ctx: SolveContext, rules, msel=None, max_iter: int = 100000):
+def local_search(cp: CompiledProblem, timing: Timing, ev: Evaluator, best, best_vec, best_comp, ctx: SolveContext, rules, msel=None, max_iter: int = 100000, decode_s: float = 0.0):
     rng = random.Random(ctx.seed)
     prio, _modes = decisions_of(best)
     forced: dict[int, int] = {}
@@ -120,6 +128,10 @@ def local_search(cp: CompiledProblem, timing: Timing, ev: Evaluator, best, best_
                 ctx.messages.append("local search stopped on the wall-clock safety limit: this result may not be exactly reproducible")
                 break
         elif ctx.expired():
+            break
+        if decode_s and ctx.remaining() < decode_s:  # the next candidate would overrun the limit
+            if reproducible:
+                ctx.messages.append("local search stopped on the wall-clock safety limit: this result may not be exactly reproducible")
             break
         it += 1
         move = rng.random()

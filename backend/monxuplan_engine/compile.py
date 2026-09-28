@@ -10,7 +10,6 @@ collects data issues. It never drops a problem silently: anything it cannot inte
 from __future__ import annotations
 
 import hashlib
-import json
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from typing import Any
@@ -78,6 +77,9 @@ class CRes:
         self.spec = spec
 
 
+_NO_CALENDAR = WorkCalendar()
+
+
 class CMode:
     __slots__ = (
         "idx", "res", "sec", "cal", "setup_base", "run", "teardown", "pref", "cost_per_min", "sub",
@@ -88,7 +90,7 @@ class CMode:
         self.idx = 0
         self.res = 0
         self.sec: tuple[tuple[int, int], ...] = ()
-        self.cal: WorkCalendar = WorkCalendar()
+        self.cal: WorkCalendar = _NO_CALENDAR
         self.setup_base = 0
         self.run = 0
         self.teardown = 0
@@ -189,9 +191,8 @@ class CompiledProblem:
 
 
 def problem_hash(problem: Problem) -> str:
-    payload = problem.model_dump(mode="json")
-    blob = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode()
-    return hashlib.sha256(blob).hexdigest()
+    # serialised by pydantic-core (field order is fixed by the schema): ~10x faster than dump + json
+    return hashlib.sha256(problem.model_dump_json().encode()).hexdigest()
 
 
 # =============================================================================================

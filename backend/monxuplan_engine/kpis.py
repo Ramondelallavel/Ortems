@@ -101,15 +101,15 @@ def compute(result: BuildResult, validation: ValidationResult, orders: list[dict
     # resources
     cap_total = busy_total = 0
     per_res: dict[str, dict[str, float]] = {}
+    busy_by_res: dict[int, int] = defaultdict(int)
+    for p in placed:  # one pass over the schedule (not one per resource)
+        m = cp.ops[p.op].modes[p.mode]
+        busy_by_res[p.res] += m.cal.working_between(max(p.setup_start, cp.as_of), min(p.end, cp.h_end))
     for r in cp.resources:
         if not r.finite or r.kind in ("LABOR_POOL", "TOOL"):
             continue
         cap = r.cal.working_between(cp.as_of, cp.h_end) * (1 if r.unary else max(r.capacity, 1))
-        busy = 0
-        for p in placed:
-            if p.res == r.idx:
-                m = cp.ops[p.op].modes[p.mode]
-                busy += m.cal.working_between(max(p.setup_start, cp.as_of), min(p.end, cp.h_end))
+        busy = busy_by_res.get(r.idx, 0)
         cap_total += cap
         busy_total += busy
         per_res[r.id] = {"capacity_h": round(cap / H, 2), "busy_h": round(busy / H, 2), "utilization": round(100.0 * busy / cap, 2) if cap else None}
