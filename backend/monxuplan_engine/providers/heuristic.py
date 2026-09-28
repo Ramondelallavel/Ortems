@@ -200,22 +200,40 @@ def _swap_adjacent(cp, res, prio, rng) -> str:
     return f"swap {cp.ops[a.op].id}/{cp.ops[b.op].id}"
 
 
+def _group_key(cp, res_idx: int, op_idx: int):
+    """Changeover key of an operation on a resource: the setup-matrix attributes, else the family."""
+    entry = cp.setup._res.get(res_idx)
+    op = cp.ops[op_idx]
+    if entry and entry[0]:
+        return tuple(str(op.state.get(m.attribute)) for m in entry[0])
+    return op.family
+
+
 def _batch_family(cp, res, prio, rng) -> str:
+    """Move a later run of jobs with the same changeover key right after an earlier run (campaign)."""
     seqs = [lst for lst in _resource_sequences(res).values() if len(lst) >= 3]
     if not seqs:
         return ""
     lst = rng.choice(seqs)
-    k = rng.randrange(len(lst) - 1)
-    anchor = lst[k]
-    fam = cp.ops[anchor.op].family
-    if fam is None:
+    runs: list[tuple[object, list]] = []
+    for p in lst:
+        key = _group_key(cp, p.res, p.op)
+        if runs and runs[-1][0] == key:
+            runs[-1][1].append(p)
+        else:
+            runs.append((key, [p]))
+    cands = [(i, j) for i in range(len(runs)) for j in range(i + 2, min(len(runs), i + 8)) if runs[i][0] is not None and runs[i][0] == runs[j][0]]
+    if not cands:
         return ""
-    for q in lst[k + 2 : k + 12]:
-        if cp.ops[q.op].family == fam:
-            nxt = lst[k + 1]
-            prio[q.op] = (prio.get(anchor.op, anchor.setup_start) + prio.get(nxt.op, nxt.setup_start)) / 2.0
-            return f"batch {cp.ops[q.op].id} after {cp.ops[anchor.op].id} (family {fam})"
-    return ""
+    i, j = rng.choice(cands)
+    anchor = runs[i][1][-1]
+    nxt = runs[i + 1][1][0]
+    a = prio.get(anchor.op, anchor.setup_start)
+    b = prio.get(nxt.op, nxt.setup_start)
+    moved = runs[j][1]
+    for k, p in enumerate(moved):
+        prio[p.op] = a + (b - a) * (k + 1) / (len(moved) + 1)
+    return f"campaign: {len(moved)} job(s) of {runs[j][0]} after {cp.ops[anchor.op].id}"
 
 
 def _change_mode(cp, res, forced, rng) -> str:

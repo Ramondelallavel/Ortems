@@ -107,7 +107,15 @@ def solve(problem: Problem, progress: Progress | None = None, cancelled: Callabl
 
     limit = time_limit_for(problem)
     provider = get_provider(problem.solver.provider)
-    ctx = SolveContext(time_limit_s=limit, seed=problem.solver.seed, progress=progress, cancelled=cancelled)
+    if not provider.capabilities().detailed_scheduling:
+        from .providers.mip import NotSupported
+
+        raise NotSupported(f"provider {provider.name!r} does not support detailed scheduling")
+    # keep time for validation, KPIs and explanations so the whole run honours the limit
+    elapsed = time.monotonic() - t0
+    reserve = min(0.3 * limit, 0.5 + 0.0006 * len(cp.ops) * (2.0 if problem.solver.explain else 1.0))
+    budget = max(limit - elapsed - reserve, 0.2 * limit)
+    ctx = SolveContext(time_limit_s=budget, seed=problem.solver.seed, progress=progress, cancelled=cancelled)
     with phase("Optimize", provider.name) as rec:
         pres = provider.solve(cp, timing, ctx)
         rec.detail = f"{provider.name}: {pres.status}, {pres.iterations} iterations"

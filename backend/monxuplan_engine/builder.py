@@ -676,7 +676,9 @@ class ScheduleBuilder:
                     t = nb.end
                     continue
                 ns = cp.setup.setup(res.idx, sk, nb.state_key, nb.setup_base)
-                if ns > nb.setup and nb.cal.working_between(e, nb.start) < ns:
+                if ns > nb.setup:
+                    # the next job's setup would have to start earlier than planned, which could
+                    # break its own precedence, labour and material timing → not allowed
                     pushes.append(Push("SETUP", cp.ops[nb.op].id, nb.end, f"changeover to {cp.ops[nb.op].id} would not fit"))
                     t = nb.end
                     continue
