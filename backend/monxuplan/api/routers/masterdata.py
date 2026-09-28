@@ -54,6 +54,7 @@ def create_entity(entity: str, body: dict[str, Any] = Body(...), reason: str | N
 
 
 @router.put("/master-data/{entity}/{id_}")
+@router.patch("/master-data/{entity}/{id_}")
 def update_entity(entity: str, id_: uuid.UUID, body: dict[str, Any] = Body(...), reason: str | None = None, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
     return md.update_row(s, ctx, entity, id_, body, reason)
 

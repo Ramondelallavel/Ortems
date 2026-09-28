@@ -9,7 +9,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from ..core.errors import NotFound
-from ..models import Bom, BomLine, Customer, Item, Plan, Plant, ProductFamily, ProductionOrder, SalesOrderLine, Scenario
+from ..models import Bom, BomLine, Customer, Item, Plan, Plant, ProductFamily, ProductionOrder, Scenario
 from .context import Ctx
 from .masterdata import to_json
 
@@ -46,7 +46,6 @@ def list_orders(s: Session, ctx: Ctx, plant_id: uuid.UUID | None, q: str | None,
     items = {i.id: i for i in s.scalars(select(Item).where(Item.id.in_({r.item_id for r in rows})))} if rows else {}
     fams = {f.id: f for f in s.scalars(select(ProductFamily))}
     custs = {c.id: c for c in s.scalars(select(Customer))}
-    solines = {sl.id: sl for sl in s.scalars(select(SalesOrderLine).where(SalesOrderLine.id.in_({r.sales_order_line_id for r in rows if r.sales_order_line_id})))} if rows else {}
     plan = _plan_for(s, plant_id, plan_id)
     res_by_order = {o["order_id"]: o for o in ((plan.analysis or {}).get("orders", []) if plan else [])}
     late_info = {x["order_id"]: x for x in ((plan.kpi_details or {}).get("late_orders", []) if plan else [])}

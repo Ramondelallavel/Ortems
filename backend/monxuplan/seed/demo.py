@@ -421,7 +421,7 @@ def _build(b: Builder) -> dict[str, Any]:
                     routing_id=r.id, seq=20, code="CNC", name="CNC machining", setup_minutes=30, run_minutes_per_unit=round(2.2 + dia / 40.0, 2),
                     run_tiers=[{"min_quantity": 1000, "minutes_per_unit": round((2.2 + dia / 40.0) * 0.92, 2)}],
                     labor_pool_id=pools["POOL-CNC"].id, tool_id=tools["T-18"].id if fcode == "HYD" else None, move_minutes=30, transfer_batch=None,
-                    instructions="Clamp on fixture, run program P-%s-%d, first-article inspection." % (fcode, dia),
+                    instructions=f"Clamp on fixture, run program P-{fcode}-{dia}, first-article inspection.",
                 )
             )
             s.flush()

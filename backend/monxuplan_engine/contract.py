@@ -668,7 +668,7 @@ class BottleneckCause(_Model):
 class Bottleneck(_Model):
     resource_id: str | None
     kind: Literal[
-        "OVERLOADED", "HIGH_UTILIZATION", "MATERIAL", "LABOR", "TOOL", "SEQUENCE", "CALENDAR"
+        "OVERLOADED", "HIGH_UTILIZATION", "QUEUE", "MATERIAL", "LABOR", "TOOL", "SEQUENCE", "CALENDAR"
     ]
     rank: int
     capacity_minutes: int = 0

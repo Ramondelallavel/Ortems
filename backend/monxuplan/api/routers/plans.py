@@ -170,7 +170,7 @@ def restore(plan_id: uuid.UUID, body: RestoreIn, ctx: Ctx = Depends(get_ctx), s=
 
 
 @router.get("/plans/{plan_id}/export")
-def export(plan_id: uuid.UUID, format: str = Query("xlsx", pattern="^(xlsx|csv|json)$"), sheet: str = "Schedule", ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def export(plan_id: uuid.UUID, format: str = Query("xlsx", pattern="^(xlsx|csv|json)$"), sheet: str | None = None, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
     from ...services.exports import export_plan
 
     ctx.require("integration:export")

@@ -23,7 +23,7 @@ import heapq
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
-from .compile import CMode, COp, CompiledProblem
+from .compile import CMode, CompiledProblem, COp
 from .contract import ModeSelection
 from .materials import MaterialLedger
 from .setups import matches

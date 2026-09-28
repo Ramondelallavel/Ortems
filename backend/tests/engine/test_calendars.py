@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from monxuplan_engine.calendars import TimeAxis, WorkCalendar, expand_calendar
 from monxuplan_engine.contract import CalendarSpec
@@ -54,7 +54,7 @@ def test_intersect_and_subtract():
 
 
 def test_shift_pattern_with_breaks_and_holiday():
-    axis = TimeAxis(datetime(2026, 9, 28, 0, 0, tzinfo=timezone.utc), "UTC")  # Monday
+    axis = TimeAxis(datetime(2026, 9, 28, 0, 0, tzinfo=UTC), "UTC")  # Monday
     spec = CalendarSpec.model_validate(
         {
             "id": "C",
@@ -74,7 +74,7 @@ def test_shift_pattern_with_breaks_and_holiday():
 
 def test_overnight_shift_across_dst_end_europe_madrid():
     # 2026-10-25: clocks go back 03:00 CEST -> 02:00 CET. A 22:00-06:00 shift that night lasts 9 h.
-    axis = TimeAxis(datetime(2026, 10, 24, 0, 0, tzinfo=timezone.utc), "Europe/Madrid")
+    axis = TimeAxis(datetime(2026, 10, 24, 0, 0, tzinfo=UTC), "Europe/Madrid")
     spec = CalendarSpec.model_validate(
         {"id": "N", "timezone": "Europe/Madrid", "shifts": [{"weekday": d, "start": "22:00", "end": "06:00"} for d in range(7)]}
     )
@@ -86,7 +86,7 @@ def test_overnight_shift_across_dst_end_europe_madrid():
 
 def test_overnight_shift_across_dst_start():
     # 2027-03-28: clocks go forward 02:00 CET -> 03:00 CEST. The 22:00-06:00 shift lasts 7 h.
-    axis = TimeAxis(datetime(2027, 3, 26, 0, 0, tzinfo=timezone.utc), "Europe/Madrid")
+    axis = TimeAxis(datetime(2027, 3, 26, 0, 0, tzinfo=UTC), "Europe/Madrid")
     spec = CalendarSpec.model_validate(
         {"id": "N", "timezone": "Europe/Madrid", "shifts": [{"weekday": d, "start": "22:00", "end": "06:00"} for d in range(7)]}
     )
@@ -96,7 +96,7 @@ def test_overnight_shift_across_dst_start():
 
 
 def test_extra_work_on_holiday_is_honoured():
-    axis = TimeAxis(datetime(2026, 9, 28, 0, 0, tzinfo=timezone.utc), "UTC")
+    axis = TimeAxis(datetime(2026, 9, 28, 0, 0, tzinfo=UTC), "UTC")
     spec = CalendarSpec.model_validate(
         {
             "id": "C",

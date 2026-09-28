@@ -161,7 +161,10 @@ def gantt(
 ) -> dict[str, Any]:
     plan = _get_plan(s, ctx, plan_id)
     start = start or _aware(plan.horizon_start) - timedelta(days=1)
-    end = end or _aware(plan.horizon_end)
+    if end is None:
+        # the default window shows every operation, including those that overflow the horizon
+        last = s.scalar(select(func.max(ScheduledOperation.end)).where(ScheduledOperation.plan_id == plan.id))
+        end = max(_aware(plan.horizon_end), _aware(last) if last else _aware(plan.horizon_end))
     if end <= start:
         raise ValidationFailed("end must be after start")
     if (end - start).days > 400:

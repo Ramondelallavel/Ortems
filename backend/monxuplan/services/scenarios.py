@@ -300,10 +300,17 @@ def rush_order_payload(s: Session, ctx: Ctx, plant: Plant, params: dict[str, Any
             }
         )
     return {
-        "order": {"id": oid, "number": number, "item_id": str(item.id), "item_code": item.code, "quantity": qty, "due": due.isoformat(), "priority": int(params.get("priority", 10)), "expedite": bool(params.get("expedite", True)), "family": None, "attributes": {k: v for k, v in (item.attributes or {}).items() if isinstance(v, str | int | float)}},
+        "order": {"id": oid, "number": number, "item_id": str(item.id), "item_code": item.code, "quantity": qty, "due": due.isoformat(), "priority": int(params.get("priority", 10)), "expedite": bool(params.get("expedite", True)), "family": _family_code(s, item), "attributes": {k: v for k, v in (item.attributes or {}).items() if isinstance(v, str | int | float)}},
         "operations": ops,
     }
 
 
 def _unused() -> None:  # keep imports referenced for type checkers
     _ = (ProductionOrder,)
+
+
+def _family_code(s: Session, item: Any) -> str | None:
+    from ..models import ProductFamily
+
+    fam = s.get(ProductFamily, item.family_id) if getattr(item, "family_id", None) else None
+    return fam.code if fam else None

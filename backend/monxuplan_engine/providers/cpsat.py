@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from ortools.sat.python import cp_model
 
 from ..builder import BuildResult
-from ..compile import CompiledProblem, CMode
+from ..compile import CMode, CompiledProblem
 from ..objectives import levels_of
 from ..timing import Timing
 from .base import Evaluator, OptimizationProvider, ProviderCapabilities, ProviderResult, SolveContext, decode
@@ -174,7 +174,7 @@ class _Model:
             E = m.NewIntVar(lb, H + 10 * 1440, f"E{i}")
             R = m.NewIntVar(lb, H + 10 * 1440, f"R{i}")
             self.S[i], self.E[i], self.R[i] = S, E, R
-            m.Add(R >= run_lb)
+            m.Add(run_lb <= R)
             lits = []
             offsets = []
             mode_off: dict[int, int] = {}
@@ -208,8 +208,8 @@ class _Model:
                 itv = m.NewOptionalIntervalVar(Sm, size, Em, x, f"I{i}_{md.idx}")
                 self.iv[(i, md.idx)] = itv
                 self.Sm[(i, md.idx)], self.Em[(i, md.idx)] = Sm, Em
-                m.Add(S == Sm).OnlyEnforceIf(x)
-                m.Add(E == Em).OnlyEnforceIf(x)
+                m.Add(Sm == S).OnlyEnforceIf(x)
+                m.Add(Em == E).OnlyEnforceIf(x)
                 # the run starts after the setup included in the interval (none for circuit resources,
                 # whose setup is a gap before S); detached setups may precede predecessors/material
                 off = 0 if (in_circ or md.sub) else (self._base_setup(i, md) if (cp.resources[md.res].detached and op.interruptible) else 0)
@@ -237,7 +237,7 @@ class _Model:
             if not lits:
                 return False
             m.AddExactlyOne(lits)
-            m.Add(R == S + sum(off * x for x, off in offsets if off))
+            m.Add(S + sum(off * x for x, off in offsets if off) == R)
             rp = self.ref.placements[i] if (ref_hints and self.ref is not None) else None
             if rp is not None:
                 for (oi, mi), x in self.x.items():
@@ -438,9 +438,9 @@ class _Model:
             ends_all.append(C)
             target = o.due - o.safety
             T = m.NewIntVar(0, H, f"T{o.idx}")
-            m.Add(T >= C - target)
+            m.Add(C - target <= T)
             L = m.NewBoolVar(f"L{o.idx}")
-            m.Add(C <= target).OnlyEnforceIf(L.Not())
+            m.Add(target >= C).OnlyEnforceIf(L.Not())
             self.components["tardiness"].append((o.weight, T))
             self.components["late_orders"].append((o.weight, L))
             if o.critical:
@@ -533,6 +533,9 @@ def solve_neighbourhood(cp: CompiledProblem, ref: BuildResult | None, nb: Neighb
         # multi-worker search is avoided on purpose: combined with solution hints it can abort inside
         # OR-Tools (heuristics.fixed_search check).
         params.num_workers = 1
+        # repair_hint in single-worker mode triggers the same OR-Tools check (no fixed search is
+        # instantiated for the lone worker); the hint is still used as the first branching guide.
+        params.repair_hint = False
         params.max_deterministic_time = max(time_limit * 0.5, 0.25)
         params.max_time_in_seconds = max(time_limit * 1.5, 1.0)
     params.log_search_progress = False

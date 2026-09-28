@@ -42,7 +42,7 @@ def analyse(problem: Problem, solution: Solution, max_resources: int = 3) -> dic
     experiments: list[dict[str, Any]] = []
     weeks = max((problem.horizon.end - problem.horizon.start).total_seconds() / (7 * 86400), 1.0)
     res_by_id = {r.id: r for r in problem.resources}
-    machines = [b for b in solution.bottlenecks if b.resource_id and b.kind in ("OVERLOADED", "HIGH_UTILIZATION")][:max_resources]
+    machines = [b for b in solution.bottlenecks if b.resource_id and b.kind in ("OVERLOADED", "HIGH_UTILIZATION", "QUEUE")][:max_resources]
     for b in machines:
         r = res_by_id.get(b.resource_id)
         if r is None or r.calendar_id is None:

@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from datetime import datetime, time, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from monxuplan_engine.contract import Problem
 
-T0 = datetime(2026, 9, 28, 6, 0, tzinfo=timezone.utc)  # Monday
+T0 = datetime(2026, 9, 28, 6, 0, tzinfo=UTC)  # Monday
 
 
 def at(hours: float = 0, days: float = 0) -> str:

@@ -281,7 +281,9 @@ def bottlenecks(cp: CompiledProblem, placements, timing, unscheduled: dict, orde
         wait = waits_by_ref.get(key, 0)
         if overload <= 0 and util < 0.85 and wait <= 0:
             continue
-        kind = "OVERLOADED" if overload > 0 else "HIGH_UTILIZATION"
+        # QUEUE: operations wait for this resource although it is not highly utilised over the
+        # horizon (load arrives in bursts) — reported separately so utilisation is never overstated
+        kind = "OVERLOADED" if overload > 0 else "HIGH_UTILIZATION" if util >= 0.85 else "QUEUE"
         causes = []
         total = sum(fam_minutes.values()) + setup_min + maint
         if total > 0:

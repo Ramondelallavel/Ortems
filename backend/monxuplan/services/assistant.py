@@ -324,7 +324,12 @@ def grounded_answer(tools: Tools, question: str, lang: str) -> dict[str, Any]:
         rid = s.scalar(select(Resource.id).where(Resource.code == code, Resource.plant_id == plan.plant_id))
         label = f"{code} down {hours} h" if lang == "en" else f"{code} parada {hours} h"
         lines.append(_t("whatif", lang, label=label))
-        actions.append({"type": "WHAT_IF", "kind": "BREAKDOWN", "label": label, "params": {"resource_id": str(rid), "hours": hours}})
+        from datetime import timedelta
+
+        from ..core.clock import now as _now
+
+        t0 = _now().replace(second=0, microsecond=0)
+        actions.append({"type": "WHAT_IF", "kind": "BREAKDOWN", "label": label, "params": {"resource_id": str(rid), "start": t0.isoformat(), "end": (t0 + timedelta(hours=hours)).isoformat(), "reason": label}})
         d = tools.resource_load(code)
         if d.get("bottleneck"):
             lines.append(_t("resource_bn", lang, rank=d["bottleneck"]["rank"], kind=d["bottleneck"]["kind"]))

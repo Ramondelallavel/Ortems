@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..core.errors import NotFound
-from ..models import Customer, Item, Plan, ProductionOrder, PurchaseOrder, PurchaseOrderLine, SalesOrder, SalesOrderLine, Supplier
+from ..models import Customer, Item, Plan, ProductionOrder, PurchaseOrder, PurchaseOrderLine, SalesOrder, SalesOrderLine, ScheduledOperation, Supplier
 from .context import Ctx
 from .engine_view import replay
 from .views import _get_plan
@@ -38,12 +38,7 @@ def availability(s: Session, ctx: Ctx, plan_id: uuid.UUID) -> dict[str, Any]:
         e["orders"] = sorted(e["orders"])
     # late supply: operations that waited for material, grouped by material
     late: dict[str, dict[str, Any]] = {}
-    cp, res = replay(s, plan)
-    for p in res.placements:
-        if p is None:
-            continue
-    from ..models import ScheduledOperation
-
+    cp, _res = replay(s, plan)
     for so in s.scalars(select(ScheduledOperation).where(ScheduledOperation.plan_id == plan.id)):
         b = so.binding or {}
         if b.get("type") == "MATERIAL":
