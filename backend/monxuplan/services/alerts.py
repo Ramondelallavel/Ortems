@@ -25,6 +25,15 @@ def generate_alerts(s: Session, ctx: Ctx, plan: Plan, sol: Solution, sc: Scenari
         .values(status="RESOLVED", note="superseded by " + plan.number)
     )
     out: list[Alert] = []
+    from zoneinfo import ZoneInfo
+
+    from ..models import Plant
+
+    plant = s.get(Plant, sc.plant_id)
+    tz = ZoneInfo(plant.timezone if plant else "UTC")
+
+    def local(d) -> str:
+        return d.astimezone(tz).strftime("%a %d %b %H:%M") if d is not None else "—"
 
     def add(type_: str, severity: str, title: str, message: str, context: dict[str, Any], count: float | None = None) -> None:
         a = Alert(tenant_id=ctx.tenant_id, plant_id=sc.plant_id, plan_id=plan.id, type=type_, severity=severity, title=title, message=message, context=context, count=count)
@@ -36,7 +45,7 @@ def generate_alerts(s: Session, ctx: Ctx, plan: Plan, sol: Solution, sc: Scenari
     if late:
         add("ORDERS_AT_RISK", "CRITICAL" if critical_late else "WARNING", f"{len(late)} orders at risk", f"{len(late)} orders finish after their due date ({len(critical_late)} high priority).", {"page": "orders", "filter": {"status": "LATE"}}, len(late))
     for o in critical_late[:10]:
-        add("ORDER_LATE", "CRITICAL", f"{o.number} late by {o.lateness_minutes // 60} h", f"Due {o.due.isoformat()}, planned end {o.end.isoformat() if o.end else '—'}", {"page": "order", "order_id": o.order_id})
+        add("ORDER_LATE", "CRITICAL", f"{o.number} late by {o.lateness_minutes // 60} h", f"Due {local(o.due)}, planned end {local(o.end)} ({plant.timezone if plant else 'UTC'})", {"page": "order", "order_id": o.order_id, "order_number": o.number})
     impossible = [o for o in sol.orders if o.earliest_possible_end is not None and o.earliest_possible_end > o.due]
     if impossible:
         add("DUE_DATE_IMPOSSIBLE", "CRITICAL", f"{len(impossible)} due dates impossible", "Even at infinite capacity these orders cannot meet their date (lead time or material).", {"page": "orders", "filter": {"impossible": True}}, len(impossible))

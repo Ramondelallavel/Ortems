@@ -129,8 +129,21 @@ def command_center(s: Session, ctx: Ctx, plant_id: uuid.UUID) -> dict[str, Any]:
         "changes": changes,
         "late_orders": [{"order_id": x["order_id"], "number": x["number"], "status": x["status"], "lateness_minutes": x.get("lateness_minutes"), "due": x.get("due"), "cause": (x.get("cause") or {}).get("category"), "cause_text": (x.get("cause") or {}).get("text")} for x in late],
         "bottlenecks": bottlenecks,
-        "material_issues": ((head.kpi_details or {}).get("material_shortages", []) if head else [])[:8],
+        "material_issues": _codes(s, ((head.kpi_details or {}).get("material_shortages", []) if head else [])[:8]),
     }
+
+
+def _codes(s: Session, ids: list[str]) -> list[str]:
+    from ..models import Item
+
+    ok = []
+    for x in ids:
+        try:
+            ok.append(uuid.UUID(x))
+        except ValueError:
+            continue
+    codes = {str(i): c for i, c in s.execute(select(Item.id, Item.code).where(Item.id.in_(ok)))} if ok else {}
+    return [codes.get(x, x) for x in ids]
 
 
 def plants_overview(s: Session, ctx: Ctx) -> list[dict[str, Any]]:

@@ -162,8 +162,14 @@ def run_mrp(pb: MrpProblem) -> dict[str, Any]:
     indep: dict[str, dict[str, list[float]]] = defaultdict(lambda: defaultdict(lambda: [0.0] * P))
     peg_src: dict[tuple[str, int], list[dict]] = defaultdict(list)
     past_due: dict[str, float] = defaultdict(float)
+    beyond: dict[str, float] = defaultdict(float)
+    horizon_end = pb.start + P * bucket
     for d in pb.demands:
         if d.item_id not in items:
+            continue
+        if d.date >= horizon_end:
+            # outside the planning horizon: reported, never piled into the last bucket
+            beyond[d.item_id] += d.quantity
             continue
         if d.date < pb.start:
             past_due[d.item_id] += d.quantity
@@ -173,7 +179,7 @@ def run_mrp(pb: MrpProblem) -> dict[str, Any]:
     receipts: dict[str, list[float]] = defaultdict(lambda: [0.0] * P)
     receipt_refs: dict[str, list[tuple[int, MrpReceipt]]] = defaultdict(list)
     for r in pb.receipts:
-        if r.item_id not in items:
+        if r.item_id not in items or r.date >= horizon_end:
             continue
         k = period_of(r.date)
         receipts[r.item_id][k] += r.quantity
@@ -281,4 +287,5 @@ def run_mrp(pb: MrpProblem) -> dict[str, Any]:
         "planned_orders": planned,
         "exceptions": exceptions,
         "bom_cycles": cycles,
+        "beyond_horizon_demand": {items[i].code: round(q, 6) for i, q in sorted(beyond.items(), key=lambda kv: items[kv[0]].code)},
     }

@@ -330,7 +330,12 @@ def operation_detail(s: Session, ctx: Ctx, plan_id: uuid.UUID, op_key: str) -> d
         if poo is not None:
             ro = s.get(RoutingOperation, poo.routing_operation_id) if poo.routing_operation_id else None
             out["operation"] = {"code": poo.code, "name": poo.name, "status": poo.status, "completed_quantity": poo.completed_quantity, "instructions": ro.instructions if ro else None, "setup_attributes": ro.setup_attributes if ro else {}}
-    out["pegging"] = [p for p in (plan.analysis or {}).get("pegging", []) if p["consumer_op_id"] == op_key]
+    pegs = [dict(p) for p in (plan.analysis or {}).get("pegging", []) if p["consumer_op_id"] == op_key]
+    mids = {uuid.UUID(p["material_id"]) for p in pegs if _is_uuid(p["material_id"])}
+    codes = {str(i): c for i, c in s.execute(select(Item.id, Item.code).where(Item.id.in_(mids)))} if mids else {}
+    for p in pegs:
+        p["material"] = codes.get(p["material_id"], p["material_id"])
+    out["pegging"] = pegs
     out["violations"] = [row_dict(v) for v in s.scalars(select(ConstraintViolation).where(ConstraintViolation.plan_id == plan.id, ConstraintViolation.op_key == op_key))]
     return out
 
