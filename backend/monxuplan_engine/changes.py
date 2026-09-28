@@ -23,6 +23,8 @@ Supported change types (payload keys in brackets):
 ``MATERIAL_ADJUST``     stock correction [material_id, quantity]
 ``SET_CONSTRAINTS``     [constraints: {...}]
 ``SET_OBJECTIVES``      [objectives: {...}]
+``LOCK_SEQUENCE``       planner-fixed sequence on a resource [resource_id, op_ids]
+``PIN_RESOURCE``        operation must run on a resource [op_id, resource_id]
 """
 
 from __future__ import annotations
@@ -51,6 +53,8 @@ CHANGE_TYPES = {
     "MATERIAL_ADJUST",
     "SET_CONSTRAINTS",
     "SET_OBJECTIVES",
+    "LOCK_SEQUENCE",
+    "PIN_RESOURCE",
 }
 
 
@@ -302,6 +306,23 @@ def _set_objectives(data, p) -> str:
     return "objectives updated"
 
 
+def _lock_sequence(data, p) -> str:
+    r = _res(data, p["resource_id"])
+    data.setdefault("sequence_constraints", []).append(
+        {"id": p.get("id") or f"LOCK-{r['code']}-{len(data.get('sequence_constraints', []))}", "type": "LOCKED_SEQUENCE", "resource_ids": [r["id"]], "op_ids": list(p["op_ids"]), "description": "locked by planner"}
+    )
+    return f"sequence of {len(p['op_ids'])} operations locked on {r['code']}"
+
+
+def _pin_resource(data, p) -> str:
+    r = _res(data, p["resource_id"])
+    for op in data["operations"]:
+        if op["id"] == p["op_id"]:
+            op["pinned_resource_id"] = r["id"]
+            return f"{p['op_id']} pinned to {r['code']}"
+    raise ChangeError(f"unknown operation {p['op_id']}")
+
+
 _HANDLERS = {
     "ADD_DOWNTIME": _add_downtime,
     "REMOVE_RESOURCE": _remove_resource,
@@ -320,4 +341,6 @@ _HANDLERS = {
     "MATERIAL_ADJUST": _material_adjust,
     "SET_CONSTRAINTS": _set_constraints,
     "SET_OBJECTIVES": _set_objectives,
+    "LOCK_SEQUENCE": _lock_sequence,
+    "PIN_RESOURCE": _pin_resource,
 }

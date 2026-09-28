@@ -48,7 +48,7 @@ class CRes:
     __slots__ = (
         "idx", "id", "code", "name", "kind", "capacity", "finite", "unary", "cal", "profile", "efficiency",
         "groups", "area", "plant", "attrs", "initial_state", "unavail", "cost_per_min", "ot_cost_per_min",
-        "setup_cost_per_min", "energy_kw", "co2", "spec",
+        "setup_cost_per_min", "energy_kw", "co2", "spec", "detached",
     )
 
     def __init__(self, idx: int, spec: ResourceSpec) -> None:
@@ -60,6 +60,7 @@ class CRes:
         self.capacity = spec.capacity
         self.finite = spec.finite
         self.unary = spec.finite and spec.capacity == 1 and spec.kind in UNARY_KINDS
+        self.detached = bool(spec.detached_setup) and self.unary
         self.cal: WorkCalendar = WorkCalendar()
         self.profile: list[tuple[int, int]] = []
         self.efficiency = spec.efficiency

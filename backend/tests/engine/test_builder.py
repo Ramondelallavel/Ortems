@@ -315,3 +315,23 @@ def test_deterministic_output():
     b = solve(problem(**kw))
     assert [(s.op_id, s.resource_id, s.start) for s in a.schedule] == [(s.op_id, s.resource_id, s.start) for s in b.schedule]
     assert a.solver_metadata.input_hash == b.solver_metadata.input_hash
+
+
+def test_long_operation_with_shift_labour_pauses_over_nights_and_breaks():
+    """Regression: labour pools with shift calendars (capacity 0 at night and in breaks) must not block
+    multi-day operations — the operation pauses there and only consumes labour while working."""
+    cal = {"id": "C", "timezone": "UTC", "shifts": [{"weekday": d, "start": "06:00", "end": "14:00", "breaks": [{"start": "10:00", "end": "10:20"}]} for d in range(5)]}
+    pool = {"id": "POOL", "code": "POOL", "kind": "LABOR_POOL", "capacity": 1, "calendar_id": "C"}
+    tool = {"id": "T", "code": "T", "kind": "TOOL", "capacity": 1}
+    ops = []
+    for k in range(3):
+        op = operation(f"O{k}/10", f"O{k}", 10, ["M1", "M2"], 1500)  # 25 h each → spans several shifts
+        for m in op["modes"]:
+            m["secondary"] = [{"resource_id": "POOL"}, {"resource_id": "T"}]
+        ops.append(op)
+    sol = solve(problem(calendars=[cal], resources=[machine("M1", "C"), machine("M2", "C"), pool, tool], orders=[order(f"O{k}", 24 * 30) for k in range(3)], operations=ops))
+    assert not sol.unscheduled, [u.message for u in sol.unscheduled]
+    assert sol.feasible, [v.message for v in sol.violations if v.hardness == "HARD"]
+    a = sorted(sol.schedule, key=lambda s: s.setup_start)
+    for x, y in zip(a, a[1:], strict=False):
+        assert y.setup_start >= x.end  # one operator and one tool: strictly sequential

@@ -54,7 +54,7 @@ class Push:
 
 
 class Slot:
-    __slots__ = ("mode", "feasible", "setup_start", "start", "end", "setup", "prev_op", "pushes", "reason", "detail", "score")
+    __slots__ = ("mode", "feasible", "setup_start", "start", "end", "setup", "prev_op", "pushes", "reason", "detail", "score", "next_adjust")
 
     def __init__(self, mode: CMode) -> None:
         self.mode = mode
@@ -68,12 +68,13 @@ class Slot:
         self.reason: str | None = None
         self.detail: str | None = None
         self.score: tuple = ()
+        self.next_adjust: tuple[int, int] | None = None  # (new setup start, new setup) of the next job
 
 
 class Placement:
     __slots__ = (
         "op", "mode", "res", "setup_start", "start", "end", "setup", "prev_op", "binding", "lb", "mat_ready",
-        "mat_wait", "res_wait", "alternatives", "fixed", "fixed_reason", "overtime", "cost", "shortage",
+        "mat_wait", "res_wait", "alternatives", "fixed", "fixed_reason", "overtime", "cost", "shortage", "earliest", "lb_src",
     )
 
     def __init__(self) -> None:
@@ -87,6 +88,8 @@ class Placement:
         self.cost = 0.0
         self.shortage: list[tuple[int, float, float]] = []  # (material, required, available)
         self.prev_op: int | None = None
+        self.earliest = 0  # earliest allowed setup start (release, predecessors, material)
+        self.lb_src: BindingRec | None = None  # what determined the earliest start (predecessor, material…)
 
 
 class BindingRec:
@@ -528,7 +531,8 @@ class ScheduleBuilder:
         for m in op.modes:
             if not evaluate_all and m.idx != forced:
                 continue
-            slots.append(self._slot(op, m, lb, end_lb))
+            detached = cp.resources[m.res].detached and op.interruptible
+            slots.append(self._slot(op, m, lb, end_lb, setup_lb=cp.work_lb if detached else None))
         feasible = [s for s in slots if s.feasible]
         if forced is not None:
             chosen = next((s for s in slots if s.mode.idx == forced and s.feasible), None)
@@ -547,19 +551,30 @@ class ScheduleBuilder:
         pl = self.placements[op.idx]
         assert pl is not None
         pl.lb = base_lb
+        pl.earliest = cp.work_lb if (cp.resources[chosen.mode.res].detached and op.interruptible) else lb
         pl.mat_ready = mat_ready if (op.materials and self.use_materials) else None
         pl.mat_wait = max(0, mat_ready - base_lb)
         pl.res_wait = max(0, chosen.setup_start - lb)
         pl.shortage = shortage
         pl.alternatives = slots if self.cfg.explain else []
-        if chosen.setup_start > lb and chosen.pushes:
-            last = chosen.pushes[-1]
-            pl.binding = BindingRec(last.type, last.ref, last.detail, last.at, chosen.setup_start - lb, last.data)
-        elif mat_ref is not None and mat_ready > base_lb:
+        cal = chosen.mode.cal
+        if mat_ref is not None and mat_ready > base_lb:
             mi, t = mat_ref
-            pl.binding = BindingRec("MATERIAL", cp.materials[mi].id, f"{cp.materials[mi].code} available", t, mat_ready - base_lb)
+            lb_src = BindingRec("MATERIAL", cp.materials[mi].id, f"{cp.materials[mi].code} available", t, cal.working_between(base_lb, mat_ready))
         else:
-            pl.binding = src
+            lb_src = src
+        pl.lb_src = lb_src
+        if chosen.setup_start > lb and chosen.pushes:
+            # waiting is measured in working minutes of the operation's calendar (nights and
+            # weekends are not "waiting for a resource")
+            wait = cal.working_between(lb, chosen.setup_start) if not chosen.mode.sub else chosen.setup_start - lb
+            last = chosen.pushes[-1]
+            if wait == 0:
+                pl.binding = BindingRec("CALENDAR", None, "next working time", chosen.setup_start, 0)
+            else:
+                pl.binding = BindingRec(last.type, last.ref, last.detail, last.at, wait, last.data)
+        else:
+            pl.binding = lb_src
         return True
 
     def _choose(self, op: COp, feasible: list[Slot]) -> Slot:
@@ -586,7 +601,13 @@ class ScheduleBuilder:
         return min(feasible, key=lambda s: s.score)
 
     # ------------------------------------------------------------------ slot search
-    def _slot(self, op: COp, m: CMode, lb: int, end_lb: int) -> Slot:
+    def _slot(self, op: COp, m: CMode, lb: int, end_lb: int, setup_lb: int | None = None) -> Slot:
+        """Earliest feasible placement of ``op`` in mode ``m``.
+
+        ``lb`` bounds the *run* start (predecessors, release, material). With a detached setup
+        (``setup_lb`` given) the changeover may start earlier — just in time before the run — as soon
+        as the machine is free; otherwise the setup itself starts no earlier than ``lb``.
+        """
         cp = self.cp
         res = cp.resources[m.res]
         cal = m.cal
@@ -601,7 +622,8 @@ class ScheduleBuilder:
         if cal.total_minutes == 0 or cal.next_work(lb) is None:
             slot.reason, slot.detail = self._calendar_culprit(m, lb)
             return slot
-        t = lb
+        detached = setup_lb is not None
+        t = min(lb, setup_lb) if detached else lb
         for _ in range(MAX_SLOT_ITERATIONS):
             base_work = m.setup_base + m.run + m.teardown
             if op.interruptible:
@@ -643,7 +665,22 @@ class ScheduleBuilder:
                     continue
                 setup = cp.setup.setup(res.idx, prev_state, sk, m.setup_base)
             work = setup + m.run + m.teardown
-            if op.interruptible:
+            run_start = None
+            if detached:
+                if setup > 0:
+                    jit = cal.sub_work(lb, setup)
+                    if jit is not None and jit > t:
+                        t = jit  # prepare the machine just in time before the job is ready
+                        continue
+                    s_end = cal.add_work(t, setup)
+                    run_start = cal.next_work(max(s_end, lb)) if s_end is not None else None
+                else:
+                    if t < lb:
+                        t = lb
+                        continue
+                    run_start = t
+                e = cal.add_work(run_start, m.run + m.teardown) if run_start is not None else None
+            elif op.interruptible:
                 e = cal.add_work(t, work)
             else:
                 if not cal.fits_uninterrupted(t, work):
@@ -676,14 +713,19 @@ class ScheduleBuilder:
                     t = nb.end
                     continue
                 ns = cp.setup.setup(res.idx, sk, nb.state_key, nb.setup_base)
+                adjust = None
                 if ns > nb.setup:
-                    # the next job's setup would have to start earlier than planned, which could
-                    # break its own precedence, labour and material timing → not allowed
-                    pushes.append(Push("SETUP", cp.ops[nb.op].id, nb.end, f"changeover to {cp.ops[nb.op].id} would not fit"))
-                    t = nb.end
-                    continue
-            elif not res.unary and res.finite:
-                nf = self.cumulative[m.res].next_fit(t, e, 1)
+                    # the next job's changeover grows: it may start earlier into idle time only if its
+                    # own precedences, material, labour and tools still allow it
+                    adjust = self._can_extend_setup(nb, ns, e)
+                    if adjust is None:
+                        pushes.append(Push("SETUP", cp.ops[nb.op].id, nb.end, f"changeover to {cp.ops[nb.op].id} would not fit"))
+                        t = nb.end
+                        continue
+                slot.next_adjust = adjust
+            pieces = cal.pieces(t, e) if op.interruptible else [(t, e)]
+            if not res.unary and res.finite:
+                nf = _fit(self.cumulative[m.res], pieces, 1)
                 if nf is not None:
                     if nf >= POS_INF:
                         slot.reason = "NO_CAPACITY"
@@ -694,7 +736,7 @@ class ScheduleBuilder:
                     continue
             blocked = False
             for r_i, units in m.sec:
-                nf = self.cumulative[r_i].next_fit(t, e, units)
+                nf = _fit(self.cumulative[r_i], pieces, units)
                 if nf is not None:
                     sr = cp.resources[r_i]
                     kind = "LABOR" if sr.kind in ("LABOR_POOL", "HUMAN") else "TOOL" if sr.kind == "TOOL" else "RESOURCE"
@@ -710,7 +752,9 @@ class ScheduleBuilder:
                 continue
             slot.feasible = True
             slot.setup_start = t
-            if setup > 0:
+            if run_start is not None:
+                slot.start = run_start
+            elif setup > 0:
                 s_end = cal.add_work(t, setup) if op.interruptible else t + setup
                 slot.start = (cal.next_work(s_end) if op.interruptible else s_end) or s_end
             else:
@@ -722,6 +766,26 @@ class ScheduleBuilder:
         slot.reason = "SEARCH_LIMIT"
         slot.detail = "slot search limit reached"
         return slot
+
+    def _can_extend_setup(self, nb: Block, ns: int, after: int) -> tuple[int, int] | None:
+        """Can the next job's setup start earlier (to hold a longer changeover) without breaking it?"""
+        if nb.fixed:
+            return None
+        new_ss = nb.cal.sub_work(nb.start, ns) if ns > 0 else nb.start
+        if new_ss is None or new_ss < after:
+            return None
+        npl = self.placements[nb.op]
+        if npl is None or new_ss < npl.earliest:
+            return None
+        nop = self.cp.ops[nb.op]
+        if not nop.interruptible and not nb.cal.fits_uninterrupted(new_ss, nb.end - new_ss):
+            return None
+        nm = nop.modes[npl.mode]
+        extra = nm.cal.pieces(new_ss, nb.setup_start)
+        for r_i, units in nm.sec:
+            if _fit(self.cumulative[r_i], extra, units) is not None:
+                return None
+        return new_ss, ns
 
     def _calendar_culprit(self, m: CMode, lb: int) -> tuple[str, str]:
         """Explain why a mode has no working time left: which of its resources is never available."""
@@ -782,25 +846,38 @@ class ScheduleBuilder:
             if k + 1 < len(tl.blocks) and not check_conflicts:
                 nb = tl.blocks[k + 1]
                 ns = cp.setup.setup(res.idx, block.state_key, nb.state_key, nb.setup_base)
+                npl = self.placements[nb.op]
+                if npl is not None:
+                    npl.prev_op = op.idx
                 if ns != nb.setup and not nb.fixed:
+                    old_ss = nb.setup_start
+                    new_ss = nb.start if ns == 0 else (nb.cal.sub_work(nb.start, ns) or nb.start)
+                    if new_ss < old_ss and npl is not None:
+                        # longer changeover pulled into idle time: hold labour/tools and material earlier
+                        nop = cp.ops[nb.op]
+                        nm = nop.modes[npl.mode]
+                        for r_i, units in nm.sec:
+                            for a, b in nm.cal.pieces(new_ss, old_ss):
+                                self.cumulative[r_i].reserve(a, b, units)
                     nb.setup = ns
-                    nb.setup_start = nb.start if ns == 0 else (nb.cal.sub_work(nb.start, ns) or nb.start)
+                    nb.setup_start = new_ss
                     tl.starts[k + 1] = nb.setup_start
-                    npl = self.placements[nb.op]
                     if npl is not None:
                         npl.setup = ns
                         npl.setup_start = nb.setup_start
-                        npl.prev_op = op.idx
             last = self.last_state.get(m.res)
             if last is None or end >= last[0]:
                 self.last_state[m.res] = (end, block.state_key, op.family)
-        elif res.finite:
-            self.cumulative[m.res].reserve(setup_start, end, 1)
+        pieces = [(setup_start, end)] if (m.sub or not op.interruptible) else (m.cal.pieces(setup_start, end) or [(setup_start, end)])
+        if not res.unary and res.finite:
+            for a, b in pieces:
+                self.cumulative[m.res].reserve(a, b, 1)
         for r_i, units in m.sec:
-            self.cumulative[r_i].reserve(setup_start, end, units)
+            for a, b in pieces:
+                self.cumulative[r_i].reserve(a, b, units)
         if self.use_materials:
             for mi, q in op.materials:
-                self.ledger.consume(mi, setup_start, q, op.id, order=op.order)
+                self.ledger.consume(mi, start, q, op.id, order=op.order)
             if op.produces is not None:
                 mat, qty = op.produces
                 o = cp.orders[op.order]
@@ -815,6 +892,7 @@ class ScheduleBuilder:
         pl.setup = setup
         pl.prev_op = prev_op
         pl.lb = setup_start
+        pl.earliest = setup_start
         pl.fixed = fixed_reason is not None
         pl.fixed_reason = fixed_reason
         pl.binding = BindingRec("NONE")
@@ -839,6 +917,15 @@ class ScheduleBuilder:
                         s, "PREDECESSOR_UNSCHEDULED", f"{cp.ops[s].id} waits for {cp.ops[j].id}, which could not be scheduled", {"predecessor": cp.ops[j].id}
                     )
                     stack.append(s)
+
+
+def _fit(tl: CumulativeTimeline, pieces: list[tuple[int, int]], units: int) -> int | None:
+    """None if ``units`` are free in every working piece, else the next candidate start."""
+    for a, b in pieces:
+        nf = tl.next_fit(a, b, units)
+        if nf is not None:
+            return nf
+    return None
 
 
 def _freeze(state: dict) -> tuple:

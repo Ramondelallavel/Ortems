@@ -102,6 +102,23 @@ class WorkCalendar:
             return 0
         return self.cumulative(b) - self.cumulative(a)
 
+    def pieces(self, a: int, b: int) -> list[tuple[int, int]]:
+        """Working sub-intervals of [a, b) (an operation consumes secondary resources only there)."""
+        if b <= a:
+            return []
+        out = []
+        i = max(bisect_right(self.starts, a) - 1, 0)
+        n = len(self.starts)
+        while i < n and self.starts[i] < b:
+            lo, hi = max(a, self.starts[i]), min(b, self.ends[i])
+            if hi > lo:
+                if out and out[-1][1] == lo:
+                    out[-1] = (out[-1][0], hi)
+                else:
+                    out.append((lo, hi))
+            i += 1
+        return out
+
     def overtime_between(self, a: int, b: int) -> int:
         if b <= a or not any(self.overtime):
             return 0

@@ -40,7 +40,7 @@ class HybridProvider(OptimizationProvider):
 
 def lns(cp: CompiledProblem, timing: Timing, ctx: SolveContext) -> ProviderResult:
     total = ctx.time_limit_s
-    sub = SolveContext(time_limit_s=max(total * 0.25, 0.5), seed=ctx.seed, progress=ctx.progress, cancelled=ctx.cancelled)
+    sub = SolveContext(time_limit_s=max(total * 0.4, 0.5), seed=ctx.seed, progress=ctx.progress, cancelled=ctx.cancelled)
     h = HeuristicProvider().solve(cp, timing, sub)
     ev = Evaluator(cp)
     ev.scale = h.details["scales"]
@@ -51,8 +51,23 @@ def lns(cp: CompiledProblem, timing: Timing, ctx: SolveContext) -> ProviderResul
     log: list[dict] = []
     it = 0
     improved = 0
-    target = cp.solver.lns_neighbourhood_ops
-    while not ctx.expired():
+    target = min(cp.solver.lns_neighbourhood_ops, 60)
+    reproducible = cp.solver.reproducible
+    per_iter = max(1.0, total / 12)
+    # reproducible mode: a fixed number of neighbourhoods with deterministic budgets; the wall clock
+    # (limit + 20 %) is only a safety net and hitting it is reported
+    max_iter = max(4, int(ctx.remaining() / per_iter)) if reproducible else 10**9
+    import time as _time
+
+    hard_deadline = ctx.deadline + 0.2 * total
+    wall_hit = False
+    while it < max_iter:
+        if reproducible:
+            if _time.monotonic() >= hard_deadline or (ctx.cancelled and ctx.cancelled()):
+                wall_hit = _time.monotonic() >= hard_deadline
+                break
+        elif ctx.expired():
+            break
         it += 1
         strat = strategies[(it - 1) % len(strategies)]
         nb = _neighbourhood(cp, best, strat, target, rng)
@@ -60,11 +75,16 @@ def lns(cp: CompiledProblem, timing: Timing, ctx: SolveContext) -> ProviderResul
             if it > 4 * len(strategies) and not log:
                 break
             continue
-        limit = min(ctx.remaining(), max(1.0, total / 12))
-        if limit < 0.3:
+        limit = per_iter if reproducible else min(ctx.remaining() - 1.0, per_iter)
+        if limit < 0.5:
             break
         out = solve_neighbourhood(cp, best, nb, ev, limit, ctx.seed + it, cp.solver.workers, cp.solver.reproducible, cp.solver.circuit_max_ops)
         entry = {"iteration": it, "strategy": strat, "label": nb.label, "ops": len(nb.free), "cp_status": out.status, "accepted": False}
+        # adaptive neighbourhood size: shrink when CP-SAT runs out of time, grow when it proves optimality
+        if out.status in ("UNKNOWN", "MODEL_INVALID"):
+            target = max(12, int(target * 0.7))
+        elif out.status == "OPTIMAL" and out.wall < 0.5 * limit:
+            target = min(cp.solver.lns_neighbourhood_ops * 2, int(target * 1.25) + 2)
         if out.status in ("OPTIMAL", "FEASIBLE"):
             dec = decode_outcome(cp, timing, best, out)
             comp, vec = ev.evaluate(dec)
@@ -74,6 +94,8 @@ def lns(cp: CompiledProblem, timing: Timing, ctx: SolveContext) -> ProviderResul
                 entry["accepted"] = True
                 ctx.report("Optimizing", None, f"LNS {strat}: improvement {improved}")
         log.append(entry)
+    if wall_hit:
+        ctx.messages.append("LNS stopped on the wall-clock safety limit: this result may not be exactly reproducible")
     if cp.solver.explain:
         best = _rebuild_with_explanations(cp, timing, best)
         best_comp, best_vec = ev.evaluate(best)

@@ -92,6 +92,9 @@ def compute_timing(cp: CompiledProblem) -> Timing:
             eft[i] = e if e is not None else (mode.cal.add_work(s, mode.nominal) or POS)
             est_mode[i] = mi
             limit_reason[i] = "FIXED"
+            if ledger is not None and o.produces is not None and eft[i] < POS:
+                mat, qty = o.produces
+                ledger.supply(mat, eft[i] + o.move + o.wait, qty, f"PROD:{i}", kind="PRODUCTION")
             continue
         best_s, best_e, best_m = POS, POS, -1
         for m in o.modes:
@@ -119,6 +122,10 @@ def compute_timing(cp: CompiledProblem) -> Timing:
                 best_s, best_e, best_m = s, e, m.idx
         est[i], eft[i], est_mode[i] = best_s, best_e, best_m
         limit_reason[i] = reason if best_m >= 0 else "NO_MODE"
+        if ledger is not None and o.produces is not None and best_e < POS:
+            # component orders feed their parents at infinite capacity too
+            mat, qty = o.produces
+            ledger.supply(mat, best_e + o.move + o.wait, qty, f"PROD:{i}", kind="PRODUCTION")
 
     # ---- backward pass
     lst = [POS] * n

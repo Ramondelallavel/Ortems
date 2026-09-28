@@ -213,26 +213,28 @@ def _first_cause(result: BuildResult, oi: int) -> dict[str, Any]:
             "code": "DUE_DATE_IMPOSSIBLE",
             "text": f"Even at infinite capacity the order cannot finish before {cp.dt(eft).isoformat()} ({lim.lower()})",
         }
-    # walk critical chain
+    # walk the critical chain: the largest real wait along it is the primary cause
     cur = max(o.last_ops, key=lambda i: result.placements[i].end)
-    for _ in range(30):
-        b = result.placements[cur].binding
-        if b is None:
+    best = None
+    seen = set()
+    for _ in range(60):
+        if cur in seen:
             break
-        if b.type == "PREDECESSOR" and b.ref in cp.op_index:
-            cur = cp.op_index[b.ref]
+        seen.add(cur)
+        pl = result.placements[cur]
+        b = pl.binding
+        if b is not None and b.type in ("RESOURCE", "SETUP", "LABOR", "TOOL", "CALENDAR", "MATERIAL") and b.wait > 0 and (best is None or b.wait > best[0].wait):
+            best = (b, cur)
+        nb = pl.lb_src if (b is not None and b.type in ("RESOURCE", "SETUP", "LABOR", "TOOL", "CALENDAR")) else b
+        if nb is not None and nb.type == "MATERIAL" and nb.wait > 0 and (best is None or nb.wait > best[0].wait):
+            best = (nb, cur)
+        if nb is not None and nb.type == "PREDECESSOR" and nb.ref in cp.op_index and result.placements[cp.op_index[nb.ref]] is not None:
+            cur = cp.op_index[nb.ref]
             continue
-        cat = {
-            "RESOURCE": "Machine",
-            "SETUP": "Machine",
-            "MATERIAL": "Material",
-            "LABOR": "Labor",
-            "TOOL": "Tool",
-            "CALENDAR": "Calendar",
-            "RELEASE": "Priority",
-            "FIXED": "Priority",
-            "FROZEN_ZONE": "Priority",
-        }.get(b.type, "Priority")
-        res = cp.resources[result.placements[cur].res]
-        return {"category": cat, "code": b.type, "text": f"{cp.ops[cur].id} on {res.code}: {b.detail or b.type.lower()}", "resource": res.code, "op_id": cp.ops[cur].id}
+        break
+    if best is not None:
+        b, i = best
+        cat = {"RESOURCE": "Machine", "SETUP": "Machine", "MATERIAL": "Material", "LABOR": "Labor", "TOOL": "Tool", "CALENDAR": "Calendar"}[b.type]
+        res = cp.resources[result.placements[i].res]
+        return {"category": cat, "code": b.type, "text": f"{cp.ops[i].id} on {res.code}: {b.detail or b.type.lower()} ({b.wait // 60} h waiting)", "resource": res.code, "op_id": cp.ops[i].id}
     return {"category": "Priority", "code": "SEQUENCE", "text": "sequencing decision"}

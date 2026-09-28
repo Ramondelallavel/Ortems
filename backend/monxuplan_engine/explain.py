@@ -358,6 +358,7 @@ def root_cause(result: BuildResult, order_idx: int, max_steps: int = 25) -> list
     )
     cur = max(order.last_ops, key=lambda i: result.placements[i].end)
     visited: set[int] = set()
+    waits = {"RESOURCE", "SETUP", "LABOR", "TOOL", "CALENDAR"}
     while cur is not None and len(steps) < max_steps and cur not in visited:
         visited.add(cur)
         pl = result.placements[cur]
@@ -372,36 +373,29 @@ def root_cause(result: BuildResult, order_idx: int, max_steps: int = 25) -> list
             "start": cp.dt(pl.setup_start).isoformat(),
             "end": cp.dt(pl.end).isoformat(),
         }
+        if b is not None and b.type in waits:
+            if b.type == "RESOURCE" and b.ref in cp.op_index:
+                bo = cp.ops[cp.op_index[b.ref]]
+                steps.append({**base, "code": "RESOURCE_BUSY", "text": f"{op.id}: {res.code} busy with {bo.id} ({cp.orders[bo.order].number}) — waited {fmt_minutes(b.wait)[1:]} of working time", "data": {"wait_minutes": b.wait, "blocking_op": bo.id}})
+            elif b.type == "RESOURCE":
+                steps.append({**base, "code": "RESOURCE_FULL", "text": f"{op.id}: {res.code} at full capacity — waited {fmt_minutes(b.wait)[1:]}", "data": {"wait_minutes": b.wait}})
+            elif b.type == "CALENDAR" and b.wait == 0:
+                pass  # only the next shift start: not worth a step
+            else:
+                label = {"LABOR": "qualified operators unavailable", "TOOL": "tool unavailable", "CALENDAR": "maintenance / non-working time", "SETUP": "changeover conflict"}.get(b.type, b.type)
+                steps.append({**base, "code": f"WAITS_{b.type}", "text": f"{op.id}: {label} ({b.detail or b.ref}) — {fmt_minutes(b.wait)[1:]}", "data": {"wait_minutes": b.wait}})
+            b = pl.lb_src  # …and why was it not ready earlier?
         if b is None or b.type in ("NONE", "HORIZON_START", "FIXED", "FROZEN_ZONE", "RELEASE"):
             what = {"RELEASE": "release date", "FROZEN_ZONE": "frozen zone", "FIXED": "fixed by planner / in progress", "HORIZON_START": "start of horizon"}.get(b.type if b else "NONE", "no waiting")
-            steps.append({**base, "code": f"STARTS_AT_{b.type if b else 'NONE'}", "text": f"{op.id} on {res.code} starts as early as allowed ({what})"})
+            steps.append({**base, "code": f"STARTS_AT_{b.type if b else 'NONE'}", "text": f"{op.id} on {res.code} could not start earlier: {what}"})
             break
         if b.type == "PREDECESSOR":
-            steps.append({**base, "code": "WAITS_PREDECESSOR", "text": f"{op.id} waits for predecessor {b.ref}"})
             nxt = cp.op_index.get(b.ref) if b.ref else None
+            steps.append({**base, "code": "WAITS_PREDECESSOR", "text": f"{op.id} ready only when predecessor {b.ref} finished"})
             if nxt is None or result.placements[nxt] is None:
                 break
             cur = nxt
             continue
-        if b.type == "RESOURCE":
-            blocker = cp.op_index.get(b.ref) if b.ref else None
-            if blocker is not None:
-                bo = cp.ops[blocker]
-                steps.append(
-                    {
-                        **base,
-                        "code": "RESOURCE_BUSY",
-                        "text": f"{res.code} busy with {bo.id} ({cp.orders[bo.order].number}) — waited {fmt_minutes(b.wait)[1:]}",
-                        "data": {"wait_minutes": b.wait, "blocking_op": bo.id},
-                    }
-                )
-                bpl = result.placements[blocker]
-                if bpl is not None and bpl.binding is not None and bpl.binding.type not in ("NONE", "HORIZON_START", "FIXED") and bpl.binding.wait > 0:
-                    cur = blocker
-                    continue
-            else:
-                steps.append({**base, "code": "RESOURCE_FULL", "text": f"{res.code} at full capacity — waited {fmt_minutes(b.wait)[1:]}", "data": {"wait_minutes": b.wait}})
-            break
         if b.type == "MATERIAL":
             mi = cp.mat_index.get(b.ref or "")
             steps.append({**base, "code": "WAITS_MATERIAL", "text": f"{op.id} waits for material {b.detail or b.ref} — {fmt_minutes(b.wait)[1:]}", "data": {"wait_minutes": b.wait}})
@@ -412,8 +406,8 @@ def root_cause(result: BuildResult, order_idx: int, max_steps: int = 25) -> list
                     if kind == "PRODUCTION":
                         oi = supply.meta.get("order")
                         steps.append({"level": "MATERIAL", "code": "COMPONENT_ORDER", "text": f"{cp.materials[mi].code} comes from production order {supply.meta.get('ref')} finishing {cp.dt(supply.time).isoformat()}", "ref": supply.meta.get("ref")})
-                        if oi is not None and cp.orders[oi].last_ops:
-                            cur = max(cp.orders[oi].last_ops, key=lambda i: result.placements[i].end if result.placements[i] else -1)
+                        if oi is not None and cp.orders[oi].last_ops and all(result.placements[i] is not None for i in cp.orders[oi].last_ops):
+                            cur = max(cp.orders[oi].last_ops, key=lambda i: result.placements[i].end)
                             continue
                     else:
                         steps.append(
@@ -427,9 +421,6 @@ def root_cause(result: BuildResult, order_idx: int, max_steps: int = 25) -> list
                             }
                         )
             break
-        # LABOR / TOOL / CALENDAR / SETUP
-        label = {"LABOR": "qualified operators unavailable", "TOOL": "tool unavailable", "CALENDAR": "non-working time / maintenance", "SETUP": "changeover conflict"}.get(b.type, b.type)
-        steps.append({**base, "code": f"WAITS_{b.type}", "text": f"{op.id}: {label} ({b.detail or b.ref}) — {fmt_minutes(b.wait)[1:]}", "data": {"wait_minutes": b.wait}})
         break
     return steps
 

@@ -22,7 +22,7 @@ def random_problem(seed: int, provider: str):
     ]
     resources = []
     for m in machines:
-        r = {"id": m, "code": m, "kind": "MACHINE", "calendar_id": rng.choice(["C2", "C1", None]), "groups": ["G"], "setup_matrix_ids": ["FAM"] if rng.random() < 0.6 else []}
+        r = {"id": m, "code": m, "kind": "MACHINE", "calendar_id": rng.choice(["C2", "C1", None]), "groups": ["G"], "setup_matrix_ids": ["FAM"] if rng.random() < 0.6 else [], "detached_setup": rng.random() < 0.5}
         if rng.random() < 0.3:
             s = rng.randint(0, 72)
             r["unavailability"] = [{"start": at(s), "end": at(s + rng.randint(2, 10)), "kind": "MAINTENANCE_PLANNED"}]

@@ -60,6 +60,7 @@ class CpOutcome:
     num_booleans: int = 0
     num_constraints: int = 0
     circuit_res: set[int] = field(default_factory=set)
+    wall_limit_hit: bool = False
 
 
 class _Model:
@@ -74,6 +75,7 @@ class _Model:
         self.E: dict[int, cp_model.IntVar] = {}
         self.iv: dict[tuple[int, int], cp_model.IntervalVar] = {}
         self.Sm: dict[tuple[int, int], cp_model.IntVar] = {}
+        self.R: dict[int, cp_model.IntVar] = {}  # run-start proxy (setup excluded) for precedences, release, material
         self.Em: dict[tuple[int, int], cp_model.IntVar] = {}
         self.circuit_max = circuit_max
         self.circuit_res: set[int] = set()
@@ -163,13 +165,19 @@ class _Model:
 
         for i in free:
             op = cp.ops[i]
-            lb = max(lower_bounds.get(i, cp.work_lb), nb.lo)
+            run_lb = lower_bounds.get(i, cp.work_lb)
+            detached = op.interruptible and any(cp.resources[md.res].detached for md in op.modes)
+            lb = max(cp.work_lb if detached else run_lb, nb.lo)
             if lb > H:
                 return False
             S = m.NewIntVar(lb, H, f"S{i}")
             E = m.NewIntVar(lb, H + 10 * 1440, f"E{i}")
-            self.S[i], self.E[i] = S, E
+            R = m.NewIntVar(lb, H + 10 * 1440, f"R{i}")
+            self.S[i], self.E[i], self.R[i] = S, E, R
+            m.Add(R >= run_lb)
             lits = []
+            offsets = []
+            mode_off: dict[int, int] = {}
             for md in op.modes:
                 in_circ = md.res in self.circuit_res
                 d = self._duration(i, md, in_circ)
@@ -202,6 +210,11 @@ class _Model:
                 self.Sm[(i, md.idx)], self.Em[(i, md.idx)] = Sm, Em
                 m.Add(S == Sm).OnlyEnforceIf(x)
                 m.Add(E == Em).OnlyEnforceIf(x)
+                # the run starts after the setup included in the interval (none for circuit resources,
+                # whose setup is a gap before S); detached setups may precede predecessors/material
+                off = 0 if (in_circ or md.sub) else (self._base_setup(i, md) if (cp.resources[md.res].detached and op.interruptible) else 0)
+                offsets.append((x, off))
+                mode_off[md.idx] = off
                 res = cp.resources[md.res]
                 if res.finite:
                     if res.unary:
@@ -224,12 +237,19 @@ class _Model:
             if not lits:
                 return False
             m.AddExactlyOne(lits)
+            m.Add(R == S + sum(off * x for x, off in offsets if off))
             rp = self.ref.placements[i] if (ref_hints and self.ref is not None) else None
             if rp is not None:
                 for (oi, mi), x in self.x.items():
                     if oi == i:
                         m.AddHint(x, 1 if mi == rp.mode else 0)
-                hint_s = rp.start if rp.res in self.circuit_res else rp.setup_start
+                off = mode_off.get(rp.mode, 0)
+                if rp.res in self.circuit_res:
+                    hint_s = rp.start  # S is the run start; the setup is a gap before it
+                elif off:
+                    hint_s = rp.start - off  # detached setup: the interval holds only the base setup
+                else:
+                    hint_s = rp.setup_start
                 m.AddHint(S, min(max(hint_s, lb), H))
 
         # ---- fixed operations outside the neighbourhood occupy capacity
@@ -266,33 +286,35 @@ class _Model:
             for k, (t, c) in enumerate(prof):
                 e = prof[k + 1][0] if k + 1 < len(prof) else H + 20 * 1440
                 a, b = max(t, nb.lo - 1), min(e, H + 20 * 1440)
-                if b > a and c < cap_max:
+                # closed periods (c == 0) are outside every effective calendar: operations pause
+                # there, so only partial reductions (fewer operators, absences) become blockers
+                if b > a and 0 < c < cap_max:
                     blockers.append((m.NewFixedSizeIntervalVar(a, b - a, f"B{r}_{k}"), cap_max - c))
             ivs = [iv for iv, _ in lst] + [iv for iv, _ in blockers]
             dem = [u for _, u in lst] + [u for _, u in blockers]
             m.AddCumulative(ivs, dem, cap_max)
 
-        # ---- precedences
+        # ---- precedences (constrain the run start proxy R)
         for i in free:
             op = cp.ops[i]
             for pi, kind, lag, frac in op.preds:
                 po = cp.ops[pi]
                 gap = po.move + po.wait + op.queue + po.buf_after + op.buf_before + lag
                 if pi in self.S:
-                    Sa, Ea = self.S[pi], self.E[pi]
+                    Sa, Ea = self.R[pi], self.E[pi]
                 elif pi in self.fixed_placements:
                     fp = self.fixed_placements[pi]
                     Sa, Ea = fp.start, fp.end
                 else:
                     continue
                 if kind == "FS":
-                    m.Add(self.S[i] >= Ea + gap)
+                    m.Add(self.R[i] >= Ea + gap)
                 elif kind == "SS":
-                    m.Add(self.S[i] >= Sa + lag)
+                    m.Add(self.R[i] >= Sa + lag)
                 elif kind == "OVL":
                     pr = min(md.run for md in po.modes) if po.modes else 0
                     my = min(md.run for md in op.modes) if op.modes else 0
-                    m.Add(self.S[i] >= Sa + int(frac * pr) + po.move + lag)
+                    m.Add(self.R[i] >= Sa + int(frac * pr) + po.move + lag)
                     m.Add(self.E[i] >= Ea + po.move + int(frac * my))
                 elif kind == "FF":
                     m.Add(self.E[i] >= Ea + lag)
@@ -303,10 +325,11 @@ class _Model:
                     continue
                 so = cp.ops[si]
                 fp = self.fixed_placements[si]
+                ready = fp.start if (cp.resources[fp.res].detached and so.interruptible) else fp.setup_start
                 if kind == "FS":
-                    m.Add(self.E[i] + op.move + op.wait + so.queue + op.buf_after + so.buf_before + lag <= fp.setup_start)
+                    m.Add(self.E[i] + op.move + op.wait + so.queue + op.buf_after + so.buf_before + lag <= ready)
                 elif kind == "SS":
-                    m.Add(self.S[i] + lag <= fp.start)
+                    m.Add(self.R[i] + lag <= fp.start)
 
         # ---- materials (reservoir, level never negative)
         if cp.constraints.materials == "HARD":
@@ -379,14 +402,14 @@ class _Model:
                 op = cp.ops[p.op]
                 for mj, q in op.materials:
                     if mj == mi:
-                        times.append(p.setup_start)
+                        times.append(p.start)
                         deltas.append(-int(round(q * QTY_SCALE)))
                 if op.produces is not None and op.produces[0] == mi:
                     times.append(p.end + op.move + op.wait)
                     deltas.append(int(round(op.produces[1] * QTY_SCALE)))
             for kind, i, q in events:
                 if kind == "C":
-                    times.append(self.S[i])
+                    times.append(self.R[i])
                     deltas.append(-int(round(q * QTY_SCALE)))
                 else:
                     times.append(self.E[i] + cp.ops[i].move + cp.ops[i].wait)
@@ -502,11 +525,16 @@ def solve_neighbourhood(cp: CompiledProblem, ref: BuildResult | None, nb: Neighb
     params = solver.parameters
     params.random_seed = seed
     params.num_workers = workers
-    if reproducible:
-        params.interleave_search = True
-        params.num_workers = max(workers, 1)
-        params.max_deterministic_time = max(time_limit * 1.5, 1.0)
+    params.repair_hint = True
     params.max_time_in_seconds = max(time_limit, 0.5)
+    if reproducible:
+        # deterministic: one worker, fixed seed, deterministic-time budget; wall time is only a safety
+        # net (hitting it is reported because the result may then differ between runs). Interleaved
+        # multi-worker search is avoided on purpose: combined with solution hints it can abort inside
+        # OR-Tools (heuristics.fixed_search check).
+        params.num_workers = 1
+        params.max_deterministic_time = max(time_limit * 0.5, 0.25)
+        params.max_time_in_seconds = max(time_limit * 1.5, 1.0)
     params.log_search_progress = False
     if spec.mode == "LEXICOGRAPHIC":
         levels = levels_of(spec)
@@ -514,9 +542,9 @@ def solve_neighbourhood(cp: CompiledProblem, ref: BuildResult | None, nb: Neighb
         status = None
         for lvl in levels:
             mdl.objective(lvl, None)
-            params.max_time_in_seconds = per_level
+            params.max_time_in_seconds = per_level if not reproducible else per_level * 1.5
             if reproducible:
-                params.max_deterministic_time = per_level * 1.5
+                params.max_deterministic_time = per_level * 0.5
             status = solver.Solve(mdl.m)
             if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
                 break
@@ -536,6 +564,7 @@ def solve_neighbourhood(cp: CompiledProblem, ref: BuildResult | None, nb: Neighb
         status = solver.Solve(mdl.m)
     st = {cp_model.OPTIMAL: "OPTIMAL", cp_model.FEASIBLE: "FEASIBLE", cp_model.INFEASIBLE: "INFEASIBLE", cp_model.MODEL_INVALID: "MODEL_INVALID"}.get(status, "UNKNOWN")
     out = CpOutcome(st, None, None, wall=solver.WallTime(), circuit_res=set(mdl.circuit_res))
+    out.wall_limit_hit = reproducible and solver.WallTime() >= params.max_time_in_seconds * 0.98
     out.num_booleans = solver.NumBooleans()
     out.num_constraints = len(mdl.m.Proto().constraints)
     if st in ("OPTIMAL", "FEASIBLE"):
@@ -620,6 +649,8 @@ def full_model(cp: CompiledProblem, timing: Timing, ctx: SolveContext, heuristic
     nb = Neighbourhood(free=free, lo=cp.work_lb, hi=horizon_hi, label="full")
     ctx.report("Optimizing", 0.2, f"CP-SAT full model: {len(free)} operations")
     out = solve_neighbourhood(cp, ref, nb, ev, ctx.remaining(), ctx.seed, cp.solver.workers, cp.solver.reproducible, cp.solver.circuit_max_ops)
+    if out.wall_limit_hit:
+        ctx.messages.append("CP-SAT stopped on the wall-clock safety limit: this result may not be exactly reproducible")
     details = {
         "cp_status": out.status,
         "model_objective": out.objective,

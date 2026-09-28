@@ -106,7 +106,21 @@ def local_search(cp: CompiledProblem, timing: Timing, ev: Evaluator, best, best_
     n_ops = len(cp.ops)
     max_stall = max(60, min(400, 4 * n_ops))
     ctx.report("Optimizing", 0.0, "local search")
-    while it < max_iter and not ctx.expired() and stall < max_stall:
+    import time as _time
+
+    reproducible = cp.solver.reproducible
+    hard_deadline = ctx.deadline + 0.2 * ctx.time_limit_s
+    if reproducible:
+        # deterministic budget: iterations derived from the problem size and the time limit
+        # calibrated on ~0.1 ms of builder time per operation and decode
+        max_iter = min(max_iter, max(60, int(ctx.time_limit_s * 8000 / max(len(cp.ops), 50))))
+    while it < max_iter and stall < max_stall:
+        if reproducible:
+            if _time.monotonic() >= hard_deadline or (ctx.cancelled and ctx.cancelled()):
+                ctx.messages.append("local search stopped on the wall-clock safety limit: this result may not be exactly reproducible")
+                break
+        elif ctx.expired():
+            break
         it += 1
         move = rng.random()
         new_prio = dict(prio)

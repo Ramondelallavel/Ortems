@@ -118,8 +118,9 @@ def validate(cp: CompiledProblem, placements, unscheduled: dict, include_data_is
                 )
         # ---- release / start in the past
         order = cp.orders[op.order]
+        ready = p.start if res.detached else p.setup_start
         if not p.fixed:
-            if order.release is not None and p.setup_start < order.release:
+            if order.release is not None and ready < order.release:
                 vs.append(V("CRITICAL", HARD, "RELEASE", f"{op.id} starts before the release date of {order.number}", order=op.order, op=p.op, start=p.setup_start))
             if p.setup_start < cp.as_of:
                 vs.append(V("CRITICAL", HARD, "START_IN_PAST", f"{op.id} starts in the past", order=op.order, op=p.op, start=p.setup_start))
@@ -194,11 +195,13 @@ def validate(cp: CompiledProblem, placements, unscheduled: dict, include_data_is
         res = cp.resources[p.res]
         if not res.unary and res.finite:
             reqs.append((p.res, 1))
+        pieces = [(p.setup_start, p.end)] if (m.sub or not op.interruptible) else (m.cal.pieces(p.setup_start, p.end) or [(p.setup_start, p.end)])
         for ri, units in reqs:
             tl = cum.get(ri)
             if tl is None:
                 tl = cum[ri] = CumulativeTimeline(ri, cp.resources[ri].profile)
-            tl.reserve(p.setup_start, p.end, units)
+            for a, b in pieces:
+                tl.reserve(a, b, units)
     for ri, tl in cum.items():
         for a, b, missing in tl.shortfalls():
             users = [
@@ -234,14 +237,15 @@ def validate(cp: CompiledProblem, placements, unscheduled: dict, include_data_is
                 vs.append(V("CRITICAL", HARD, "PRECEDENCE", f"{op.id} is scheduled but its predecessor {po.id} is not", order=op.order, op=p.op))
                 continue
             ok = True
+            ready = p.start if (cp.resources[p.res].detached and op.interruptible) else p.setup_start
             if kind == "FS":
-                ok = p.setup_start >= pp.end + po.move + po.wait + op.queue + po.buf_after + op.buf_before + lag
+                ok = ready >= pp.end + po.move + po.wait + op.queue + po.buf_after + op.buf_before + lag
             elif kind == "SS":
-                ok = p.setup_start >= pp.start + lag
+                ok = ready >= pp.start + lag
             elif kind == "OVL":
                 pm = po.modes[pp.mode]
                 first = pm.cal.add_work(pp.start, int(frac * pm.run)) or pp.end
-                ok = p.setup_start >= first + po.move + lag and p.end >= pp.end + po.move
+                ok = ready >= first + po.move + lag and p.end >= pp.end + po.move
             elif kind == "FF":
                 ok = p.end >= pp.end + lag
             elif kind == "SF":
@@ -339,7 +343,7 @@ def _validate_materials(cp: CompiledProblem, placements) -> list[V]:
             continue
         op = cp.ops[p.op]
         for mi, q in op.materials:
-            ledger.consume(mi, p.setup_start, q, op.id)
+            ledger.consume(mi, p.start, q, op.id)
             touched.add(mi)
         if op.produces is not None:
             mat, qty = op.produces

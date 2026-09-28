@@ -196,6 +196,11 @@ class ResourceSpec(_Model):
     )
     setup_matrix_ids: list[str] = Field(default_factory=list)
     setup_combine: Literal["MAX", "SUM"] = "MAX"
+    detached_setup: bool = Field(
+        default=False,
+        description="Changeovers can be done before the job is ready (machine prepared in advance); precedences, "
+        "release and material then constrain the run start instead of the setup start",
+    )
     cost_per_hour: float = 0.0
     overtime_cost_per_hour: float = 0.0
     setup_cost_per_hour: float = 0.0
