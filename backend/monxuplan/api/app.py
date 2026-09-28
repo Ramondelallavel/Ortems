@@ -29,6 +29,9 @@ log = logging.getLogger("monxuplan.api")
 async def lifespan(app: FastAPI):
     configure_logging()
     st = get_settings()
+    problems = st.production_problems()
+    if problems:
+        raise RuntimeError("Refusing to start in production: " + "; ".join(problems))
     if st.is_sqlite:
         from ..core.db import create_all
 

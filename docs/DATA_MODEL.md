@@ -75,7 +75,7 @@ Tenant ─┬─ Company ─┬─ Site ── Plant ─┬─ PlanningArea ─�
 | `item` | code, name, type FINISHED/SEMI_FINISHED/RAW/PACKAGING, make_or_buy, uom, quantity_type, family, attributes, lot policy (min, max, multiple, fixed, economic), safety stock, purchase lead time, unit cost, price |
 | `item_plant` | item, plant, sourcing MAKE/BUY/TRANSFER/SUBCONTRACT, priority |
 | `bom` / `bom_line` | item, version, validity; component, qty per, scrap %, consumed at operation seq |
-| `routing` / `routing_operation` | item, version; seq, code, name, setup, run per unit, run tiers, fixed, batch size/time, teardown, queue, move, wait, overlap %, transfer batch, split rules, interruptible, labour pool + units, tool + units, buffers |
+| `routing` / `routing_operation` | item, version; seq, code, name, setup, run per unit, run tiers, fixed, batch size/time, teardown, queue, move, wait, overlap %, transfer batch, split rules (stored; run-time splitting across resources not yet used by the engine), interruptible, labour pool + units, tool + units, buffers |
 | `operation_resource` | routing operation, resource or group, role PRIMARY/ALTERNATIVE/SECONDARY/SUBCONTRACT, preference, speed factor, subcontract lead time and cost |
 | `operation_precedence` | routing, pred seq, succ seq, type FS/SS/FF/SF, lag |
 | `setup_matrix` / `setup_matrix_entry` | scope (resource / group / global), attribute, same/default minutes; from, to, minutes, cost |

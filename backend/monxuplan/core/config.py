@@ -68,6 +68,20 @@ class Settings:
     def is_production(self) -> bool:
         return self.env == "production"
 
+    def production_problems(self) -> list[str]:
+        """Settings that are acceptable for a demo but not for production."""
+        if not self.is_production:
+            return []
+        out = []
+        env_key = os.environ.get("MONXU_SECRET_KEY", "")
+        if len(env_key) < 32 or "change-me" in env_key:
+            out.append("MONXU_SECRET_KEY must be set to a random value of at least 32 characters")
+        if not self.cookie_secure:
+            out.append("MONXU_COOKIE_SECURE=1 is required (serve MonxuPlan over HTTPS)")
+        if self.is_sqlite:
+            out.append("use PostgreSQL in production (MONXU_DATABASE_URL)")
+        return out
+
 
 @lru_cache
 def get_settings() -> Settings:

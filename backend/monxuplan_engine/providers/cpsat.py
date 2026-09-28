@@ -452,11 +452,17 @@ class _Model:
             if starts:
                 F = m.NewIntVar(-H, H, f"F{o.idx}")
                 m.AddMinEquality(F, starts)
-                self.components["wip"].append((1.0, C - F))
+                # flow time as an explicitly non-negative variable: keeps the relaxation (and so the
+                # reported bound / gap) meaningful
+                W = m.NewIntVar(0, 2 * H, f"W{o.idx}")
+                m.Add(W == C - F)
+                self.components["wip"].append((1.0, W))
         if ends_all:
             M = m.NewIntVar(0, H, "makespan")
             m.AddMaxEquality(M, ends_all)
-            self.components["makespan"].append((1.0, M - cp.as_of))
+            Ms = m.NewIntVar(0, H, "makespan_span")
+            m.Add(Ms >= M - cp.as_of)
+            self.components["makespan"].append((1.0, Ms))
         # stability versus baseline
         if cp.baseline:
             pen = cp.objectives.stability_resource_change_minutes
@@ -537,7 +543,9 @@ def solve_neighbourhood(cp: CompiledProblem, ref: BuildResult | None, nb: Neighb
         # instantiated for the lone worker); the hint is still used as the first branching guide.
         params.repair_hint = False
         params.max_deterministic_time = max(time_limit * 0.5, 0.25)
-        params.max_time_in_seconds = max(time_limit * 1.5, 1.0)
+        # the user's time limit is a hard wall-clock cap; hitting it before the deterministic budget
+        # is reported (the result may then differ between runs on machines of different speed)
+        params.max_time_in_seconds = max(time_limit, 0.5)
     params.log_search_progress = False
     if spec.mode == "LEXICOGRAPHIC":
         levels = levels_of(spec)
@@ -545,7 +553,7 @@ def solve_neighbourhood(cp: CompiledProblem, ref: BuildResult | None, nb: Neighb
         status = None
         for lvl in levels:
             mdl.objective(lvl, None)
-            params.max_time_in_seconds = per_level if not reproducible else per_level * 1.5
+            params.max_time_in_seconds = per_level
             if reproducible:
                 params.max_deterministic_time = per_level * 0.5
             status = solver.Solve(mdl.m)
@@ -655,6 +663,7 @@ def full_model(cp: CompiledProblem, timing: Timing, ctx: SolveContext, heuristic
     if out.wall_limit_hit:
         ctx.messages.append("CP-SAT stopped on the wall-clock safety limit: this result may not be exactly reproducible")
     details = {
+        "cp_objective_units": "normalised objective × 100000",
         "cp_status": out.status,
         "model_objective": out.objective,
         "model_bound": out.bound,
@@ -678,9 +687,18 @@ def full_model(cp: CompiledProblem, timing: Timing, ctx: SolveContext, heuristic
         best, best_comp, best_vec = ref, h_comp, h_vec
     else:
         best, best_comp, best_vec = dec, comp, vec
+    # Bound and gap are reported on the scale of the returned objective. In weighted mode the CP
+    # objective is the normalised objective × K_SCALE (rounded coefficients), so bound / K_SCALE is a
+    # valid lower bound of the reported value; the gap refers to the schedule actually returned. In
+    # lexicographic mode the bound belongs to the last level only and is not reported.
     gap = None
-    if out.objective is not None and out.bound is not None and abs(out.objective) > 1e-9:
-        gap = max(0.0, (out.objective - out.bound) / abs(out.objective))
+    bound_report = None
+    weighted = cp.objectives.mode != "LEXICOGRAPHIC"
+    if weighted and out.bound is not None and len(best_vec) >= 2 and best_vec[0] == 0:
+        bound_report = round(out.bound / K_SCALE, 6)
+        value = best_vec[1]
+        if abs(value) > 1e-9:
+            gap = max(0.0, (value - bound_report) / abs(value))
     proven = out.status == "OPTIMAL" and best is dec and exact and overtime_exact
     status = "OPTIMAL" if proven else "FEASIBLE"
     if out.status == "OPTIMAL" and not proven:
@@ -693,7 +711,7 @@ def full_model(cp: CompiledProblem, timing: Timing, ctx: SolveContext, heuristic
         status=status,
         components=best_comp,
         vector=best_vec,
-        best_bound=out.bound,
+        best_bound=bound_report,
         gap=round(gap, 6) if gap is not None else None,
         proven_optimal=proven,
         iterations=h.iterations + 1,

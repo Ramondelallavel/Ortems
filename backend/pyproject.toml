@@ -44,6 +44,7 @@ markers = [
 [tool.ruff]
 line-length = 170
 target-version = "py311"
+extend-exclude = ["monxuplan/migrations/versions"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "SIM"]

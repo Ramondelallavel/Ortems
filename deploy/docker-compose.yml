@@ -1,0 +1,75 @@
+# MonxuPlan — complete stack: PostgreSQL, Redis, API, planning worker(s), web.
+#   cd deploy && cp .env.example .env && docker compose up -d --build
+#   open http://localhost:3000   (demo users: planner / Monxu-Demo-2026 when MONXU_SEED_DEMO=1)
+name: monxuplan
+
+x-backend: &backend
+  build: ../backend
+  env_file: .env
+  environment:
+    MONXU_DATABASE_URL: postgresql+psycopg://monxu:${POSTGRES_PASSWORD}@db:5432/monxuplan
+    MONXU_REDIS_URL: redis://redis:6379/0
+  depends_on:
+    db:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+  restart: unless-stopped
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: monxuplan
+      POSTGRES_USER: monxu
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U monxu -d monxuplan"]
+      interval: 5s
+      retries: 20
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      retries: 20
+    restart: unless-stopped
+
+  api:
+    <<: *backend
+    environment:
+      MONXU_DATABASE_URL: postgresql+psycopg://monxu:${POSTGRES_PASSWORD}@db:5432/monxuplan
+      MONXU_REDIS_URL: redis://redis:6379/0
+      MONXU_MIGRATE: "1"
+      MONXU_WORKER_IN_PROCESS: "0"
+    ports: ["8000:8000"]
+
+  worker:
+    <<: *backend
+    environment:
+      MONXU_DATABASE_URL: postgresql+psycopg://monxu:${POSTGRES_PASSWORD}@db:5432/monxuplan
+      MONXU_REDIS_URL: redis://redis:6379/0
+      MONXU_SEED_DEMO: "0"
+    command: ["python", "-m", "monxuplan.worker"]
+    depends_on:
+      api:
+        condition: service_healthy
+    deploy:
+      replicas: 2
+
+  web:
+    build:
+      context: ../frontend
+      args:
+        MONXU_API_URL: http://api:8000
+    ports: ["3000:3000"]
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  pgdata:

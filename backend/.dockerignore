@@ -1,0 +1,6 @@
+data
+.pytest_cache
+**/__pycache__
+*.egg-info
+benchmarks/results
+tests
