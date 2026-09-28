@@ -64,6 +64,7 @@ with sync_playwright() as p:
         page.screenshot(path=f"{OUT}/04-why-here.png")
     for i, (path, name) in enumerate([
         ("/dashboard", "05-command-center"),
+        ("/getting-started", "05b-getting-started"),
         ("/planning/orders", "06-orders"),
         ("/planning/capacity", "07-capacity"),
         ("/planning/materials", "08-materials"),

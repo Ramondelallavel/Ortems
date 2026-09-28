@@ -72,5 +72,5 @@ Full stack with PostgreSQL, Redis, separate workers: `cd deploy && cp .env.examp
 
 Implemented and tested end to end as described above. Not included yet (shown as *Coming soon* where
 visible): native ERP/MES connectors (SAP, Oracle, Dynamics, Odoo, Sage, Infor — use the REST API or
-file import), GraphQL, operation splitting across resources at run time, and full French, German and
+file import), GraphQL, operation splitting across resources at run time, imperial display units (metric only), and full French, German and
 Portuguese translations (navigation is translated; other text falls back to English).

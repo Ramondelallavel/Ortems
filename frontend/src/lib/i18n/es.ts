@@ -2,6 +2,7 @@ import type { Dict } from "./en";
 
 const es: Dict = {
   "nav.overview": "Resumen",
+  "nav.gettingStarted": "Primeros pasos",
   "nav.commandCenter": "Centro de control",
   "nav.planning": "Planificación",
   "nav.board": "Tablero de planificación",

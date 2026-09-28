@@ -1,6 +1,7 @@
 const en = {
   // navigation
   "nav.overview": "Overview",
+  "nav.gettingStarted": "Getting started",
   "nav.commandCenter": "Command Center",
   "nav.planning": "Planning",
   "nav.board": "Planning Board",

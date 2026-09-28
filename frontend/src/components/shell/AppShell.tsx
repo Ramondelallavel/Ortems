@@ -13,7 +13,7 @@ type NavItem = { href: string; key: string; icon: string; perm?: string };
 type NavGroup = { key: string; items: NavItem[] };
 
 const NAV: NavGroup[] = [
-  { key: "nav.overview", items: [{ href: "/dashboard", key: "nav.commandCenter", icon: "dashboard" }] },
+  { key: "nav.overview", items: [{ href: "/dashboard", key: "nav.commandCenter", icon: "dashboard" }, { href: "/getting-started", key: "nav.gettingStarted", icon: "check" }] },
   {
     key: "nav.planning",
     items: [
