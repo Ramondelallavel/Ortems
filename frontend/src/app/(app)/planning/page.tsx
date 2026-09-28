@@ -12,6 +12,7 @@ import { dt, num, pct } from "@/lib/format";
 import { useApi, useEvents, useHotkeys, useLocalState } from "@/lib/hooks";
 import { useScenarioSelection } from "@/lib/plan";
 import { useSession } from "@/lib/session";
+import { SectionData } from "@/components/data/SectionData";
 
 export default function PlanningBoard() {
   const { t, can, plant } = useSession();
@@ -195,6 +196,7 @@ export default function PlanningBoard() {
             Excel
           </Button>
         )}
+        <SectionData tables={["production-orders", "routing-operations", "routing-operations.resources", "resources", "calendars.shifts", "setup-matrices", "setup-matrices.entries"]} />
         <div className="flex-1" />
         <form
           onSubmit={(e) => {

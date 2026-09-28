@@ -82,16 +82,41 @@ differences. The live plan is never modified by a scenario.
   MAKE proposals you accept), MRP exceptions, rough-cut capacity and the aggregate family plan (linear
   program with overtime and shadow prices). Demand beyond the chosen horizon is reported, not added.
 
-## 7. Master data and imports
+## 7. Your data: edit, Excel and databases
 
-*Master data* lists every table (resources, calendars, items, BOMs, routings, setup matrices, rules,
-profiles, orders…). Edits are versioned: if someone else saved the record meanwhile, you are asked to
-reload instead of overwriting their change. Records in use are deactivated instead of deleted.
+**Every screen has a *Data* button** (Orders, Materials, Capacity, MPS, Planning Board, Scenarios,
+Dispatch, Supervisor, Plan vs actual). It lists the tables behind that screen; for each one you can
+*Edit* it, download it to *Excel* with all its columns, or *Import* a changed file back.
 
-*Integrations → Import wizard*: Upload → Mapping (columns recognised automatically, English/Spanish
-headers) → Validation (every problem listed by row and field) → Preview (create/update per row) →
-Import (one transaction) → Report. A file with errors cannot be imported unless you explicitly choose
-to import only the valid rows. Download Excel/CSV templates from the first step.
+*Master data* lists every table (44, from plants and calendars to order operations, material lots and
+production reports). Each table can be edited in two ways:
+
+* **List** → click a row → the record opens with all its fields and its child rows (BOM lines, shifts,
+  routing operations, order operations…), which you can edit, add and remove before saving.
+* **Edit as table** → a spreadsheet: change any cell, *Add row*, select rows and *Delete selected*, then
+  *Save* once. Rows that cannot be saved keep your changes and show the reason in red.
+
+Edits are versioned: if someone else saved the record meanwhile, you are asked to reload instead of
+overwriting their change. Records still used by other data are deactivated instead of deleted.
+
+**Excel round trip.** *Excel* downloads the table with an `id` column. Change values, add rows (leave
+`id` empty), add a column `delete` and write *yes* on rows to delete, then *Import* the file.
+*Master data → Download all data (Excel)* gives the whole data set in one workbook (one sheet per table);
+*Integrations → Excel workbook* imports it back, validating all sheets together (a new item and the order
+that uses it can be in the same workbook).
+
+**Import wizard** (*Integrations → Import wizard*, or *Import* in any section): Upload → Columns
+(recognised automatically, English/Spanish headers) → Validation → Preview → Import → Report.
+Validation applies every row inside a transaction that is then undone, so it shows exactly what the
+import will do: created, updated, unchanged, deleted and every error by row and field. A file with
+errors cannot be imported unless you explicitly choose to import only the valid rows.
+
+**Databases** (*Integrations → Databases*, administrators): connect PostgreSQL, MySQL/MariaDB, SQL
+Server, Oracle (or a SQLite file). *Test connection* lists the tables and views. Add *sources*: which
+MonxuPlan table each one feeds and where its rows come from (a table/view or a `SELECT` query), then
+*Preview and map columns*. *Sync now* reads the sources and imports them with the same validation as
+Excel; sources with errors wait for review in the import history. Optional automatic sync every N
+minutes. Only reading is allowed; use a database user with read-only permissions.
 
 *Data quality* runs before every planning run: critical errors (e.g. routing without resource, BOM
 cycle, order without quantity) block planning; warnings are shown in the plan.

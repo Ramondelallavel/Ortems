@@ -104,10 +104,47 @@ back-off (5 attempts) and listed under `/webhooks/{id}/deliveries`.
 
 `POST /imports` (multipart: `entity`, `file`, `plant_id`) → mapping suggestion →
 `PUT /imports/{id}/mapping` → `POST /imports/{id}/validate` → `POST /imports/{id}/commit`.
-Entities: items, resources, calendars, customers, suppliers, boms, routings, production-orders,
-inventory, purchase-orders, demand, downtimes. Templates: `GET /imports/templates/{entity}?format=xlsx|csv`.
+
+Two kinds of `entity`:
+
+* **Guided templates**: items, resources, calendars, customers, suppliers, boms, routings,
+  production-orders, inventory, purchase-orders, demand, downtimes. They accept typical ERP export
+  columns (English/Spanish headers) and create or update records.
+* **Tables**: `table:<entity>` for every master-data entity (44) and `table:<entity>.<child>` for its
+  child tables (calendar shifts, BOM lines, order operations…); `GET /imports/tables` lists them with
+  their fields. All columns plus `id` and `delete`; references by code (or id). Rows are matched by `id`
+  or by the table's unique columns, otherwise created; `delete = yes` deletes (records in use are
+  deactivated). Validation is a dry run through the same service code as the editor, inside a
+  transaction that is rolled back, so it reports exactly what the commit will do (`to_create`,
+  `to_update`, `unchanged`, `to_delete`). `GET /exports/table:<entity>?format=xlsx|csv|json` exports the
+  same columns (round trip).
+
+Whole data set: `GET /exports/workbook?plant_id=` (one sheet per table, dependency order) and
+`POST /imports/workbook` (multipart `file`) → one job per sheet → `POST /imports/batch/validate`
+`{job_ids, options}` → `POST /imports/batch/commit` (all sheets in one transaction; rows of one sheet
+may reference rows created by another).
+
 A file with errors cannot be committed unless `skip_invalid_rows` is chosen explicitly; commits are a
-single transaction; imports never delete data.
+single transaction. Templates: `GET /imports/templates/{entity}?format=xlsx|csv`.
+
+## Database connectors
+
+Read the customer's databases into MonxuPlan: PostgreSQL, MySQL/MariaDB, SQL Server and Oracle
+(drivers: `pip install ".[connectors]"`), and SQLite files when `MONXU_ALLOW_SQLITE_SOURCES` allows it.
+
+`GET /connectors/database/drivers` · `POST /connectors/database/test` `{settings, password}` ·
+`POST /connectors/database` · `PUT|DELETE /connectors/database/{id}` ·
+`GET /connectors/database/{id}/objects` (tables and views) ·
+`POST /connectors/database/{id}/preview` `{source, entity}` (first rows + suggested mapping) ·
+`POST /connectors/database/{id}/sync` `{source_ids?, plant_id?, commit?}`.
+
+`settings`: `dialect`, `host`, `port`, `database`, `username`, `options`, `timeout_s`,
+`sync_every_minutes` (≥ 5; the worker runs due connectors) and `sources`:
+`[{entity, table | query, mapping, mode, enabled, auto_commit, skip_invalid_rows}]`. The password is
+stored encrypted and never returned. Only `SELECT`/`WITH` statements are accepted, the session is
+read-only where the database supports it (PostgreSQL: `default_transaction_read_only`) and every
+transaction is rolled back. Each source becomes an import job (`source = DATABASE`) with the normal
+validation; sources with errors are left for review in the import history.
 
 ## GraphQL
 
@@ -119,6 +156,9 @@ Not provided in this version (REST + OpenAPI cover every use case of the UI). *C
 
 | Method | Path |
 |---|---|
+| GET | `/health` |
+| GET | `/readiness` |
+| GET | `/metrics` |
 | GET | `/health` |
 | GET | `/readiness` |
 | GET | `/metrics` |
@@ -251,6 +291,10 @@ Not provided in this version (REST + OpenAPI cover every use case of the UI). *C
 | Method | Path |
 |---|---|
 | GET | `/api/v1/imports/templates` |
+| GET | `/api/v1/imports/tables` |
+| POST | `/api/v1/imports/workbook` |
+| POST | `/api/v1/imports/batch/validate` |
+| POST | `/api/v1/imports/batch/commit` |
 | GET | `/api/v1/imports/templates/{entity}` |
 | POST | `/api/v1/imports` |
 | GET | `/api/v1/imports` |
@@ -258,6 +302,7 @@ Not provided in this version (REST + OpenAPI cover every use case of the UI). *C
 | PUT | `/api/v1/imports/{job_id}/mapping` |
 | POST | `/api/v1/imports/{job_id}/validate` |
 | POST | `/api/v1/imports/{job_id}/commit` |
+| GET | `/api/v1/exports/workbook` |
 | GET | `/api/v1/exports/{entity}` |
 | POST | `/api/v1/events` |
 | GET | `/api/v1/events` |
@@ -268,6 +313,14 @@ Not provided in this version (REST + OpenAPI cover every use case of the UI). *C
 | GET | `/api/v1/webhooks/{webhook_id}/deliveries` |
 | GET | `/api/v1/connectors` |
 | POST | `/api/v1/connectors` |
+| GET | `/api/v1/connectors/database/drivers` |
+| POST | `/api/v1/connectors/database/test` |
+| POST | `/api/v1/connectors/database` |
+| PUT | `/api/v1/connectors/database/{cid}` |
+| DELETE | `/api/v1/connectors/database/{cid}` |
+| GET | `/api/v1/connectors/database/{cid}/objects` |
+| POST | `/api/v1/connectors/database/{cid}/preview` |
+| POST | `/api/v1/connectors/database/{cid}/sync` |
 
 ### admin
 

@@ -4,6 +4,7 @@ import { Badge, DataTable, ErrorState, Loading, PageHeader, Select, StatusPill }
 import { dt, duration } from "@/lib/format";
 import { useApi } from "@/lib/hooks";
 import { useSession } from "@/lib/session";
+import { SectionData } from "@/components/data/SectionData";
 
 /** Dispatch list of the published plan (falls back to the current plan until one is published). */
 export default function DispatchPage() {
@@ -20,6 +21,7 @@ export default function DispatchPage() {
         subtitle={d.data ? `${d.data.plan.number} (${d.data.plan.status.toLowerCase()}) · ${dt(d.data.from)} → ${dt(d.data.to)}` : undefined}
         actions={
           <>
+            <SectionData tables={["actual-production", "order-operations", "maintenance", "downtimes"]} />
             <Select ariaLabel="Resource" value={res} onChange={setRes} options={[{ value: "", label: "All resources" }, ...(resources.data?.items || []).filter((r: any) => ["MACHINE", "WORK_CENTER", "LINE"].includes(r.kind)).map((r: any) => ({ value: r.id, label: r.code }))]} />
             <Select ariaLabel="Window" value={hours} onChange={setHours} options={["8", "12", "24", "48", "72", "168"].map((h) => ({ value: h, label: `next ${h} h` }))} />
             <button className="mx-btn" onClick={() => window.print()}>

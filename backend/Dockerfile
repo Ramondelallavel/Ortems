@@ -11,7 +11,7 @@ COPY monxuplan ./monxuplan
 COPY monxuplan_engine ./monxuplan_engine
 RUN --mount=type=secret,id=ca_bundle,required=false \
     if [ -f /run/secrets/ca_bundle ]; then export PIP_CERT=/run/secrets/ca_bundle; fi; \
-    pip install ".[postgres,redis]" && pip install anthropic
+    pip install ".[postgres,redis,connectors]" && pip install anthropic
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh && mkdir -p /app/data && chown -R monxu /app
 USER monxu

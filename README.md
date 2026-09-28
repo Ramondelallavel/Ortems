@@ -24,6 +24,11 @@ hand and reactive to the shop floor.
   undo/redo, versioned plans, publish with audit.
 * **What-if** — copy-on-write scenarios (night shift, extra machine, rush order, supplier delay,
   breakdown, more operators, overtime) and side-by-side comparison.
+* **Your data, your way** — every table (44 plus their child tables) editable as a form or as a
+  spreadsheet, exportable to Excel with all columns and importable back (update, create, delete), the
+  whole data set as one workbook, a *Data* button in every screen, and read-only connectors to
+  PostgreSQL, MySQL/MariaDB, SQL Server and Oracle (table or SELECT → MonxuPlan table, scheduled sync).
+  Every import is validated by a dry run before anything is written.
 * **Connected** — import wizard (Excel/CSV/JSON), exports, REST API with OpenAPI, inbound MES/ERP
   events with optional automatic rescheduling, signed webhooks, Server-Sent Events, API keys, OIDC.
 * **Platform** — multi-tenant, multi-plant, RBAC, audit log, data-quality gate, MPS/MRP with rough-cut
@@ -78,6 +83,7 @@ Full stack with PostgreSQL, Redis, separate workers: `cd deploy && cp .env.examp
 ## Status and limits
 
 Implemented and tested end to end as described above. Not included yet (shown as *Coming soon* where
-visible): native ERP/MES connectors (SAP, Oracle, Dynamics, Odoo, Sage, Infor — use the REST API or
-file import), GraphQL, operation splitting across resources at run time, imperial display units (metric only), and full French, German and
+visible): native application connectors for SAP, Oracle ERP, Dynamics, Odoo, Sage and Infor (read
+their databases with a database connector, or use the REST API or file import), writing plans back into
+external databases, GraphQL, operation splitting across resources at run time, imperial display units (metric only), and full French, German and
 Portuguese translations (navigation is translated; other text falls back to English).

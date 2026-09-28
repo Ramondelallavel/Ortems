@@ -4,6 +4,7 @@ import { DataTable, ErrorState, Kpi, Loading, PageHeader, Select } from "@/compo
 import { dt, num } from "@/lib/format";
 import { useApi } from "@/lib/hooks";
 import { useSession } from "@/lib/session";
+import { SectionData } from "@/components/data/SectionData";
 
 export default function PlanVsActual() {
   const { t, plant } = useSession();
@@ -12,7 +13,7 @@ export default function PlanVsActual() {
   if (!plant) return <Loading />;
   return (
     <div className="flex flex-col h-full min-h-0">
-      <PageHeader title={t("nav.planVsActual")} subtitle="Executed operations (MES feedback) against the last published plan that contained them." actions={<Select ariaLabel="Period" value={days} onChange={setDays} options={["7", "14", "30", "60"].map((x) => ({ value: x, label: `last ${x} days` }))} />} />
+      <PageHeader title={t("nav.planVsActual")} subtitle="Executed operations (MES feedback) against the last published plan that contained them." actions={<><SectionData tables={["actual-production"]} /><Select ariaLabel="Period" value={days} onChange={setDays} options={["7", "14", "30", "60"].map((x) => ({ value: x, label: `last ${x} days` }))} /></>} />
       {d.error && <ErrorState error={d.error} onRetry={d.reload} />}
       {!d.data ? (
         <Loading />

@@ -125,6 +125,17 @@ def _t(t: Template) -> None:
     TEMPLATES[t.entity] = t
 
 
+def get_template(entity: str) -> Template | None:
+    """Friendly template, or the all-columns template of a table (``table:<entity>``)."""
+    if entity in TEMPLATES:
+        return TEMPLATES[entity]
+    from . import tableio
+
+    if tableio.is_table(entity) and tableio.PREFIX + entity[len(tableio.PREFIX) :] in tableio.specs():
+        return tableio.get_spec(entity).template
+    return None
+
+
 _t(
     Template(
         "items",
@@ -412,6 +423,8 @@ def _cell(v: Any) -> Any:
 def parse_file(data: bytes, filename: str, sheet: str | None = None) -> tuple[str, list[str], list[list[Any]], list[str]]:
     """→ (format, columns, rows, sheet names)."""
     name = filename.lower()
+    if data[:4] == b"PK\x03\x04" and not name.endswith((".xlsx", ".xlsm")):  # an Excel file saved without its extension
+        name += ".xlsx"
     if name.endswith((".xlsx", ".xlsm")):
         from openpyxl import load_workbook
 
@@ -718,7 +731,9 @@ def _job(s: Session, ctx: Ctx, job_id: uuid.UUID) -> M.ImportJob:
     job = s.get(M.ImportJob, job_id)
     if job is None:
         raise NotFound("Import job not found", code="IMPORT_NOT_FOUND")
-    tpl = TEMPLATES[job.entity]
+    tpl = get_template(job.entity)
+    if tpl is None:
+        raise NotFound(f"Unknown import type '{job.entity}'", code="UNKNOWN_ENTITY")
     ctx.require("integration:import")
     ctx.require(tpl.write_perm)
     return job
@@ -737,7 +752,7 @@ def job_dict(job: M.ImportJob, detail: bool = False) -> dict[str, Any]:
     out = {
         "id": str(job.id),
         "entity": job.entity,
-        "entity_label": TEMPLATES[job.entity].label if job.entity in TEMPLATES else job.entity,
+        "entity_label": (get_template(job.entity).label if get_template(job.entity) else job.entity),
         "filename": job.filename,
         "format": job.file_format,
         "status": job.status,
@@ -749,7 +764,7 @@ def job_dict(job: M.ImportJob, detail: bool = False) -> dict[str, Any]:
         "created_by": job.created_by,
     }
     if detail:
-        tpl = TEMPLATES.get(job.entity)
+        tpl = get_template(job.entity)
         out.update(
             columns=job.columns,
             mapping=job.mapping,
@@ -765,9 +780,9 @@ def job_dict(job: M.ImportJob, detail: bool = False) -> dict[str, Any]:
 
 def upload(s: Session, ctx: Ctx, entity: str, filename: str, data: bytes, options: dict[str, Any] | None = None, source: str = "UPLOAD") -> dict[str, Any]:
     ctx.require("integration:import")
-    tpl = TEMPLATES.get(entity)
+    tpl = get_template(entity)
     if tpl is None:
-        raise ValidationFailed(f"Unknown import type '{entity}'. Available: {', '.join(TEMPLATES)}", code="UNKNOWN_ENTITY")
+        raise ValidationFailed(f"Unknown import type '{entity}'. Available: {', '.join(TEMPLATES)} or table:<entity>", code="UNKNOWN_ENTITY")
     ctx.require(tpl.write_perm)
     opts = dict(options or {})
     fmt, cols, rows, sheets = parse_file(data, filename, opts.get("sheet"))
@@ -784,7 +799,7 @@ def set_mapping(s: Session, ctx: Ctx, job_id: uuid.UUID, mapping: dict[str, str 
     job = _job(s, ctx, job_id)
     if job.status == "IMPORTED":
         raise ValidationFailed("This import was already committed.", code="ALREADY_IMPORTED")
-    tpl = TEMPLATES[job.entity]
+    tpl = get_template(job.entity)
     names = {f.name for f in tpl.fields}
     bad = [k for k in mapping if k not in names]
     if bad:
@@ -935,6 +950,10 @@ def validate(s: Session, ctx: Ctx, job_id: uuid.UUID) -> dict[str, Any]:
     if job.status == "IMPORTED":
         raise ValidationFailed("This import was already committed.", code="ALREADY_IMPORTED")
     plant = _plant(s, ctx, job)
+    from . import tableio
+
+    if tableio.is_table(job.entity):
+        return _validate_table(s, ctx, job, plant)
     rows, errors, warnings = _converted_rows(s, job, plant)
     existing = _existing_keys(s, job, plant, rows)
     mode = (job.options or {}).get("mode", "UPSERT")
@@ -987,6 +1006,10 @@ def commit(s: Session, ctx: Ctx, job_id: uuid.UUID) -> dict[str, Any]:
     if not job.stats.get("can_import"):
         raise ValidationFailed(job.stats.get("blocking_reason") or "Nothing to import.", code="IMPORT_BLOCKED", context={"errors": job.stats.get("errors")})
     plant = _plant(s, ctx, job)
+    from . import tableio
+
+    if tableio.is_table(job.entity):
+        return _commit_table(s, ctx, job, plant)
     rows, _errors, _warnings = _converted_rows(s, job, plant)
     mode = (job.options or {}).get("mode", "UPSERT")
     ap = _Applier(s, ctx, plant, mode)
@@ -998,6 +1021,47 @@ def commit(s: Session, ctx: Ctx, job_id: uuid.UUID) -> dict[str, Any]:
     job.stats = stats
     job.status = "IMPORTED"
     audit.record(s, ctx, "IMPORT", "import_job", job.id, f"{job.entity}: {job.filename}", after={k: v for k, v in stats.items() if isinstance(v, int | str | bool | dict)}, reason=(job.options or {}).get("reason"))
+    return job_dict(job, detail=True)
+
+
+def _validate_table(s: Session, ctx: Ctx, job: M.ImportJob, plant: M.Plant) -> dict[str, Any]:
+    """Dry run: every row is applied in a savepoint that is rolled back."""
+    from . import tableio
+
+    sp = s.begin_nested()
+    try:
+        result = tableio.run(s, ctx, job, plant)
+    finally:
+        sp.rollback()
+    _store_table_result(job, result, dry=True)
+    return job_dict(job, detail=True)
+
+
+def _store_table_result(job: M.ImportJob, result: dict[str, Any], dry: bool) -> None:
+    from . import tableio
+
+    job.errors = result["errors"][:MAX_REPORTED_ERRORS]
+    job.warnings = []
+    job.stats = tableio.stats_from(job, result)
+    if dry:
+        job.status = "VALIDATED" if job.stats["can_import"] else "INVALID"
+
+
+def _commit_table(s: Session, ctx: Ctx, job: M.ImportJob, plant: M.Plant) -> dict[str, Any]:
+    from . import tableio
+
+    sp = s.begin_nested()
+    result = tableio.run(s, ctx, job, plant)
+    if result["errors"] and not (job.options or {}).get("skip_invalid_rows"):
+        sp.rollback()
+        _store_table_result(job, result, dry=True)
+        raise ValidationFailed("The import found errors and nothing was written.", code="IMPORT_BLOCKED", context={"errors": len(result["errors"])})
+    sp.commit()
+    c = result["counts"]
+    job.errors = result["errors"][:MAX_REPORTED_ERRORS]
+    job.stats = {**{k: v for k, v in tableio.stats_from(job, result).items() if k != "preview"}, "created": c["created"], "updated": c["updated"], "unchanged": c["unchanged"], "deleted": c["deleted"], "deactivated": c["deactivated"], "skipped": c["skipped"] + len({e["row"] for e in result["errors"]})}
+    job.status = "IMPORTED"
+    audit.record(s, ctx, "IMPORT", "import_job", job.id, f"{job.entity}: {job.filename}", after={k: v for k, v in job.stats.items() if isinstance(v, int | str | bool)}, reason=(job.options or {}).get("reason"))
     return job_dict(job, detail=True)
 
 
@@ -1364,18 +1428,18 @@ class _Applier:
 
 
 def template_file(entity: str, fmt: str = "xlsx") -> tuple[bytes, str, str]:
-    tpl = TEMPLATES.get(entity)
+    tpl = get_template(entity)
     if tpl is None:
         raise NotFound(f"No template for '{entity}'")
     cols = [f.name for f in tpl.fields]
     if fmt == "csv":
-        return ("﻿" + ",".join(cols) + "\n").encode(), "text/csv; charset=utf-8", f"monxuplan-template-{entity}.csv"
+        return ("﻿" + ",".join(cols) + "\n").encode(), "text/csv; charset=utf-8", f"monxuplan-template-{entity.removeprefix('table:').replace('.', '-')}.csv"
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill
 
     wb = Workbook()
     ws = wb.active
-    ws.title = entity[:30]
+    ws.title = entity.removeprefix("table:")[:30]
     ws.append(cols)
     for i, f in enumerate(tpl.fields, start=1):
         c = ws.cell(row=1, column=i)
@@ -1395,7 +1459,7 @@ def template_file(entity: str, fmt: str = "xlsx") -> tuple[bytes, str, str]:
         info.column_dimensions[col].width = w
     buf = io.BytesIO()
     wb.save(buf)
-    return buf.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", f"monxuplan-template-{entity}.xlsx"
+    return buf.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", f"monxuplan-template-{entity.removeprefix('table:').replace('.', '-')}.xlsx"
 
 
 def template_rows(s: Session, entity: str, plant_id: uuid.UUID | None) -> list[dict[str, Any]]:
@@ -1489,3 +1553,112 @@ def template_rows(s: Session, entity: str, plant_id: uuid.UUID | None) -> list[d
                 continue
             out.append({"resource_code": r.code, "start": m.start, "end": m.end, "kind": m.kind, "description": m.description})
     return out
+
+
+# =============================================================================================
+# workbooks: one sheet per table, validated and imported together
+# =============================================================================================
+
+
+def _sheet_entity(sheet: str) -> str | None:
+    from . import tableio
+
+    name = sheet.strip()
+    by_sheet = {sp.sheet.lower(): sp.name for sp in tableio.specs().values()}
+    by_label = {sp.label.lower(): sp.name for sp in tableio.specs().values()}
+    return by_sheet.get(name.lower()) or by_label.get(name.lower())
+
+
+def upload_workbook(s: Session, ctx: Ctx, filename: str, data: bytes, options: dict[str, Any] | None = None, source: str = "UPLOAD") -> dict[str, Any]:
+    """Create one import job per sheet whose name is a table (as in the data workbook export)."""
+    ctx.require("integration:import")
+    if not filename.lower().endswith((".xlsx", ".xlsm")) and data[:4] != b"PK\x03\x04":
+        raise ValidationFailed("A workbook import needs an .xlsx file with one sheet per table.", code="UNSUPPORTED_FORMAT")
+    _fmt, _cols, _rows, sheets = parse_file(data, filename)
+    batch = uuid.uuid4().hex[:12]
+    jobs, ignored, empty = [], [], []
+    for sh in sheets:
+        entity = _sheet_entity(sh)
+        if entity is None:
+            ignored.append(sh)
+            continue
+        try:
+            fmt, cols, rows, _ = parse_file(data, filename, sh)
+        except ValidationFailed:
+            rows = []
+        if not rows:
+            empty.append(sh)
+            continue
+        tpl = get_template(entity)
+        ctx.require(tpl.write_perm)
+        job = M.ImportJob(tenant_id=ctx.tenant_id, entity=entity, filename=f"{filename[:250]} [{sh}]", file_format=fmt, status="UPLOADED", columns=cols, rows=rows, options={**(options or {}), "sheet": sh, "batch": batch}, source=source)
+        job.mapping = suggest_mapping(tpl, cols)
+        s.add(job)
+        s.flush()
+        jobs.append(job)
+    if not jobs:
+        raise ValidationFailed("No sheet of this workbook is named after a table (e.g. items, resources, production-orders). Export a data workbook to see the expected layout.", code="NO_TABLE_SHEETS", context={"sheets": sheets})
+    return {"batch": batch, "jobs": [job_dict(j) for j in jobs], "ignored_sheets": ignored, "empty_sheets": empty}
+
+
+def _batch_jobs(s: Session, ctx: Ctx, job_ids: list[uuid.UUID]) -> list[M.ImportJob]:
+    from . import tableio
+
+    jobs = [_job(s, ctx, j) for j in job_ids]
+    for j in jobs:
+        if not tableio.is_table(j.entity):
+            raise ValidationFailed("Batches contain table imports only.", code="NOT_A_TABLE")
+        if j.status == "IMPORTED":
+            raise ValidationFailed(f"{j.filename} was already imported.", code="ALREADY_IMPORTED")
+    return sorted(jobs, key=lambda j: tableio.dependency_rank(tableio.get_spec(j.entity)))
+
+
+def _run_batch(s: Session, ctx: Ctx, jobs: list[M.ImportJob]) -> list[dict[str, Any]]:
+    from . import tableio
+
+    results = []
+    refs = None
+    for j in jobs:
+        plant = _plant(s, ctx, j)
+        refs = refs if refs is not None and refs.plant.id == plant.id else tableio.RefIndex(s, plant)
+        results.append(tableio.run(s, ctx, j, plant, refs))
+    return results
+
+
+def validate_batch(s: Session, ctx: Ctx, job_ids: list[uuid.UUID], options: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Dry run of all sheets in dependency order (rows of one sheet can reference rows created by another)."""
+    jobs = _batch_jobs(s, ctx, job_ids)
+    for j in jobs:
+        if options:
+            j.options = {**(j.options or {}), **options}
+    s.flush()
+    sp = s.begin_nested()
+    try:
+        results = _run_batch(s, ctx, jobs)
+    finally:
+        sp.rollback()
+    for j, r in zip(jobs, results, strict=True):
+        _store_table_result(j, r, dry=True)
+    return {"jobs": [job_dict(j, detail=True) for j in jobs], "can_import": all(j.stats.get("can_import") or not j.rows for j in jobs)}
+
+
+def commit_batch(s: Session, ctx: Ctx, job_ids: list[uuid.UUID], options: dict[str, Any] | None = None) -> dict[str, Any]:
+    v = validate_batch(s, ctx, job_ids, options)
+    if not v["can_import"]:
+        raise ValidationFailed("Some sheets have errors; nothing was imported. Fix them or choose to import only the valid rows.", code="IMPORT_BLOCKED")
+    jobs = _batch_jobs(s, ctx, job_ids)
+    sp = s.begin_nested()
+    results = _run_batch(s, ctx, jobs)
+    if any(r["errors"] for r in results) and not any((j.options or {}).get("skip_invalid_rows") for j in jobs):
+        sp.rollback()
+        raise ValidationFailed("The import found errors and nothing was written.", code="IMPORT_BLOCKED")
+    sp.commit()
+    from . import tableio
+
+    for j, r in zip(jobs, results, strict=True):
+        c = r["counts"]
+        j.errors = r["errors"][:MAX_REPORTED_ERRORS]
+        j.stats = {**{k: v for k, v in tableio.stats_from(j, r).items() if k != "preview"}, "created": c["created"], "updated": c["updated"], "unchanged": c["unchanged"], "deleted": c["deleted"], "deactivated": c["deactivated"], "skipped": c["skipped"]}
+        j.status = "IMPORTED"
+    audit.record(s, ctx, "IMPORT", "import_batch", None, f"workbook: {len(jobs)} sheets", after={j.entity: j.stats.get("created", 0) + j.stats.get("updated", 0) for j in jobs})
+    return {"jobs": [job_dict(j, detail=True) for j in jobs]}

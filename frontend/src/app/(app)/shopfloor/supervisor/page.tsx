@@ -3,6 +3,7 @@ import { ErrorState, Loading, PageHeader, StatusPill } from "@/components/ui";
 import { dt, time } from "@/lib/format";
 import { useApi, useEvents } from "@/lib/hooks";
 import { useSession } from "@/lib/session";
+import { SectionData } from "@/components/data/SectionData";
 
 export default function SupervisorPage() {
   const { t, plant } = useSession();
@@ -11,7 +12,7 @@ export default function SupervisorPage() {
   if (!plant) return <Loading />;
   return (
     <div className="flex flex-col h-full min-h-0">
-      <PageHeader title={t("nav.supervisor")} subtitle={d.data ? `${d.data.plan.number} · ${dt(d.data.at)}` : undefined} />
+      <PageHeader title={t("nav.supervisor")} subtitle={d.data ? `${d.data.plan.number} · ${dt(d.data.at)}` : undefined} actions={<SectionData tables={["actual-production", "order-operations", "downtimes", "maintenance"]} />} />
       <div className="flex-1 overflow-auto mx-scroll p-3">
         {d.error ? (
           <ErrorState error={d.error} onRetry={d.reload} />

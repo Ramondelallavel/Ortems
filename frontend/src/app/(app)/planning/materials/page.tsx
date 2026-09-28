@@ -8,6 +8,7 @@ import { dt, duration, num } from "@/lib/format";
 import { useApi } from "@/lib/hooks";
 import { useScenarioSelection } from "@/lib/plan";
 import { useSession } from "@/lib/session";
+import { SectionData } from "@/components/data/SectionData";
 
 export default function MaterialsPage() {
   const { t, plant, can } = useSession();
@@ -56,6 +57,7 @@ export default function MaterialsPage() {
       <PageHeader
         title={t("nav.materials")}
         subtitle={d ? Object.entries(d.status_counts).map(([k, v]) => `${t(`status.${k}`)} ${v}`).join(" · ") : undefined}
+        actions={<SectionData tables={["inventory", "material-lots", "purchase-orders", "purchase-orders.lines", "materials", "boms", "boms.lines", "suppliers", "inventory-transactions"]} />}
       />
       <Tabs value={tab} onChange={setTab} tabs={[{ id: "shortages", label: "Shortages & late supply" }, { id: "orders", label: "Order material status" }, { id: "receipts", label: "Open receipts" }]} />
       <div className="flex flex-1 min-h-0">

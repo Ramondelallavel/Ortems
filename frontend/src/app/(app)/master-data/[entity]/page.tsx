@@ -2,32 +2,36 @@
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
-import { Badge, Button, DataTable, Drawer, ErrorState, Field, Loading, PageHeader, Tabs, useConfirm, useToast, type Column } from "@/components/ui";
-import { api, ApiError } from "@/lib/api";
-import { dt, isoToLocalInput, localInputToIso } from "@/lib/format";
+import { Badge, Button, DataTable, Dialog, Drawer, ErrorState, Field, Loading, PageHeader, Tabs, useConfirm, useToast, type Column } from "@/components/ui";
+import { ChildGrid, EditableGrid } from "@/components/data/EditableGrid";
+import { FieldInput, fieldLabel, invalidateRefOptions, parseJsonFields, type FieldDef } from "@/components/data/FieldInput";
+import { ImportWizard } from "@/components/data/ImportWizard";
+import { api, ApiError, download } from "@/lib/api";
+import { dt } from "@/lib/format";
 import { useApi } from "@/lib/hooks";
 import { useSession } from "@/lib/session";
 
-type FieldDef = { name: string; type: string; required: boolean; ref: string | null; readonly: boolean; max_length: number | null };
 const HIDDEN = new Set(["tenant_id"]);
-const ALIASES: Record<string, string> = { bom: "boms", resources: "resources", "setup-matrices": "setup-matrices" };
+const ALIASES: Record<string, string> = { bom: "boms" };
 
 export default function EntityPage() {
   const params = useParams<{ entity: string }>();
   const entity = ALIASES[params.entity] || params.entity;
-  const { plant, can } = useSession();
+  const { plant, can, t } = useSession();
   const toast = useToast();
   const schema = useApi<any>(`/master-data/${entity}/schema`);
   const [q, setQ] = useState("");
   const list = useApi<any>(`/master-data/${entity}`, { limit: 5000, plant_id: plant?.id, q: q || undefined });
   const [edit, setEdit] = useState<any | null>(null);
+  const [mode, setMode] = useState<"list" | "grid">("list");
+  const [importing, setImporting] = useState(false);
 
   const fields: FieldDef[] = schema.data?.fields || [];
   const cols: Column<any>[] = useMemo(() => {
     const show = fields.filter((f) => !HIDDEN.has(f.name) && f.type !== "json" && !["description", "notes", "instructions"].includes(f.name)).slice(0, 12);
     return show.map((f) => ({
       key: f.name,
-      label: f.name.replace(/_id$/, "").replaceAll("_", " "),
+      label: fieldLabel(f.name),
       mono: f.name === "code" || f.name === "number",
       align: f.type === "integer" || f.type === "number" ? "right" : undefined,
       value: (r: any) => (f.type === "uuid" ? r[f.name.replace(/_id$/, "") + "_label"] ?? r[f.name] : r[f.name]),
@@ -41,25 +45,49 @@ export default function EntityPage() {
     }));
   }, [fields]);
 
-  const writable = schema.data && (can("masterdata:write") || can("orders:write") || can("admin:config"));
+  const writable = !!schema.data && (can("masterdata:write") || can("orders:write") || can("admin:config"));
+  const defaults = plant && fields.some((f) => f.name === "plant_id") ? { plant_id: plant.id } : undefined;
+  const tables = [entity, ...(schema.data?.children || []).map((c: any) => `${entity}.${c.name}`)];
+  const [importTable, setImportTable] = useState(entity);
+  const title = schema.data?.label || entity;
   return (
     <div className="flex flex-col h-full min-h-0">
       <PageHeader
-        title={schema.data?.label ? `${schema.data.label}s` : entity}
+        title={title}
         subtitle={
           <>
             <Link href="/master-data" className="text-blue-500 hover:underline">
-              Master data
+              {t("nav.masterData")}
             </Link>{" "}
-            · {list.data ? `${list.data.total} records` : ""}
+            · {list.data ? t("md.records", { n: list.data.total }) : ""}
           </>
         }
         actions={
           <>
-            <input className="mx-input w-[220px]" placeholder="Server search (code, name…)" aria-label="Search" value={q} onChange={(e) => setQ(e.target.value)} />
+            <input className="mx-input w-[180px] hidden md:block" placeholder={t("md.search")} aria-label={t("md.search")} value={q} onChange={(e) => setQ(e.target.value)} />
+            {writable && (
+              <div className="flex rounded-[3px] border border-gray-300 overflow-hidden" role="group" aria-label={t("md.view")}>
+                <button className={`px-2.5 h-7 text-[12px] ${mode === "list" ? "bg-navy-700 text-white" : "bg-white"}`} aria-pressed={mode === "list"} onClick={() => setMode("list")}>
+                  {t("md.viewList")}
+                </button>
+                <button className={`px-2.5 h-7 text-[12px] ${mode === "grid" ? "bg-navy-700 text-white" : "bg-white"}`} aria-pressed={mode === "grid"} onClick={() => setMode("grid")}>
+                  {t("md.viewGrid")}
+                </button>
+              </div>
+            )}
+            {can("integration:export") && (
+              <Button icon="download" onClick={() => download(`/exports/table:${entity}`, { format: "xlsx", plant_id: plant?.id }).catch(toast.error)}>
+                Excel
+              </Button>
+            )}
+            {writable && can("integration:import") && (
+              <Button icon="upload" onClick={() => setImporting(true)}>
+                {t("data.import")}
+              </Button>
+            )}
             {writable && (
               <Button variant="primary" icon="plus" onClick={() => setEdit({})}>
-                New
+                {t("md.new")}
               </Button>
             )}
           </>
@@ -67,9 +95,15 @@ export default function EntityPage() {
       />
       <div className="flex-1 min-h-0 bg-white">
         {(schema.error || list.error) && <ErrorState error={schema.error || list.error} onRetry={list.reload} />}
-        {!list.data || !schema.data ? <Loading /> : <DataTable rows={list.data.items} columns={cols} rowKey={(r) => r.id} onRowClick={(r) => setEdit(r)} selectedKey={edit?.id} exportName={entity} filterable />}
+        {!list.data || !schema.data ? (
+          <Loading />
+        ) : mode === "grid" && writable ? (
+          <EditableGrid entity={entity} fields={fields} rows={list.data.items} defaults={defaults} onSaved={list.reload} />
+        ) : (
+          <DataTable rows={list.data.items} columns={cols} rowKey={(r) => r.id} onRowClick={(r) => setEdit(r)} selectedKey={edit?.id} exportName={entity} filterable />
+        )}
       </div>
-      <Drawer open={!!edit} onClose={() => setEdit(null)} title={edit?.id ? `${schema.data?.label}: ${edit.code || edit.number || edit.name || edit.id.slice(0, 8)}` : `New ${schema.data?.label || ""}`} width={520}>
+      <Drawer open={!!edit} onClose={() => setEdit(null)} title={edit?.id ? `${title}: ${edit.code || edit.number || edit.name || edit.id.slice(0, 8)}` : `${t("md.new")}: ${title}`} width={640}>
         {edit && schema.data && (
           <Editor
             entity={entity}
@@ -83,45 +117,86 @@ export default function EntityPage() {
           />
         )}
       </Drawer>
+      <Dialog open={importing} onClose={() => setImporting(false)} title={`${t("data.import")}: ${title}`} width={900}>
+        {tables.length > 1 && (
+          <div className="flex flex-wrap gap-2 mb-2 text-[12.5px]">
+            {tables.map((tb) => (
+              <button key={tb} className={`px-2 h-7 rounded-[3px] border ${importTable === tb ? "bg-navy-700 text-white border-navy-700" : "border-gray-300"}`} onClick={() => setImportTable(tb)}>
+                {tb === entity ? title : `${title} — ${tb.split(".")[1]}`}
+              </button>
+            ))}
+          </div>
+        )}
+        {importing && (
+          <ImportWizard
+            key={importTable}
+            compact
+            choices={[{ entity: `table:${importTable}`, label: importTable === entity ? title : `${title} — ${importTable.split(".")[1]}` }]}
+            initialEntity={`table:${importTable}`}
+            onImported={list.reload}
+          />
+        )}
+      </Dialog>
     </div>
   );
 }
 
 function Editor({ entity, schema, id, onSaved, onError }: { entity: string; schema: any; id?: string; onSaved: () => void; onError: (e: unknown) => void }) {
-  const { plant, can } = useSession();
+  const { plant, can, t } = useSession();
   const toast = useToast();
   const { confirm, node } = useConfirm();
   const row = useApi<any>(id ? `/master-data/${entity}/${id}` : null);
   const [form, setForm] = useState<any>({});
+  const [kids, setKids] = useState<Record<string, any[]>>({});
+  const [dirtyKids, setDirtyKids] = useState<Set<string>>(new Set());
   const [errs, setErrs] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const [tab, setTab] = useState("fields");
+  const children: any[] = schema.children || [];
   useEffect(() => {
-    if (row.data) setForm(row.data);
-    else if (!id) setForm(plant && schema.fields.some((f: FieldDef) => f.name === "plant_id") ? { plant_id: plant.id } : {});
+    if (row.data) {
+      setForm(row.data);
+      setKids(Object.fromEntries(children.map((c) => [c.name, row.data[c.name] || []])));
+      setDirtyKids(new Set());
+    } else if (!id) {
+      setForm(plant && schema.fields.some((f: FieldDef) => f.name === "plant_id") ? { plant_id: plant.id } : {});
+      setKids(Object.fromEntries(children.map((c) => [c.name, []])));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [row.data, id, plant, schema]);
 
   const save = async () => {
     setBusy(true);
     setErrs({});
     try {
+      const fields = schema.fields as FieldDef[];
       const body: any = {};
-      for (const f of schema.fields as FieldDef[]) {
-        if (f.name in form && f.type !== "json") body[f.name] = form[f.name] === "" ? null : form[f.name];
-        if (f.type === "json" && typeof form[f.name] === "string") {
-          try {
-            body[f.name] = JSON.parse(form[f.name]);
-          } catch {
-            setErrs({ [f.name]: "invalid JSON" });
-            setBusy(false);
+      for (const f of fields) if (f.name in form) body[f.name] = form[f.name] === "" ? null : form[f.name];
+      const p = parseJsonFields(fields, body);
+      if (!p.ok) {
+        setErrs({ [p.field]: t("grid.badJson") });
+        return;
+      }
+      const out: any = p.row;
+      for (const c of children) {
+        if (!dirtyKids.has(c.name)) continue;
+        const rowsOut = [];
+        for (const r of kids[c.name] || []) {
+          const pr = parseJsonFields(c.field_defs || [], r);
+          if (!pr.ok) {
+            setErrs({ [c.name]: `${pr.field}: ${t("grid.badJson")}` });
+            setTab(c.name);
             return;
           }
-        } else if (f.type === "json" && f.name in form) body[f.name] = form[f.name];
+          rowsOut.push(Object.fromEntries(Object.entries(pr.row).filter(([k]) => !k.endsWith("_label"))));
+        }
+        out[c.name] = rowsOut;
       }
-      if (id) body.version = row.data?.version;
-      if (id) await api(`/master-data/${entity}/${id}`, { method: "PUT", body });
-      else await api(`/master-data/${entity}`, { body });
-      toast.ok("Saved");
+      if (id) out.version = row.data?.version;
+      if (id) await api(`/master-data/${entity}/${id}`, { method: "PUT", body: out });
+      else await api(`/master-data/${entity}`, { body: out });
+      invalidateRefOptions(entity);
+      toast.ok(t("common.saved"));
       onSaved();
     } catch (e) {
       if (e instanceof ApiError && e.context?.field) setErrs({ [String(e.context.field)]: e.message });
@@ -132,96 +207,68 @@ function Editor({ entity, schema, id, onSaved, onError }: { entity: string; sche
     }
   };
   const del = async () => {
-    const r = await confirm("Delete this record?", { danger: true, reason: true, body: "If other data references it, it is deactivated instead." });
+    const r = await confirm(t("md.deleteQ"), { danger: true, reason: true, body: t("grid.deleteBody") });
     if (!r.ok) return;
     try {
       const out = await api(`/master-data/${entity}/${id}`, { method: "DELETE", query: { reason: r.reason } });
-      toast.ok(out.deactivated ? out.reason : "Deleted");
+      invalidateRefOptions(entity);
+      toast.ok(out.deactivated ? out.reason : t("md.deleted"));
       onSaved();
     } catch (e) {
       onError(e);
     }
   };
   if (id && !row.data) return row.error ? <ErrorState error={row.error} /> : <Loading />;
-  const children = schema.children || [];
   return (
     <div className="flex flex-col h-full">
       {(children.length > 0 || entity === "items" || entity === "products") && (
-        <Tabs value={tab} onChange={setTab} tabs={[{ id: "fields", label: "Fields" }, ...children.map((c: any) => ({ id: c.name, label: `${c.name} (${(row.data?.[c.name] || []).length})` })), ...(id && (entity === "items" || entity === "products") ? [{ id: "bom", label: "BOM tree" }] : [])]} />
+        <Tabs
+          value={tab}
+          onChange={setTab}
+          tabs={[
+            { id: "fields", label: t("md.fields") },
+            ...children.map((c: any) => ({ id: c.name, label: `${fieldLabel(c.name)} (${(kids[c.name] || []).length})${dirtyKids.has(c.name) ? " •" : ""}` })),
+            ...(id && (entity === "items" || entity === "products") ? [{ id: "bom", label: t("md.bomTree") }] : []),
+          ]}
+        />
       )}
       <div className="p-3 space-y-2.5 flex-1 overflow-auto mx-scroll">
         {tab === "fields" &&
           (schema.fields as FieldDef[])
             .filter((f) => !HIDDEN.has(f.name))
             .map((f) => (
-              <Field key={f.name} label={`${f.name.replaceAll("_", " ")}${f.required ? " *" : ""}`} error={errs[f.name]}>
-                <Input f={f} value={form[f.name]} label={form[f.name.replace(/_id$/, "") + "_label"]} onChange={(v) => setForm({ ...form, [f.name]: v })} />
+              <Field key={f.name} label={`${fieldLabel(f.name)}${f.required ? " *" : ""}`} error={errs[f.name]}>
+                <FieldInput f={f} value={form[f.name]} label={form[f.name.replace(/_id$/, "") + "_label"]} onChange={(v) => setForm({ ...form, [f.name]: v })} />
               </Field>
             ))}
         {tab !== "fields" && tab !== "bom" && (
-          <table className="mx-table">
-            <thead>
-              <tr>
-                {(children.find((c: any) => c.name === tab)?.fields || []).slice(0, 8).map((c: string) => (
-                  <th key={c}>{c.replaceAll("_", " ")}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {(row.data?.[tab] || []).map((r: any) => (
-                <tr key={r.id}>
-                  {(children.find((c: any) => c.name === tab)?.fields || []).slice(0, 8).map((c: string) => (
-                    <td key={c} className="tabular">
-                      {typeof r[c] === "object" && r[c] !== null ? JSON.stringify(r[c]) : String(r[c] ?? "—").slice(0, 36)}
-                    </td>
-                  ))}
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <>
+            {errs[tab] && <div className="text-red-600 text-[12px]">▲ {errs[tab]}</div>}
+            <ChildGrid
+              fields={children.find((c: any) => c.name === tab)?.field_defs || []}
+              rows={kids[tab] || []}
+              onChange={(rows) => {
+                setKids({ ...kids, [tab]: rows });
+                setDirtyKids(new Set([...dirtyKids, tab]));
+              }}
+            />
+          </>
         )}
         {tab === "bom" && id && <BomTree itemId={id} />}
       </div>
       <div className="flex gap-2 justify-end p-2 border-t border-gray-200 bg-gray-50">
         {id && (can("masterdata:write") || can("orders:write")) && (
           <Button variant="danger" onClick={del}>
-            Delete
+            {t("common.delete")}
           </Button>
         )}
-        <div className="flex-1 text-[11px] text-slate-600 self-center">{row.data?.version ? `version ${row.data.version} · updated ${dt(row.data.updated_at)} by ${row.data.updated_by || "—"}` : ""}</div>
+        <div className="flex-1 text-[11px] text-slate-600 self-center">{row.data?.version ? t("md.version", { v: row.data.version, at: dt(row.data.updated_at), by: row.data.updated_by || "—" }) : ""}</div>
         <Button variant="primary" busy={busy} onClick={save}>
-          Save
+          {t("common.save")}
         </Button>
       </div>
       {node}
     </div>
-  );
-}
-
-function Input({ f, value, label, onChange }: { f: FieldDef; value: any; label?: string; onChange: (v: any) => void }) {
-  if (f.readonly) return <div className="text-slate-600 tabular">{String(value ?? "—")}</div>;
-  if (f.type === "boolean") return <input type="checkbox" checked={!!value} onChange={(e) => onChange(e.target.checked)} />;
-  if (f.type === "integer" || f.type === "number") return <input className="mx-input w-full tabular" type="number" step={f.type === "integer" ? 1 : "any"} value={value ?? ""} onChange={(e) => onChange(e.target.value === "" ? null : Number(e.target.value))} />;
-  if (f.type === "datetime") return <input className="mx-input w-full" type="datetime-local" value={value ? isoToLocalInput(String(value)) : ""} onChange={(e) => onChange(e.target.value ? localInputToIso(e.target.value) : null)} />;
-  if (f.type === "date") return <input className="mx-input w-full" type="date" value={value ? String(value).slice(0, 10) : ""} onChange={(e) => onChange(e.target.value || null)} />;
-  if (f.type === "time") return <input className="mx-input w-full" type="time" value={value ? String(value).slice(0, 5) : ""} onChange={(e) => onChange(e.target.value || null)} />;
-  if (f.type === "json") return <textarea className="mx-input w-full code" rows={3} value={typeof value === "string" ? value : JSON.stringify(value ?? {}, null, 1)} onChange={(e) => onChange(e.target.value)} />;
-  if (f.type === "uuid" && f.ref) return <RefSelect entity={f.ref} value={value} label={label} onChange={onChange} />;
-  return <input className="mx-input w-full" maxLength={f.max_length || undefined} value={value ?? ""} onChange={(e) => onChange(e.target.value)} />;
-}
-
-function RefSelect({ entity, value, label, onChange }: { entity: string; value: string | null; label?: string; onChange: (v: string | null) => void }) {
-  const opts = useApi<any>(`/master-data/${entity}`, { limit: 2000 });
-  return (
-    <select className="mx-select w-full" value={value || ""} onChange={(e) => onChange(e.target.value || null)}>
-      <option value="">—</option>
-      {!opts.data && value && <option value={value}>{label || value}</option>}
-      {(opts.data?.items || []).map((o: any) => (
-        <option key={o.id} value={o.id}>
-          {o.code || o.number || o.name} {o.name && o.code ? `· ${o.name}` : ""}
-        </option>
-      ))}
-    </select>
   );
 }
 
@@ -243,4 +290,3 @@ function BomTree({ itemId }: { itemId: string }) {
   );
   return <Node n={tree.data} d={0} />;
 }
-

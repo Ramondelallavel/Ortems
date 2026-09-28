@@ -4,6 +4,7 @@ import { Badge, Button, DataTable, ErrorState, Loading, PageHeader, Panel, Selec
 import { api } from "@/lib/api";
 import { date, num } from "@/lib/format";
 import { useSession } from "@/lib/session";
+import { SectionData } from "@/components/data/SectionData";
 
 /** MPS / MRP: netting, lot sizing and rough-cut capacity per week, plus the aggregate (MIP) plan. */
 export default function MpsPage() {
@@ -67,6 +68,7 @@ export default function MpsPage() {
         subtitle="Weekly netting of demand (forecast, customer orders, dependent demand) against stock and receipts; lot sizing; rough-cut capacity."
         actions={
           <>
+            <SectionData tables={["demands", "sales-orders", "sales-orders.lines", "items", "item-plants", "product-families"]} />
             <Select ariaLabel="Weeks" value={weeks} onChange={setWeeks} options={["4", "8", "12", "16", "26"].map((w) => ({ value: w, label: `${w} weeks` }))} />
             <Button variant="primary" icon="play" busy={busy === "mps"} onClick={run}>
               Calculate MPS / MRP

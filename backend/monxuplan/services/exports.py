@@ -338,8 +338,11 @@ def export_plan(s: Session, ctx: Ctx, plan_id: uuid.UUID, fmt: str = "xlsx", she
 
 def export_entity(s: Session, ctx: Ctx, entity: str, fmt: str = "csv", plant_id: uuid.UUID | None = None) -> tuple[bytes, str, str]:
     """Master/transactional data export (same columns as the import templates)."""
+    from . import tableio
     from .imports import TEMPLATES, template_rows
 
+    if tableio.is_table(entity):
+        return export_table(s, ctx, entity, fmt, plant_id)
     if entity not in TEMPLATES:
         raise ValidationFailed(f"No export available for '{entity}'. Available: {', '.join(TEMPLATES)}", code="UNKNOWN_ENTITY")
     tpl = TEMPLATES[entity]
@@ -360,3 +363,47 @@ def export_entity(s: Session, ctx: Ctx, entity: str, fmt: str = "csv", plant_id:
         data, media, fname = _csv(t), "text/csv; charset=utf-8", f"{entity}.csv"
     s.add(ExportJob(tenant_id=ctx.tenant_id, kind=entity.upper(), file_format=fmt, params={"plant_id": str(plant_id) if plant_id else None}, rows=len(t.rows), target=fname))
     return data, media, fname
+
+
+def export_table(s: Session, ctx: Ctx, entity: str, fmt: str = "xlsx", plant_id: uuid.UUID | None = None) -> tuple[bytes, str, str]:
+    """All columns of a table (with ids), ready to edit and import back."""
+    from . import tableio
+
+    spec = tableio.get_spec(entity)
+    if plant_id:
+        ctx.require_plant(plant_id)
+    plant = s.get(Plant, plant_id) if plant_id else s.scalar(select(Plant).order_by(Plant.code).limit(1))
+    cols, rows = tableio.export_rows(s, ctx, spec.name, plant)
+    base = spec.entity.replace(".", "-")
+    if fmt == "xlsx":
+        data = tableio.xlsx([(spec.sheet, cols, rows, spec.template.fields)], f"MonxuPlan · {spec.label}")
+        media, fname = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", f"{base}.xlsx"
+    elif fmt == "json":
+        data = json.dumps([{c: _jsonable(v) for c, v in zip(cols, r, strict=True)} for r in rows], ensure_ascii=False).encode()
+        media, fname = "application/json", f"{base}.json"
+    else:
+        data, media, fname = _csv(_Table(base, cols, rows)), "text/csv; charset=utf-8", f"{base}.csv"
+    s.add(ExportJob(tenant_id=ctx.tenant_id, kind=("TABLE:" + spec.entity).upper()[:40], file_format=fmt, params={"plant_id": str(plant_id) if plant_id else None}, rows=len(rows), target=fname))
+    return data, media, fname
+
+
+def export_workbook(s: Session, ctx: Ctx, entities: list[str] | None = None, plant_id: uuid.UUID | None = None) -> tuple[bytes, str, str]:
+    """One Excel workbook, one sheet per table (in dependency order): the whole data set to edit and re-import."""
+    from ..core.errors import Forbidden
+    from . import tableio
+
+    if plant_id:
+        ctx.require_plant(plant_id)
+    plant = s.get(Plant, plant_id) if plant_id else s.scalar(select(Plant).order_by(Plant.code).limit(1))
+    specs = [tableio.get_spec(e) for e in entities] if entities else tableio.workbook_tables()
+    specs = sorted(specs, key=tableio.dependency_rank)
+    sheets = []
+    for sp in specs:
+        try:
+            cols, rows = tableio.export_rows(s, ctx, sp.name, plant)
+        except Forbidden:
+            continue
+        sheets.append((sp.sheet, cols, rows, sp.template.fields))
+    data = tableio.xlsx(sheets, "MonxuPlan · data workbook")
+    s.add(ExportJob(tenant_id=ctx.tenant_id, kind="WORKBOOK", file_format="xlsx", params={"plant_id": str(plant_id) if plant_id else None, "tables": [x[0] for x in sheets]}, rows=sum(len(x[2]) for x in sheets), target="monxuplan-data.xlsx"))
+    return data, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "monxuplan-data.xlsx"

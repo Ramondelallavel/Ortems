@@ -44,6 +44,7 @@ The API container applies migrations on start (`MONXU_MIGRATE=1`), then loads th
 | `MONXU_WEBHOOK_TIMEOUT_S` | `5` | Outbound webhook timeout |
 | `MONXU_ASSISTANT_LLM`, `ANTHROPIC_API_KEY`, `MONXU_ASSISTANT_MODEL` | off | Optional language-model mode of the assistant (read-only tools over plan data) |
 | `MONXU_NOW` | — | Freeze the clock (demos, tests) |
+| `MONXU_ALLOW_SQLITE_SOURCES` | on outside production | Lets database connectors read SQLite files on the server. Off in production unless set to `1` |
 | `MONXU_API_URL` (web build arg) | `http://127.0.0.1:8000` | Where the web server proxies `/api` |
 
 With `MONXU_ENV=production` the API refuses to start if the secret key is missing/weak, cookies are
@@ -92,3 +93,11 @@ integration with expiry · webhook URLs HTTPS only (enforced in production) · b
 
 `pg_dump` of the database is sufficient: problem snapshots of every plan version are stored in the
 database (gzip, content-addressed), so any published plan can be reproduced from the backup.
+
+## Database connectors
+
+The API and worker images install the drivers for PostgreSQL, MySQL/MariaDB (PyMySQL), SQL Server
+(pymssql) and Oracle (python-oracledb, thin mode) via the `connectors` extra. For a manual install:
+`pip install ".[postgres,connectors]"`. The API/worker containers need network access to the source
+databases; give each connector a database user with read-only grants. Scheduled syncs run in the
+worker loop (at most once per `sync_every_minutes` per connector, claimed atomically across workers).

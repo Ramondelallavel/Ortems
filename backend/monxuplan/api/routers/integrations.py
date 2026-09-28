@@ -37,6 +37,54 @@ def templates(ctx: Ctx = Depends(get_ctx)):
     ]
 
 
+@router.get("/imports/tables")
+def tables(ctx: Ctx = Depends(get_ctx)):
+    """Every table with all its columns (round-trip import/export, ``table:<entity>``)."""
+    from ...services import tableio
+
+    ctx.require("integration:import")
+    out = []
+    for sp in tableio.specs().values():
+        if not ctx.has(sp.write_perm) and not ctx.has(sp.read_perm):
+            continue
+        out.append(
+            {
+                "entity": sp.name,
+                "table": sp.entity,
+                "label": sp.label,
+                "group": sp.group,
+                "parent": sp.parent.name if sp.parent else None,
+                "key": list(sp.template.key),
+                "writable": ctx.has(sp.write_perm),
+                "fields": [{"name": f.name, "type": f.type, "description": f.description} for f in sp.template.fields],
+            }
+        )
+    return out
+
+
+class BatchIn(BaseModel):
+    job_ids: list[uuid.UUID]
+    options: dict[str, Any] | None = None
+
+
+@router.post("/imports/workbook", status_code=201)
+async def upload_workbook(file: UploadFile = File(...), plant_id: uuid.UUID | None = Form(None), ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+    data = await file.read()
+    if len(data) > get_settings().max_upload_mb * 1024 * 1024:
+        raise ValidationFailed("File too large", code="PAYLOAD_TOO_LARGE")
+    return imports.upload_workbook(s, ctx, file.filename or "workbook.xlsx", data, {"plant_id": str(plant_id) if plant_id else None})
+
+
+@router.post("/imports/batch/validate")
+def validate_batch(body: BatchIn, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+    return imports.validate_batch(s, ctx, body.job_ids, body.options)
+
+
+@router.post("/imports/batch/commit")
+def commit_batch(body: BatchIn, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+    return imports.commit_batch(s, ctx, body.job_ids, body.options)
+
+
 @router.get("/imports/templates/{entity}")
 def template_file(entity: str, format: str = Query("xlsx", pattern="^(xlsx|csv)$"), ctx: Ctx = Depends(get_ctx)):
     ctx.require("integration:import")
@@ -101,6 +149,15 @@ def commit(job_id: uuid.UUID, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
 
 
 # ------------------------------------------------------------------ exports
+@router.get("/exports/workbook")
+def export_workbook(plant_id: uuid.UUID | None = None, entities: list[str] | None = Query(None), ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+    """Whole data set as one Excel workbook (one sheet per table), to edit and import back."""
+    from ...services.exports import export_workbook as ex
+
+    ctx.require("integration:export")
+    return _download(*ex(s, ctx, entities, plant_id))
+
+
 @router.get("/exports/{entity}")
 def export_entity(entity: str, format: str = Query("csv", pattern="^(xlsx|csv|json)$"), plant_id: uuid.UUID | None = None, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
     from ...services.exports import export_entity as ex
@@ -198,6 +255,7 @@ def deliveries(webhook_id: uuid.UUID, limit: int = Query(50, le=500), ctx: Ctx =
 
 # ------------------------------------------------------------------ connectors
 CONNECTOR_SYSTEMS = {
+    "DATABASE": "Database (PostgreSQL, MySQL/MariaDB, SQL Server, Oracle, SQLite): read tables or SELECT queries",
     "FILE": "File drop (CSV/Excel/JSON via the import wizard or API)",
     "GENERIC_REST": "Generic REST (push events to /api/v1/events, pull data with API keys)",
     "SAP": "SAP S/4HANA / ECC",
@@ -208,7 +266,7 @@ CONNECTOR_SYSTEMS = {
     "INFOR": "Infor",
     "MES": "MES (generic)",
 }
-AVAILABLE_SYSTEMS = {"FILE", "GENERIC_REST"}
+AVAILABLE_SYSTEMS = {"DATABASE", "FILE", "GENERIC_REST"}
 
 
 @router.get("/connectors")
@@ -216,7 +274,7 @@ def connectors(ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
     ctx.require("integration:manage")
     return {
         "systems": [{"code": k, "label": v, "status": "AVAILABLE" if k in AVAILABLE_SYSTEMS else "COMING_SOON"} for k, v in CONNECTOR_SYSTEMS.items()],
-        "configured": [row_dict(i) for i in s.scalars(select(Integration).order_by(Integration.code))],
+        "configured": [{**row_dict(i), "has_password": bool(i.secret_encrypted)} for i in s.scalars(select(Integration).order_by(Integration.code))],
     }
 
 
@@ -233,6 +291,10 @@ class ConnectorIn(BaseModel):
 @router.post("/connectors", status_code=201)
 def create_connector(body: ConnectorIn, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
     ctx.require("integration:manage")
+    if body.system == "DATABASE":
+        from ...services import dbconnect
+
+        return dbconnect.save(s, ctx, {"code": body.code, "name": body.name, "settings": body.settings, "password": body.secret, "is_active": body.is_active})
     if body.system not in CONNECTOR_SYSTEMS:
         raise ValidationFailed(f"Unknown system {body.system}")
     if body.system not in AVAILABLE_SYSTEMS:
@@ -242,3 +304,94 @@ def create_connector(body: ConnectorIn, ctx: Ctx = Depends(get_ctx), s=Depends(g
     s.flush()
     audit.record(s, ctx, "CREATE", "integration", i.id, i.code, after={"system": i.system})
     return row_dict(i)
+
+
+# ------------------------------------------------------------------ database connectors
+class DbConnectorIn(BaseModel):
+    code: str = Field(min_length=1, max_length=60)
+    name: str = Field(default="", max_length=200)
+    settings: dict[str, Any] = Field(default_factory=dict)
+    password: str | None = None
+    clear_password: bool = False
+    is_active: bool = True
+
+
+class DbTestIn(BaseModel):
+    settings: dict[str, Any]
+    password: str | None = None
+    connector_id: uuid.UUID | None = None
+
+
+class DbPreviewIn(BaseModel):
+    source: dict[str, Any]
+    entity: str | None = None
+
+
+class DbSyncIn(BaseModel):
+    source_ids: list[str] | None = None
+    plant_id: uuid.UUID | None = None
+    commit: bool | None = None
+
+
+@router.get("/connectors/database/drivers")
+def db_drivers(ctx: Ctx = Depends(get_ctx)):
+    from ...services import dbconnect
+
+    ctx.require("integration:import")
+    ok, why = dbconnect.runtime_supported()
+    return {"supported": ok, "reason": why, "drivers": dbconnect.drivers()}
+
+
+@router.post("/connectors/database/test")
+def db_test(body: DbTestIn, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+    from ...services import dbconnect
+
+    ctx.require("integration:manage")
+    pwd = body.password
+    if not pwd and body.connector_id:
+        i = s.get(Integration, body.connector_id)
+        pwd = dbconnect._password(i) if i is not None and i.system == "DATABASE" else None
+    return dbconnect.test_connection(body.settings, pwd)
+
+
+@router.post("/connectors/database", status_code=201)
+def db_create(body: DbConnectorIn, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+    from ...services import dbconnect
+
+    return dbconnect.save(s, ctx, body.model_dump())
+
+
+@router.put("/connectors/database/{cid}")
+def db_update(cid: uuid.UUID, body: DbConnectorIn, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+    from ...services import dbconnect
+
+    return dbconnect.save(s, ctx, body.model_dump(), cid)
+
+
+@router.delete("/connectors/database/{cid}", status_code=204)
+def db_delete(cid: uuid.UUID, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+    from ...services import dbconnect
+
+    dbconnect.delete(s, ctx, cid)
+    return Response(status_code=204)
+
+
+@router.get("/connectors/database/{cid}/objects")
+def db_objects(cid: uuid.UUID, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+    from ...services import dbconnect
+
+    return dbconnect.objects(s, ctx, cid)
+
+
+@router.post("/connectors/database/{cid}/preview")
+def db_preview(cid: uuid.UUID, body: DbPreviewIn, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+    from ...services import dbconnect
+
+    return dbconnect.preview(s, ctx, cid, body.source, body.entity)
+
+
+@router.post("/connectors/database/{cid}/sync")
+def db_sync(cid: uuid.UUID, body: DbSyncIn, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+    from ...services import dbconnect
+
+    return dbconnect.sync(s, ctx, cid, body.source_ids, body.plant_id, body.commit)

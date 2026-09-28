@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Logo } from "@/components/shell/Logo";
 import { Button, Icon } from "@/components/ui";
 import { api, ApiError } from "@/lib/api";
@@ -12,14 +12,15 @@ export default function LoginPage() {
   const [tenant, setTenant] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [locale, setLocale] = useState<Locale>(() => {
-    if (typeof window === "undefined") return "en";
+  const [locale, setLocale] = useState<Locale>("en");
+  useEffect(() => {
+    // after hydration: the server renders English, the browser then applies the saved language
     try {
-      return (localStorage.getItem("mx.locale") as Locale) || (navigator.language.startsWith("es") ? "es" : "en");
+      setLocale((localStorage.getItem("mx.locale") as Locale) || (navigator.language.startsWith("es") ? "es" : "en"));
     } catch {
-      return "en";
+      /* storage unavailable */
     }
-  });
+  }, []);
   const t = (k: string) => translate(locale, k);
 
   const submit = async (e: React.FormEvent) => {

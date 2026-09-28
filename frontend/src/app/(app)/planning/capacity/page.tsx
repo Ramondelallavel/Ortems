@@ -6,6 +6,7 @@ import { num } from "@/lib/format";
 import { useApi } from "@/lib/hooks";
 import { useScenarioSelection } from "@/lib/plan";
 import { useSession } from "@/lib/session";
+import { SectionData } from "@/components/data/SectionData";
 
 const STATE_GLYPH: Record<string, string> = { UNDERLOADED: "○", BALANCED: "●", HIGH_LOAD: "◆", OVERLOADED: "▲", UNAVAILABLE: "✕" };
 
@@ -49,6 +50,7 @@ export default function CapacityPage() {
         subtitle={selected ? `${selected.name} · ${selected.head_plan?.number || "no plan"} · load = scheduled work; requirement = work needed to meet due dates` : undefined}
         actions={
           <>
+            <SectionData tables={["resources", "calendars", "calendars.shifts", "calendars.exceptions", "maintenance", "downtimes", "resource-groups.members", "labor-pools", "operators", "operator-absences"]} />
             <Select ariaLabel={t("cap.bucket")} value={bucket} onChange={setBucket} options={["hour", "shift", "day", "week", "month"].map((b) => ({ value: b, label: b }))} />
             <Select ariaLabel={t("cap.groupBy")} value={groupBy} onChange={(v) => { setGroupBy(v); setFocus(null); }} options={["resource", "group", "area", "plant"].map((b) => ({ value: b, label: `by ${b}` }))} />
           </>

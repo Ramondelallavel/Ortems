@@ -7,7 +7,10 @@ declare global {
 
 export async function saveBlob(blob: Blob, filename: string): Promise<void> {
   const downloads = window.claude ? await window.claude.use("downloads").catch(() => null) : null;
-  if (!downloads) throw new Error(`Downloads are not available in this view, so ${filename} was not saved.`);
+  if (!downloads) {
+    const es = typeof navigator !== "undefined" && navigator.language.toLowerCase().startsWith("es");
+    throw new Error(es ? `Las descargas no están disponibles en esta vista; ${filename} no se ha guardado.` : `Downloads are not available in this view, so ${filename} was not saved.`);
+  }
   try {
     await downloads.save({ filename, data: blob });
   } catch (e: any) {

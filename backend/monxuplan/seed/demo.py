@@ -733,6 +733,13 @@ def _build(b: Builder) -> dict[str, Any]:
     }
 
 
+def _demo_secret() -> str | None:
+    try:
+        return encrypt_secret("demo-not-a-real-secret")
+    except DomainError:  # runtime without encryption (browser build): connector stays without credentials
+        return None
+
+
 def main() -> None:  # pragma: no cover
     import argparse
     import json
@@ -748,10 +755,3 @@ def main() -> None:  # pragma: no cover
 
 if __name__ == "__main__":  # pragma: no cover
     main()
-
-
-def _demo_secret() -> str | None:
-    try:
-        return encrypt_secret("demo-not-a-real-secret")
-    except DomainError:  # runtime without encryption (browser build): connector stays without credentials
-        return None

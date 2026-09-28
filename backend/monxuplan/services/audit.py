@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, time
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -30,7 +30,7 @@ def snapshot(obj: Any, fields: list[str] | None = None) -> dict[str, Any] | None
 def _json(v: Any) -> Any:
     if isinstance(v, uuid.UUID):
         return str(v)
-    if isinstance(v, datetime | date):
+    if isinstance(v, datetime | date | time):
         return v.isoformat()
     if isinstance(v, dict):
         return {k: _json(x) for k, x in v.items()}

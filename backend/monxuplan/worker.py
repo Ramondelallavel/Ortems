@@ -69,6 +69,12 @@ def loop(poll_s: float = 1.0) -> None:
                 if n:
                     log.warning("re-queued %d stale planning runs", n)
                 last_stale = time.monotonic()
+                try:
+                    from .services.dbconnect import run_due
+
+                    run_due()
+                except Exception:  # noqa: BLE001 - scheduled syncs never stop planning
+                    log.exception("scheduled database sync failed")
             job = claim_next()
             if job is None:
                 _stop.wait(poll_s)

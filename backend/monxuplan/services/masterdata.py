@@ -143,28 +143,48 @@ def apply_fields(obj: Any, data: dict[str, Any], d: EntityDef | None = None, cre
     return changed
 
 
-def schema(d: EntityDef) -> dict[str, Any]:
-    """Field metadata used by the generic UI forms."""
+def _field_defs(model: type, refs: dict[str, str], readonly: set[str], skip: set[str] = frozenset()) -> list[dict[str, Any]]:
+    from sqlalchemy import JSON as _JSON
+
     fields = []
-    for c in d.model.__table__.columns:
-        if c.key in SYSTEM:
+    for c in model.__table__.columns:
+        if c.key in SYSTEM or c.key in skip:
             continue
         t = c.type
         kind = (
             "uuid" if isinstance(t, Uuid) else "datetime" if isinstance(t, DateTime) else "date" if isinstance(t, Date) else "time" if isinstance(t, Time)
-            else "boolean" if isinstance(t, Boolean) else "integer" if isinstance(t, Integer) else "number" if isinstance(t, Float | Numeric) else "json" if c.type.__class__.__name__ in ("JSON", "Variant") else "string"
+            else "boolean" if isinstance(t, Boolean) else "integer" if isinstance(t, Integer) else "number" if isinstance(t, Float | Numeric)
+            else "json" if isinstance(t, _JSON) or c.type.__class__.__name__ in ("JSON", "Variant") else "string"
         )
+        ref = refs.get(c.key)
+        if ref is None and c.foreign_keys:
+            target = next(iter(c.foreign_keys)).column.table.name
+            ref = next((e.name for e in REGISTRY.values() if e.model.__table__.name == target and not e.fixed_filter), None)
         fields.append(
             {
                 "name": c.key,
                 "type": kind,
                 "required": not c.nullable and c.default is None and c.server_default is None and not c.primary_key,
-                "ref": d.refs.get(c.key),
-                "readonly": c.key in d.readonly,
+                "ref": ref,
+                "readonly": c.key in readonly,
                 "max_length": getattr(t, "length", None),
             }
         )
-    return {"name": d.name, "label": d.label, "group": d.group, "fields": fields, "children": [{"name": ch.name, "fields": [c.key for c in ch.model.__table__.columns if c.key not in SYSTEM | {ch.fk}]} for ch in d.children]}
+    return fields
+
+
+def schema(d: EntityDef) -> dict[str, Any]:
+    """Field metadata used by the generic UI forms (parent and child tables)."""
+    return {
+        "name": d.name,
+        "label": d.label,
+        "group": d.group,
+        "fields": _field_defs(d.model, d.refs, d.readonly),
+        "children": [
+            {"name": ch.name, "fields": [c.key for c in ch.model.__table__.columns if c.key not in SYSTEM | {ch.fk}], "field_defs": _field_defs(ch.model, {}, set(), {ch.fk})}
+            for ch in d.children
+        ],
+    }
 
 
 # ---------------------------------------------------------------------------------------------
@@ -220,8 +240,14 @@ def _add_ref_labels(s: Session, d: EntityDef, items: list[dict]) -> None:
         if rd is None:
             continue
         Mdl = rd.model
-        label_col = "code" if hasattr(Mdl, "code") else "number" if hasattr(Mdl, "number") else "name"
-        labels = {str(i): lbl for i, lbl in s.execute(select(Mdl.id, getattr(Mdl, label_col)).where(Mdl.id.in_([uuid.UUID(x) for x in ids])))}
+        if hasattr(Mdl, "item_id") and not hasattr(Mdl, "code") and not hasattr(Mdl, "number"):  # BOMs, routings: the item's code
+            q = select(Mdl.id, M.Item.code).join(M.Item, M.Item.id == Mdl.item_id)
+        else:
+            label_col = next((c for c in ("code", "number", "name", "lot_number", "version_code") if hasattr(Mdl, c)), None)
+            if label_col is None:
+                continue
+            q = select(Mdl.id, getattr(Mdl, label_col))
+        labels = {str(i): lbl for i, lbl in s.execute(q.where(Mdl.id.in_([uuid.UUID(x) for x in ids])))}
         for it in items:
             if it.get(col):
                 it[col.removesuffix("_id") + "_label"] = labels.get(it[col])
@@ -260,7 +286,7 @@ def _matches_fixed(d: EntityDef, obj: Any) -> bool:
 # ---------------------------------------------------------------------------------------------
 
 
-def create_row(s: Session, ctx: Ctx, name: str, data: dict[str, Any], reason: str | None = None) -> dict[str, Any]:
+def create_row(s: Session, ctx: Ctx, name: str, data: dict[str, Any], reason: str | None = None, return_row: bool = True) -> dict[str, Any] | None:
     d = get_def(name)
     ctx.require(d.write_perm)
     obj = d.model()
@@ -283,10 +309,10 @@ def create_row(s: Session, ctx: Ctx, name: str, data: dict[str, Any], reason: st
     if d.after_create:
         d.after_create(s, ctx, obj, data)
     audit.record(s, ctx, "CREATE", d.name, obj.id, _label(obj), after=audit.snapshot(obj), reason=reason)
-    return get_row(s, ctx, name, obj.id)
+    return get_row(s, ctx, name, obj.id) if return_row else None
 
 
-def update_row(s: Session, ctx: Ctx, name: str, id_: uuid.UUID, data: dict[str, Any], reason: str | None = None) -> dict[str, Any]:
+def update_row(s: Session, ctx: Ctx, name: str, id_: uuid.UUID, data: dict[str, Any], reason: str | None = None, return_row: bool = True) -> dict[str, Any] | None:
     d = get_def(name)
     ctx.require(d.write_perm)
     obj = s.get(d.model, id_)
@@ -309,7 +335,7 @@ def update_row(s: Session, ctx: Ctx, name: str, id_: uuid.UUID, data: dict[str, 
         raise Conflict(f"{d.label} could not be saved: duplicate code/number or invalid reference.", code="INTEGRITY_ERROR", context={"detail": str(exc.orig)[:300]}) from exc
     _write_children(s, ctx, d, obj, data)
     audit.record(s, ctx, "UPDATE", d.name, obj.id, _label(obj), before=before, after=audit.snapshot(obj), reason=reason)
-    return get_row(s, ctx, name, obj.id)
+    return get_row(s, ctx, name, obj.id) if return_row else None
 
 
 def delete_row(s: Session, ctx: Ctx, name: str, id_: uuid.UUID, reason: str | None = None) -> dict[str, Any]:
@@ -360,7 +386,14 @@ def _write_children(s: Session, ctx: Ctx, d: EntityDef, obj: Any, data: dict[str
             except ValidationFailed as exc:
                 exc.message = f"{ch.name}[{i + 1}]: {exc.message}"
                 raise
-            s.flush()
+            missing = [col.key for col in ch.model.__table__.columns if col.key not in SYSTEM and col.key != ch.fk and not col.nullable and col.default is None and col.server_default is None and not col.primary_key and getattr(c, col.key) is None]
+            if missing:
+                raise ValidationFailed(f"{ch.name} row {i + 1}: {', '.join(missing)} required", code="REQUIRED", context={"field": ch.name})
+            try:
+                with s.begin_nested():
+                    s.flush()
+            except IntegrityError as exc:
+                raise Conflict(f"{ch.name} row {i + 1} could not be saved: duplicated values or an invalid reference.", code="INTEGRITY_ERROR", context={"field": ch.name, "detail": str(exc.orig)[:300]}) from exc
             keep.add(c.id)
         for cid, c in existing.items():
             if cid not in keep:
@@ -485,3 +518,15 @@ register(
 register(EntityDef("purchase-orders", M.PurchaseOrder, "Purchase order", ["number"], order_by="-number", read_perm="orders:read", write_perm="orders:write", children=[ChildDef("lines", M.PurchaseOrderLine, "purchase_order_id", "line_no")], refs={"supplier_id": "suppliers", "plant_id": "plants"}, group="Orders"))
 register(EntityDef("inventory", M.Inventory, "Inventory", ["location"], order_by="item_id", read_perm="orders:read", write_perm="orders:write", plant_scoped=True, refs={"item_id": "items", "plant_id": "plants"}, group="Inventory"))
 register(EntityDef("demands", M.Demand, "Demand", ["demand_type", "source"], order_by="period_start", read_perm="orders:read", write_perm="orders:write", refs={"item_id": "items", "plant_id": "plants"}, group="Demand"))
+register(EntityDef("companies", M.Company, "Company", ["code", "name"], write_perm="admin:config", group="Organisation"))
+register(EntityDef("item-plants", M.ItemPlant, "Item per plant (sourcing)", ["sourcing"], order_by="item_id", refs={"item_id": "items", "plant_id": "plants"}, group="Products"))
+register(EntityDef("uom-conversions", M.UomConversion, "Unit conversion", ["from_code", "to_code"], order_by="from_code", refs={"item_id": "items"}, group="Products"))
+register(EntityDef("material-lots", M.MaterialLot, "Material lot", ["lot_number", "status"], order_by="lot_number", read_perm="orders:read", write_perm="orders:write", plant_scoped=True, refs={"item_id": "items", "plant_id": "plants"}, group="Inventory"))
+register(EntityDef("inventory-transactions", M.InventoryTransaction, "Inventory transaction", ["kind", "ref"], order_by="-occurred_at", read_perm="orders:read", write_perm="orders:write", plant_scoped=True, refs={"item_id": "items", "plant_id": "plants"}, group="Inventory"))
+register(
+    EntityDef(
+        "order-operations", M.ProductionOrderOperation, "Order operation", ["code", "name", "status"], order_by="seq", read_perm="orders:read", write_perm="orders:write",
+        refs={"order_id": "production-orders", "routing_operation_id": "routing-operations", "actual_resource_id": "resources", "pinned_resource_id": "resources"}, group="Orders",
+    )
+)
+register(EntityDef("actual-production", M.ActualProduction, "Production report (actuals)", ["operator_code", "source"], order_by="-start", read_perm="orders:read", write_perm="execution:report", refs={"order_operation_id": "order-operations", "resource_id": "resources"}, group="Execution"))

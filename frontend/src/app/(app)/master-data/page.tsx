@@ -1,17 +1,41 @@
 "use client";
 import Link from "next/link";
-import { ErrorState, Loading, PageHeader, Panel } from "@/components/ui";
+import { Button, ErrorState, Loading, PageHeader, Panel, useToast } from "@/components/ui";
+import { download } from "@/lib/api";
 import { useApi } from "@/lib/hooks";
 import { useSession } from "@/lib/session";
 
 export default function MasterDataIndex() {
-  const { t } = useSession();
+  const { t, can, plant } = useSession();
+  const toast = useToast();
   const ents = useApi<any>("/master-data");
   const groups: Record<string, any[]> = {};
   for (const e of ents.data?.entities || []) (groups[e.group] ||= []).push(e);
   return (
     <div className="flex flex-col h-full min-h-0">
-      <PageHeader title={t("nav.masterData")} subtitle="Every table is editable here or importable from Excel/CSV (Integrations → Import)." />
+      <PageHeader
+        title={t("nav.masterData")}
+        subtitle={t("md.indexHelp")}
+        actions={
+          <>
+            {can("integration:export") && (
+              <Button icon="download" onClick={() => download("/exports/workbook", { plant_id: plant?.id }).catch(toast.error)}>
+                {t("wb.download")}
+              </Button>
+            )}
+            {can("integration:import") && (
+              <Link className="mx-btn" href="/integrations?tab=workbook">
+                {t("wb.importLink")}
+              </Link>
+            )}
+            {can("integration:manage") && (
+              <Link className="mx-btn" href="/integrations?tab=database">
+                {t("int.database")}
+              </Link>
+            )}
+          </>
+        }
+      />
       <div className="flex-1 overflow-auto mx-scroll p-3">
         <ErrorState error={ents.error} onRetry={ents.reload} />
         {!ents.data && <Loading />}

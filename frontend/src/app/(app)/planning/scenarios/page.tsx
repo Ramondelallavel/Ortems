@@ -9,6 +9,7 @@ import { dt, duration, localInputToIso, num } from "@/lib/format";
 import { useApi, useQueryParam } from "@/lib/hooks";
 import type { ScenarioRow } from "@/lib/plan";
 import { useSession } from "@/lib/session";
+import { SectionData } from "@/components/data/SectionData";
 
 const WHATIFS = [
   { kind: "NIGHT_SHIFT", label: "Add a night shift", desc: "22:00–06:00 on selected machines and weekdays" },
@@ -84,6 +85,7 @@ export default function ScenariosPage() {
         actions={
           can("scenario:write") && (
             <>
+              <SectionData tables={["planning-rules", "sequence-rules", "setup-rules", "optimization-profiles"]} />
               <Button icon="plus" onClick={() => setCloneOpen(true)}>
                 New scenario
               </Button>

@@ -5,6 +5,7 @@ import { api } from "@/lib/api";
 import { date, dt, duration, localInputToIso } from "@/lib/format";
 import { useApi, useQueryParam } from "@/lib/hooks";
 import { useSession } from "@/lib/session";
+import { SectionData } from "@/components/data/SectionData";
 
 type Row = Record<string, any>;
 
@@ -60,6 +61,7 @@ export default function OrdersPage() {
         subtitle={orders.data ? `${orders.data.total} production orders · plan ${orders.data.plan_number || "—"}` : undefined}
         actions={
           <>
+            <SectionData tables={["production-orders", "production-orders.operations", "sales-orders", "sales-orders.lines", "demands", "customers"]} onChanged={orders.reload} />
             <Select ariaLabel="Scope" value={scope} onChange={setScope} options={[{ value: "open", label: "Open orders" }, { value: "all", label: "All orders" }]} />
             <Select
               ariaLabel="Plan status"
