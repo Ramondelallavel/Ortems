@@ -683,9 +683,10 @@ def _build(b: Builder) -> dict[str, Any]:
     live = b.add(Scenario(plant_id=plant.id, name="Live plan", is_live=True, kind="LIVE", owner="planner", config={"horizon_days": 42, "frozen_hours": 24, "flexible_days": 7, "profile_code": "BALANCED"}, description="Operational plan of Sevilla Plant"))
     s.flush()
     plant.live_scenario_id = live.id
-    b.add(Scenario(plant_id=plant_mx.id, name="Live plan", is_live=True, kind="LIVE", owner="planner", config={"horizon_days": 28, "frozen_hours": 24, "profile_code": "BALANCED"}))
+    live_mx = b.add(Scenario(plant_id=plant_mx.id, name="Live plan", is_live=True, kind="LIVE", owner="planner", config={"horizon_days": 28, "frozen_hours": 24, "profile_code": "BALANCED"}))
     night = b.add(Scenario(plant_id=plant.id, name="What-if: CNC night shift", kind="WHAT_IF", owner="planner", config={"horizon_days": 42, "frozen_hours": 24, "profile_code": "BALANCED"}, description="Add a night shift (22:00–06:00, Mon–Thu) on the four CNC machines"))
     s.flush()
+    plant_mx.live_scenario_id = live_mx.id
     b.add(ScenarioChange(scenario_id=night.id, seq=1, type="ADD_SHIFT", payload={"resource_ids": [str(res[c].id) for c in ("CNC-01", "CNC-02", "CNC-03", "CNC-04")], "label": "night", "shifts": [{"weekday": d, "start": "22:00", "end": "06:00", "kind": "REGULAR"} for d in range(4)]}, description="+ Night shift on CNC-01..04"))
     buy = b.add(Scenario(plant_id=plant.id, name="What-if: buy CNC-08", kind="WHAT_IF", owner="planner", config={"horizon_days": 42, "frozen_hours": 24, "profile_code": "BALANCED"}, description="A fifth 5-axis machining centre available from next Monday"))
     s.flush()

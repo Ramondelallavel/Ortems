@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from ..core.clock import now
 from ..core.errors import Conflict, NotFound, Unauthorized, ValidationFailed
-from ..core.security import ROLES, create_token, hash_api_key, hash_password, new_api_key, parse_api_key, password_problems, verify_password, verify_oidc
+from ..core.security import ROLES, create_token, hash_api_key, hash_password, new_api_key, parse_api_key, password_problems, verify_oidc, verify_password
 from ..models import ApiKey, Role, Tenant, User, UserRole
 from . import audit
 from .context import Ctx

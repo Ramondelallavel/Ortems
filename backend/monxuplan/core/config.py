@@ -56,7 +56,7 @@ class Settings:
     log_level: str = field(default_factory=lambda: os.environ.get("MONXU_LOG_LEVEL", "INFO"))
     log_json: bool = field(default_factory=lambda: _bool("MONXU_LOG_JSON", True))
     anthropic_api_key: str | None = field(default_factory=lambda: os.environ.get("ANTHROPIC_API_KEY") or None)
-    assistant_model: str = field(default_factory=lambda: os.environ.get("MONXU_ASSISTANT_MODEL", "claude-sonnet-5"))
+    assistant_model: str = field(default_factory=lambda: os.environ.get("MONXU_ASSISTANT_MODEL", "claude-opus-5"))
     webhook_timeout_s: float = field(default_factory=lambda: float(os.environ.get("MONXU_WEBHOOK_TIMEOUT_S", "5")))
     default_time_limits: dict = field(default_factory=lambda: {"QUICK": 10.0, "NORMAL": 60.0, "DEEP": 600.0})
 

@@ -18,10 +18,12 @@ from sqlalchemy.orm import Session
 from monxuplan_engine.contract import (
     OrderResult,
     Problem,
-    ScheduledOperation as EngScheduled,
     Solution,
     SolverMetadata,
     Violation,
+)
+from monxuplan_engine.contract import (
+    ScheduledOperation as EngScheduled,
 )
 from monxuplan_engine.diff import compare_solutions
 from monxuplan_engine.pipeline import PIPELINE_STEPS, solve
@@ -207,6 +209,7 @@ def execute_run(run_id: uuid.UUID, tenant_id: uuid.UUID) -> None:
                 overrides["solver"] = {**overrides["solver"], "provider": "heuristic", "local_search": False}
             problem, info = build_problem(s, sc, baseline_plan=baseline, frozen_plan=frozen, overrides=overrides)
             provider = problem.solver.provider
+            s.commit()  # release any write lock before the long solve (progress is written from other sessions)
             bus().publish("planning.run.started", str(tenant_id), {"run_id": str(run.id), "scenario_id": str(sc.id)}, str(plant_id))
             solution = solve(problem, progress=prog, cancelled=prog.is_cancelled)
             prog.mark("Save schedule", "RUNNING")
@@ -232,13 +235,17 @@ def execute_run(run_id: uuid.UUID, tenant_id: uuid.UUID) -> None:
             from .alerts import generate_alerts
 
             generate_alerts(s, ctx, plan, solution, sc)
+            s.commit()  # commit before writing progress from another session (avoids lock waits)
             prog.mark("Save schedule", "DONE", plan.number)
             prog.mark("Publish result", "DONE", "draft plan available")
         except NotSupported as exc:
+            s.rollback()
             _fail(run, "PROVIDER_NOT_SUPPORTED", str(exc), None)
         except DomainError as exc:
+            s.rollback()
             _fail(run, exc.code, exc.message, None)
         except Exception as exc:  # noqa: BLE001
+            s.rollback()  # never keep a half-written plan
             error_id = uuid.uuid4().hex[:10]
             log.exception("planning run failed", extra={"planning_run": str(run_id), "error_id": error_id})
             _fail(run, "ENGINE_ERROR", f"MonxuPlan couldn't generate the schedule (error {error_id}). The technical details were logged for the administrator.", traceback.format_exc()[-8000:])

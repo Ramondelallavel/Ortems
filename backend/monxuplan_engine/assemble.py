@@ -39,6 +39,24 @@ def assemble(result: BuildResult, meta: SolverMetadata, validation: ValidationRe
     stab = stability(cp, result.placements)
     kpis, details = compute_kpis(result, validation, orders, stab if cp.baseline else None)
     details["stability"] = stab
+    # full causal chains for late / unscheduled orders (Root Cause Analysis) and "deadline impossible"
+    from .explain import root_cause
+
+    chains: dict[str, list] = {}
+    for row in orders:
+        if row["status"] in ("LATE", "UNSCHEDULED", "PARTIAL") and len(chains) < 400:
+            o = cp.orders[row["order"]]
+            chains[o.id] = root_cause(result, o.idx)
+    details["root_causes"] = chains
+    for lo in details.get("late_orders", []):
+        oi = cp.order_index.get(lo["order_id"])
+        if oi is None:
+            continue
+        eft = result.timing.order_eft[oi]
+        lo["earliest_possible_infinite_capacity"] = cp.dt(eft).isoformat() if eft is not None else None
+        lateness = lo.get("lateness_minutes") or 0
+        waits = sum(st.get("data", {}).get("wait_minutes", 0) for st in chains.get(lo["order_id"], []) if st.get("code") in ("RESOURCE_BUSY", "RESOURCE_FULL", "WAITS_LABOR", "WAITS_TOOL", "WAITS_SETUP"))
+        lo["required_additional_capacity_h"] = round(min(lateness, waits) / 60.0, 1) if lateness and waits else (0.0 if lateness else None)
 
     schedule: list[ScheduledOperation] = []
     for p in result.placements:
