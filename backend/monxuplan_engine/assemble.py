@@ -198,7 +198,7 @@ def assemble(result: BuildResult, meta: SolverMetadata, validation: ValidationRe
             )
 
     meta.input_hash = cp.input_hash
-    return Solution(
+    sol = Solution.fast(
         scenario_id=cp.problem.scenario_id,
         schedule=schedule,
         unscheduled=unscheduled,
@@ -212,3 +212,5 @@ def assemble(result: BuildResult, meta: SolverMetadata, validation: ValidationRe
         pegging=pegging,
         solver_metadata=meta,
     )
+    sol._state = result  # in-process only (read models for the platform), never serialised
+    return sol

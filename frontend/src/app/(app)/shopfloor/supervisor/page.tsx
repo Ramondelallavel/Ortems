@@ -1,18 +1,34 @@
 "use client";
-import { ErrorState, Loading, PageHeader, StatusPill } from "@/components/ui";
+import { useState } from "react";
+import { ErrorState, Loading, PageHeader, Select, StatusPill } from "@/components/ui";
 import { dt, time } from "@/lib/format";
 import { useApi, useEvents } from "@/lib/hooks";
 import { useSession } from "@/lib/session";
 import { SectionData } from "@/components/data/SectionData";
 
+function More({ shown, total }: { shown: number; total: number | undefined }) {
+  return total && total > shown ? <div className="text-slate-600 text-[11.5px]">… {total - shown} more</div> : null;
+}
+
 export default function SupervisorPage() {
   const { t, plant } = useSession();
-  const d = useApi<any>(plant ? "/supervisor" : null, plant ? { plant_id: plant.id } : undefined);
+  const [area, setArea] = useState("");
+  const areas = useApi<any>(plant ? "/master-data/areas" : null, plant ? { plant_id: plant.id, limit: 500 } : undefined);
+  const d = useApi<any>(plant ? "/supervisor" : null, plant ? { plant_id: plant.id, area_id: area || undefined } : undefined);
   useEvents((type) => (type.startsWith("event.") || type === "plan.published") && d.reload(), plant?.id);
   if (!plant) return <Loading />;
   return (
     <div className="flex flex-col h-full min-h-0">
-      <PageHeader title={t("nav.supervisor")} subtitle={d.data ? `${d.data.plan.number} · ${dt(d.data.at)}` : undefined} actions={<SectionData tables={["actual-production", "order-operations", "downtimes", "maintenance"]} />} />
+      <PageHeader
+        title={t("nav.supervisor")}
+        subtitle={d.data ? `${d.data.plan.number} · ${dt(d.data.at)} · ${d.data.resources.length} resources` : undefined}
+        actions={
+          <>
+            <Select ariaLabel="Area" value={area} onChange={setArea} options={[{ value: "", label: "All areas" }, ...(areas.data?.items || []).map((a: any) => ({ value: a.id, label: `${a.code} · ${a.name}` }))]} />
+            <SectionData tables={["actual-production", "order-operations", "downtimes", "maintenance"]} />
+          </>
+        }
+      />
       <div className="flex-1 overflow-auto mx-scroll p-3">
         {d.error ? (
           <ErrorState error={d.error} onRetry={d.reload} />
@@ -49,16 +65,19 @@ export default function SupervisorPage() {
                         ▲ <span className="code">{x.op_id}</span> {x.reason}
                       </div>
                     ))}
+                    <More shown={r.delayed.length} total={r.delayed_total} />
                     {r.material_issues.map((x: any) => (
                       <div key={x.op_id} className="text-amber-600">
                         ◆ material risk <span className="code">{x.op_id}</span>
                       </div>
                     ))}
+                    <More shown={r.material_issues.length} total={r.material_issues_total} />
                     {r.blocked.map((x: any) => (
                       <div key={x.op_id} className="text-red-600">
                         ✕ blocked order <span className="code">{x.order}</span>
                       </div>
                     ))}
+                    <More shown={r.blocked.length} total={r.blocked_total} />
                   </div>
                 </section>
               );

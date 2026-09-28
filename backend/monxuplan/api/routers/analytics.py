@@ -11,6 +11,7 @@ from ...services import analytics as an
 from ...services import views
 from ...services.context import Ctx
 from ..deps import get_ctx, get_db
+from ..fastjson import fast_json
 
 router = APIRouter(tags=["analytics"])
 
@@ -31,8 +32,20 @@ def bottlenecks(plan_id: uuid.UUID, ctx: Ctx = Depends(get_ctx), s=Depends(get_d
 
 
 @router.get("/capacity/load")
-def load(plan_id: uuid.UUID, bucket: str = "day", group_by: str = Query("resource", pattern="^(resource|group|area|plant)$"), start: datetime | None = None, end: datetime | None = None, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
-    return an.capacity(s, ctx, plan_id, bucket, group_by, start, end)
+def load(
+    plan_id: uuid.UUID,
+    bucket: str = "day",
+    group_by: str = Query("resource", pattern="^(resource|group|area|plant)$"),
+    start: datetime | None = None,
+    end: datetime | None = None,
+    offset: int = Query(0, ge=0),
+    limit: int | None = Query(None, ge=1, le=5000),
+    q: str | None = None,
+    sort: str = Query("code", pattern="^(code|load)$"),
+    ctx: Ctx = Depends(get_ctx),
+    s=Depends(get_db),
+):
+    return fast_json(an.capacity(s, ctx, plan_id, bucket, group_by, start, end, offset, limit, q, sort))
 
 
 @router.get("/analytics/compare")

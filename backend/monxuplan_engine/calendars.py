@@ -308,13 +308,14 @@ def _merge(iv: list[tuple[int, int]]) -> list[tuple[int, int]]:
 class TimeAxis:
     """Conversion between aware datetimes and integer minutes since the horizon origin."""
 
-    __slots__ = ("origin", "default_tz")
+    __slots__ = ("origin", "default_tz", "_dt")
 
     def __init__(self, origin: datetime, default_tz: str = "UTC") -> None:
         if origin.tzinfo is None:
             origin = origin.replace(tzinfo=ZoneInfo(default_tz))
         self.origin = origin.astimezone(UTC)
         self.default_tz = default_tz
+        self._dt: dict[int, datetime] = {}  # a plan uses a few thousand distinct minutes, millions of times
 
     def to_min(self, dt: datetime, tz: str | None = None) -> int:
         if dt.tzinfo is None:
@@ -330,7 +331,12 @@ class TimeAxis:
         return m if m * 60 == secs else m + 1
 
     def to_dt(self, minutes: int) -> datetime:
-        return self.origin + timedelta(minutes=minutes)
+        d = self._dt.get(minutes)
+        if d is None:
+            d = self.origin + timedelta(minutes=minutes)
+            if len(self._dt) < 500_000:
+                self._dt[minutes] = d
+        return d
 
 
 def _local_to_min(axis: TimeAxis, d: date, t: time, tz: ZoneInfo) -> int:

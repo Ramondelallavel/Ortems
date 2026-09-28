@@ -4,6 +4,7 @@ dispatch lists, supervisor and operator views, plan vs actual."""
 from __future__ import annotations
 
 import uuid
+from bisect import bisect_right
 from collections import defaultdict
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -36,10 +37,17 @@ from ..models import (
     Scenario,
     ScheduledOperation,
 )
+from . import plan_store
 from .context import Ctx
 from .engine_view import replay
 from .masterdata import row_dict, to_json
 from .planning import get_scenario
+
+GANTT_FULL_PLAN_MAX_OPS = 30_000  # above this a plan is browsed by windows (default: its first day)
+GANTT_MAX_OPS = 60_000  # operations per Gantt response
+DISPATCH_MAX_ROWS = 5_000  # dispatch rows per response without a resource filter
+SUPERVISOR_LIST_CAP = 20  # items per list and resource in the supervisor view (totals are given)
+PVA_MAX_ACTUALS = 50_000  # plan-vs-actual compares the most recent executions (the response says so)
 
 
 def _aware(dt: datetime | None) -> datetime | None:
@@ -111,9 +119,10 @@ def plan_header(s: Session, ctx: Ctx, plan_id: uuid.UUID) -> dict[str, Any]:
     out["hard_violations_placed"] = s.scalar(
         select(func.count()).select_from(ConstraintViolation).where(ConstraintViolation.plan_id == plan.id, ConstraintViolation.hardness == "HARD", ConstraintViolation.type != "UNSCHEDULED")
     ) or 0
-    out["operations"] = s.scalar(select(func.count()).select_from(ScheduledOperation).where(ScheduledOperation.plan_id == plan.id))
     an = plan.analysis or {}
-    out["unscheduled_count"] = len(an.get("unscheduled", []))
+    counts = an.get("counts") or {}
+    out["operations"] = counts["operations"] if "operations" in counts else s.scalar(select(func.count()).select_from(ScheduledOperation).where(ScheduledOperation.plan_id == plan.id))
+    out["unscheduled_count"] = plan_store.unscheduled_count(s, plan)
     out["bottlenecks"] = an.get("bottlenecks", [])[:10]
     out["data_issues"] = an.get("data_issues", [])
     out["change_log"] = an.get("change_log", [])
@@ -158,27 +167,50 @@ def gantt(
     end: datetime | None = None,
     resource_ids: list[str] | None = None,
     include_secondary: bool = False,
+    include_operations: bool = True,
+    include_resources: bool = True,
 ) -> dict[str, Any]:
     plan = _get_plan(s, ctx, plan_id)
-    start = start or _aware(plan.horizon_start) - timedelta(days=1)
+    counts = (plan.analysis or {}).get("counts") or {}
+    large = (counts.get("operations") or 0) > GANTT_FULL_PLAN_MAX_OPS
+    if start is None:
+        start = _aware(plan.horizon_start) - timedelta(days=0 if large else 1)
     if end is None:
-        # the default window shows every operation, including those that overflow the horizon
-        last = s.scalar(select(func.max(ScheduledOperation.end)).where(ScheduledOperation.plan_id == plan.id))
-        end = max(_aware(plan.horizon_end), _aware(last) if last else _aware(plan.horizon_end))
+        if large:
+            # a 200 000-operation plan is browsed window by window: the default is its first day
+            end = start + timedelta(days=1)
+        else:
+            # the default window shows every operation, including those that overflow the horizon
+            last = s.scalar(select(func.max(ScheduledOperation.end)).where(ScheduledOperation.plan_id == plan.id))
+            end = max(_aware(plan.horizon_end), _aware(last) if last else _aware(plan.horizon_end))
     if end <= start:
         raise ValidationFailed("end must be after start")
     if (end - start).days > 400:
         raise ValidationFailed("Window too large (max 400 days)")
-    q = select(ScheduledOperation).where(ScheduledOperation.plan_id == plan.id, ScheduledOperation.end >= start, ScheduledOperation.setup_start <= end)
-    if resource_ids:
-        q = q.where(ScheduledOperation.resource_key.in_(resource_ids))
-    rows = list(s.scalars(q))
+    SO = ScheduledOperation
+    q = select(
+        SO.op_key, SO.order_key, SO.order_id, SO.resource_key, SO.secondary, SO.setup_start, SO.start, SO.end, SO.setup_minutes, SO.run_minutes, SO.working_minutes, SO.quantity,
+        SO.is_fixed, SO.fixed_reason, SO.is_locked, SO.is_late, SO.zone, SO.subcontracted, SO.binding,
+    ).where(SO.plan_id == plan.id, SO.end >= start, SO.setup_start <= end)
+    rows = []
+    if not include_operations:
+        pass
+    elif resource_ids:
+        for part in plan_store.chunks(resource_ids):
+            rows.extend(s.execute(q.where(SO.resource_key.in_(part))).all())
+    else:
+        rows = s.execute(q.limit(GANTT_MAX_OPS + 1)).all()
+    truncated = len(rows) > GANTT_MAX_OPS
+    rows = rows[:GANTT_MAX_OPS]
     order_ids = {r.order_id for r in rows if r.order_id}
-    orders = {o.id: o for o in s.scalars(select(ProductionOrder).where(ProductionOrder.id.in_(order_ids)))} if order_ids else {}
-    items = {i.id: i for i in s.scalars(select(Item).where(Item.id.in_({o.item_id for o in orders.values()})))} if orders else {}
+    PO = ProductionOrder
+    orders = {o.id: o for part in plan_store.chunks(order_ids) for o in s.execute(select(PO.id, PO.number, PO.item_id, PO.customer_id, PO.priority, PO.expedite, PO.due_date).where(PO.id.in_(part)))}
+    item_ids = {o.item_id for o in orders.values()}
+    items = {i.id: i for part in plan_store.chunks(item_ids) for i in s.execute(select(Item.id, Item.code, Item.name, Item.family_id, Item.attributes).where(Item.id.in_(part)))}
     fams = {f.id: f for f in s.scalars(select(ProductFamily))}
-    custs = {c.id: c for c in s.scalars(select(Customer))}
-    plan_orders = {o["order_id"]: o for o in (plan.analysis or {}).get("orders", [])}
+    cust_ids = {o.customer_id for o in orders.values() if o.customer_id}
+    custs = {c.id: c for part in plan_store.chunks(cust_ids) for c in s.execute(select(Customer.id, Customer.name).where(Customer.id.in_(part)))}
+    plan_orders = plan_store.order_results(s, plan, {r.order_key for r in rows})
     ops = []
     for r in rows:
         o = orders.get(r.order_id)
@@ -220,62 +252,13 @@ def gantt(
             }
         )
     # resources (rows) with calendars and unavailability inside the window
-    cp, _res = replay(s, plan)
     plant = s.get(Plant, plan.plant_id)
-    db_res = {str(r.id): r for r in s.scalars(select(Resource).where(Resource.plant_id == plan.plant_id))}
-    areas = {a.id: a for a in s.scalars(select(PlanningArea).where(PlanningArea.plant_id == plan.plant_id))}
-    grp_rows = s.execute(select(ResourceGroupMember.resource_id, ResourceGroup.code).join(ResourceGroup, ResourceGroup.id == ResourceGroupMember.group_id)).all()
-    groups: dict[str, list[str]] = defaultdict(list)
-    for rid, code in grp_rows:
-        groups[str(rid)].append(code)
-    a_min, b_min = cp.axis.to_min(start), cp.axis.to_min(end)
-    resources = []
-    busy: dict[str, int] = defaultdict(int)
-    for r in rows:
-        busy[r.resource_key] += r.working_minutes or 0
-    for cr in cp.resources:
-        if resource_ids and cr.id not in resource_ids:
-            continue
-        dbr = db_res.get(cr.id)
-        if cr.kind in ("LABOR_POOL",) and not include_secondary:
-            continue
-        if cr.kind == "TOOL" and not include_secondary:
-            continue
-        nonwork = []
-        prev = a_min
-        for ws, we in cr.cal.segments():
-            if we <= a_min or ws >= b_min:
-                continue
-            if ws > prev:
-                nonwork.append([cp.dt(prev).isoformat(), cp.dt(ws).isoformat()])
-            prev = max(prev, we)
-        if prev < b_min:
-            nonwork.append([cp.dt(prev).isoformat(), cp.dt(b_min).isoformat()])
-        cap = cr.cal.working_between(a_min, b_min) if cr.finite else 0
-        resources.append(
-            {
-                "id": cr.id,
-                "code": cr.code,
-                "name": cr.name,
-                "kind": cr.kind,
-                "area": cr.area,
-                "area_name": areas[dbr.area_id].name if dbr and dbr.area_id in areas else None,
-                "area_order": areas[dbr.area_id].sort_order if dbr and dbr.area_id in areas else 99,
-                "groups": groups.get(cr.id, []),
-                "status": dbr.status if dbr else None,
-                "finite": cr.finite,
-                "non_working": nonwork,
-                "unavailability": [
-                    {"id": uid, "start": cp.dt(a).isoformat(), "end": cp.dt(b).isoformat(), "kind": kind, "reason": reason}
-                    for a, b, kind, reason, uid, _loss in cr.unavail
-                    if b > a_min and a < b_min
-                ],
-                "capacity_minutes": cap,
-                "busy_minutes": busy.get(cr.id, 0),
-                "utilization": round(busy.get(cr.id, 0) / cap, 4) if cap else None,
-            }
-        )
-    resources.sort(key=lambda r: (r["area_order"], r["kind"] != "MACHINE", r["code"]))
+    busy: dict[str, int] | None = None
+    if include_operations:
+        busy = defaultdict(int)
+        for r in rows:
+            busy[r.resource_key] += r.working_minutes or 0
+    resources = resource_rows(s, plan, start, end, resource_ids, include_secondary, busy) if include_resources else []
     return {
         "plan": {"id": str(plan.id), "number": plan.number, "status": plan.status, "version": plan.version},
         "timezone": plant.timezone,
@@ -284,27 +267,162 @@ def gantt(
         "frozen_until": to_json(_aware(plan.frozen_until)),
         "resources": resources,
         "operations": ops,
+        "truncated": truncated,
+        "operation_limit": GANTT_MAX_OPS,
+        "operation_count": counts.get("operations"),
+        "large": large,
     }
+
+
+def find_operations(s: Session, ctx: Ctx, plan_id: uuid.UUID, q: str, limit: int = 20) -> list[dict[str, Any]]:
+    """Operations of a plan whose key (order number / sequence) contains ``q`` — to jump to them in a
+    Gantt that only holds the visible window."""
+    plan = _get_plan(s, ctx, plan_id)
+    q = (q or "").strip().lower()
+    if not q:
+        return []
+    SO = ScheduledOperation
+    rows = s.execute(
+        select(SO.op_key, SO.order_key, SO.resource_key, SO.setup_start, SO.end).where(SO.plan_id == plan.id, func.lower(SO.op_key).like(f"%{q}%")).order_by(SO.op_key).limit(max(1, min(limit, 200)))
+    ).all()
+    return [{"op_id": r.op_key, "order_id": r.order_key, "resource_id": r.resource_key, "setup_start": to_json(_aware(r.setup_start)), "end": to_json(_aware(r.end))} for r in rows]
+
+
+def gantt_blocks(s: Session, ctx: Ctx, plan_id: uuid.UUID, start: datetime, end: datetime, resource_ids: list[str] | None = None, resolution_minutes: int = 30) -> dict[str, Any]:
+    """Operations merged into busy blocks per resource — the zoomed-out Gantt of a dense plan (a
+    machine running 200 jobs a day is drawn as its busy stretches, not as 200 one-pixel bars). A block
+    joins consecutive operations separated by less than ``resolution_minutes``."""
+    plan = _get_plan(s, ctx, plan_id)
+    if end <= start:
+        raise ValidationFailed("end must be after start")
+    if (end - start).days > 400:
+        raise ValidationFailed("Window too large (max 400 days)")
+    SO = ScheduledOperation
+    q = select(SO.resource_key, SO.setup_start, SO.end, SO.is_late, SO.is_locked).where(SO.plan_id == plan.id, SO.end >= start, SO.setup_start <= end).order_by(SO.resource_key, SO.setup_start)
+    rows = []
+    if resource_ids:
+        for part in plan_store.chunks(resource_ids):
+            rows.extend(s.execute(q.where(SO.resource_key.in_(part))).all())
+    else:
+        rows = s.execute(q).all()
+    gap = timedelta(minutes=max(int(resolution_minutes), 1))
+    lanes: dict[str, list[list[Any]]] = {}
+    cur_key, cur = None, None
+    for r in rows:
+        ss, ee = _aware(r.setup_start), _aware(r.end)
+        if r.resource_key != cur_key or cur is None or ss - cur[1] > gap:
+            cur = [ss, ee, 0, 0, 0]  # start, end, operations, late, locked
+            lanes.setdefault(r.resource_key, []).append(cur)
+            cur_key = r.resource_key
+        cur[1] = max(cur[1], ee)
+        cur[2] += 1
+        cur[3] += 1 if r.is_late else 0
+        cur[4] += 1 if r.is_locked else 0
+    return {
+        "plan": {"id": str(plan.id), "number": plan.number},
+        "window": {"start": start.isoformat(), "end": end.isoformat()},
+        "resolution_minutes": int(gap.total_seconds() // 60),
+        "operations": len(rows),
+        "lanes": {k: [[b[0].isoformat(), b[1].isoformat(), b[2], b[3], b[4]] for b in v] for k, v in lanes.items()},
+    }
+
+
+def _calendar_rows(s: Session, plan: Plan, resource_ids: list[str] | None) -> list[dict[str, Any]]:
+    """Calendar of every resource of the plan (stored read model; replayed for older plans)."""
+    docs = plan_store.documents(s, plan, plan_store.DOC_CALENDAR, resource_ids)
+    if docs or plan_store.has_documents(s, plan, plan_store.DOC_CALENDAR):
+        return sorted(docs.values(), key=lambda d: d.get("order", 0))
+    from monxuplan_engine.views import resource_calendar
+
+    cp, res = replay(s, plan)
+    wanted = set(resource_ids) if resource_ids else None
+    return [resource_calendar(res, r.idx) for r in cp.resources if wanted is None or r.id in wanted]
+
+
+def resource_rows(s: Session, plan: Plan, start: datetime, end: datetime, resource_ids: list[str] | None = None, include_secondary: bool = False, busy: dict[str, int] | None = None) -> list[dict[str, Any]]:
+    """Gantt rows: resources with non-working time, unavailability and capacity inside a window.
+    ``busy`` holds the working minutes of the window's operations; without it (rows requested
+    without their operations) the utilisation shown is the resource's over the whole plan."""
+    plan_util = None
+    if busy is None:
+        # kpi_details keeps percentages; Gantt rows use fractions
+        plan_util = {k: round(v["utilization"] / 100.0, 4) for k, v in ((plan.kpi_details or {}).get("resources") or {}).items() if isinstance(v, dict) and v.get("utilization") is not None}
+        busy = {}
+    db_res = {str(r.id): r for r in s.execute(select(Resource.id, Resource.area_id, Resource.status).where(Resource.plant_id == plan.plant_id))}
+    areas = {a.id: a for a in s.scalars(select(PlanningArea).where(PlanningArea.plant_id == plan.plant_id))}
+    groups: dict[str, list[str]] = defaultdict(list)
+    for rid, code in s.execute(select(ResourceGroupMember.resource_id, ResourceGroup.code).join(ResourceGroup, ResourceGroup.id == ResourceGroupMember.group_id)):
+        groups[str(rid)].append(code)
+    out = []
+    for cal in _calendar_rows(s, plan, resource_ids):
+        if cal["kind"] in ("LABOR_POOL", "TOOL") and not include_secondary:
+            continue
+        origin = datetime.fromisoformat(cal["origin"])
+        a_min = int((start - origin).total_seconds() // 60)
+        b_min = int((end - origin).total_seconds() // 60)
+
+        def dt(m: int, _o=origin) -> str:
+            return (_o + timedelta(minutes=m)).isoformat()
+
+        working = cal["working"]
+        k = max(bisect_right([w[1] for w in working], a_min) - 1, 0) if working else 0
+        nonwork, prev, cap = [], a_min, 0
+        for ws, we in working[k:]:
+            if we <= a_min:
+                continue
+            if ws >= b_min:
+                break
+            if ws > prev:
+                nonwork.append([dt(prev), dt(ws)])
+            cap += min(we, b_min) - max(ws, a_min)
+            prev = max(prev, we)
+        if prev < b_min:
+            nonwork.append([dt(prev), dt(b_min)])
+        if not cal["finite"]:
+            cap = 0
+        dbr = db_res.get(cal["id"])
+        area = areas.get(dbr.area_id) if dbr is not None else None
+        rid = cal["id"]
+        out.append(
+            {
+                "id": rid,
+                "code": cal["code"],
+                "name": cal["name"],
+                "kind": cal["kind"],
+                "area": cal["area"],
+                "area_name": area.name if area else None,
+                "area_order": area.sort_order if area else 99,
+                "groups": groups.get(rid, []),
+                "status": dbr.status if dbr is not None else None,
+                "finite": cal["finite"],
+                "non_working": nonwork,
+                "unavailability": [{"id": u["id"], "start": dt(u["start"]), "end": dt(u["end"]), "kind": u["kind"], "reason": u["reason"]} for u in cal["unavailability"] if u["end"] > a_min and u["start"] < b_min],
+                "capacity_minutes": cap,
+                "busy_minutes": busy.get(rid, 0) if plan_util is None else None,
+                "utilization": (round(busy.get(rid, 0) / cap, 4) if cap else None) if plan_util is None else plan_util.get(rid),
+            }
+        )
+    out.sort(key=lambda r: (r["area_order"], r["kind"] != "MACHINE", r["code"]))
+    return out
 
 
 def order_chain(s: Session, ctx: Ctx, plan_id: uuid.UUID, order_key: str) -> dict[str, Any]:
     """Operations of one order (and its component orders) with dependencies, for Gantt highlighting."""
+    from monxuplan_engine.views import chain_shard
+    from monxuplan_engine.views import order_chain as engine_chain
+
     plan = _get_plan(s, ctx, plan_id)
-    cp, res = replay(s, plan)
+    shard = plan_store.document(s, plan, plan_store.DOC_CHAINS, chain_shard(order_key))
+    if shard is not None or plan_store.has_documents(s, plan, plan_store.DOC_CHAINS):
+        chain = (shard or {}).get(order_key)
+        if chain is None:
+            raise NotFound("Order not in this plan")
+        return chain
+    cp, res = replay(s, plan)  # plans stored before the read models
     oi = cp.order_index.get(order_key)
     if oi is None:
         raise NotFound("Order not in this plan")
-    ops = set(cp.orders[oi].ops)
-    # component orders feeding this order (make-item pegging)
-    for peg in cp.static_pegs:
-        if peg.consumer_op in ops and peg.producer_order is not None:
-            ops.update(cp.orders[peg.producer_order].ops)
-    deps = []
-    for i in ops:
-        for p, kind, lag, _f in cp.ops[i].preds:
-            if p in ops:
-                deps.append({"from": cp.ops[p].id, "to": cp.ops[i].id, "type": "FS" if kind == "OVL" else kind, "lag_minutes": lag, "overlap": kind == "OVL"})
-    return {"order_id": order_key, "operations": sorted(cp.ops[i].id for i in ops), "dependencies": deps}
+    return engine_chain(res, oi)
 
 
 # =============================================================================================
@@ -315,12 +433,14 @@ def order_chain(s: Session, ctx: Ctx, plan_id: uuid.UUID, order_key: str) -> dic
 def operation_detail(s: Session, ctx: Ctx, plan_id: uuid.UUID, op_key: str) -> dict[str, Any]:
     plan = _get_plan(s, ctx, plan_id)
     r = s.scalar(select(ScheduledOperation).where(ScheduledOperation.plan_id == plan.id, ScheduledOperation.op_key == op_key))
-    unsched = next((u for u in (plan.analysis or {}).get("unscheduled", []) if u["op_id"] == op_key), None)
+    unsched = None if r is not None else next(iter(plan_store.unscheduled(s, plan, op_key=op_key, limit=1)), None)
     if r is None and unsched is None:
         raise NotFound("Operation not in this plan")
     out: dict[str, Any] = {"op_id": op_key, "scheduled": row_dict(r) if r else None, "unscheduled": unsched}
-    if r is not None and r.explanation:
-        out["explanation"] = r.explanation
+    if r is not None:
+        ex = plan_store.explanation(s, plan, r.resource_key, op_key)
+        if ex:
+            out["explanation"] = ex
     order_key = r.order_key if r else unsched["order_id"]
     o = s.get(ProductionOrder, uuid.UUID(order_key)) if _is_uuid(order_key) else None
     if o is not None:
@@ -330,7 +450,7 @@ def operation_detail(s: Session, ctx: Ctx, plan_id: uuid.UUID, op_key: str) -> d
         if poo is not None:
             ro = s.get(RoutingOperation, poo.routing_operation_id) if poo.routing_operation_id else None
             out["operation"] = {"code": poo.code, "name": poo.name, "status": poo.status, "completed_quantity": poo.completed_quantity, "instructions": ro.instructions if ro else None, "setup_attributes": ro.setup_attributes if ro else {}}
-    pegs = [dict(p) for p in (plan.analysis or {}).get("pegging", []) if p["consumer_op_id"] == op_key]
+    pegs = plan_store.pegs(s, plan, consumer_orders=[order_key], consumer_op=op_key)
     mids = {uuid.UUID(p["material_id"]) for p in pegs if _is_uuid(p["material_id"])}
     codes = {str(i): c for i, c in s.execute(select(Item.id, Item.code).where(Item.id.in_(mids)))} if mids else {}
     for p in pegs:
@@ -368,18 +488,22 @@ def position_check(s: Session, ctx: Ctx, plan_id: uuid.UUID, op_key: str, resour
 
 def order_detail(s: Session, ctx: Ctx, plan_id: uuid.UUID, order_key: str) -> dict[str, Any]:
     plan = _get_plan(s, ctx, plan_id)
-    res_order = next((o for o in (plan.analysis or {}).get("orders", []) if o["order_id"] == order_key), None)
+    res_order = plan_store.order_result(s, plan, order_key)
     rows = list(s.scalars(select(ScheduledOperation).where(ScheduledOperation.plan_id == plan.id, ScheduledOperation.order_key == order_key).order_by(ScheduledOperation.start)))
-    chain = (plan.kpi_details or {}).get("root_causes", {}).get(order_key, [])
-    late = next((x for x in (plan.kpi_details or {}).get("late_orders", []) if x["order_id"] == order_key), None)
-    pegs = [p for p in (plan.analysis or {}).get("pegging", []) if p["consumer_order_id"] == order_key or p.get("supply_order_id") == order_key]
+    details = plan.kpi_details or {}
+    chain = details.get("root_causes", {}).get(order_key, [])
+    late = next((x for x in details.get("late_orders", []) if x["order_id"] == order_key), None)
+    if late is None and res_order is not None and res_order["status"] in ("LATE", "UNSCHEDULED", "PARTIAL"):
+        # beyond the most delayed orders kept in the plan's KPI details: the stored order result
+        late = {k: res_order.get(k) for k in ("order_id", "number", "status", "lateness_minutes", "due", "end", "cause")}
+        late["earliest_possible_infinite_capacity"] = res_order.get("earliest_possible_end")
     return {
         "result": res_order,
-        "operations": [row_dict(r, skip={"explanation"}) for r in rows],
+        "operations": [row_dict(r) for r in rows],
         "root_cause": chain,
         "deadline": late,
-        "pegging": pegs,
-        "unscheduled": [u for u in (plan.analysis or {}).get("unscheduled", []) if u["order_id"] == order_key],
+        "pegging": plan_store.pegs(s, plan, consumer_orders=[order_key], supply_orders=[order_key]),
+        "unscheduled": plan_store.unscheduled(s, plan, order_key=order_key),
     }
 
 
@@ -407,29 +531,33 @@ def dispatch_list(s: Session, ctx: Ctx, plant_id: uuid.UUID, resource_id: str | 
     plan = _published_or_head(s, ctx, plant_id)
     t0 = date_from or now()
     t1 = t0 + timedelta(hours=hours)
-    q = select(ScheduledOperation).where(ScheduledOperation.plan_id == plan.id, ScheduledOperation.end >= t0, ScheduledOperation.setup_start <= t1).order_by(ScheduledOperation.resource_key, ScheduledOperation.setup_start)
+    SO, POO = ScheduledOperation, ProductionOrderOperation
+    q = (
+        select(SO.op_key, SO.order_key, SO.order_id, SO.resource_key, SO.setup_start, SO.start, SO.end, SO.setup_minutes, SO.quantity, SO.is_late, SO.is_fixed, POO.name.label("op_name"), POO.status.label("op_status"))
+        .outerjoin(POO, POO.id == SO.order_operation_id)
+        .where(SO.plan_id == plan.id, SO.end >= t0, SO.setup_start <= t1)
+        .order_by(SO.resource_key, SO.setup_start)
+    )
     if resource_id:
-        q = q.where(ScheduledOperation.resource_key == resource_id)
-    rows = list(s.scalars(q))
-    orders = {o.id: o for o in s.scalars(select(ProductionOrder).where(ProductionOrder.id.in_({r.order_id for r in rows if r.order_id})))} if rows else {}
-    items = {i.id: i for i in s.scalars(select(Item).where(Item.id.in_({o.item_id for o in orders.values()})))} if orders else {}
-    poos = {}
-    if rows:
-        for poo in s.scalars(select(ProductionOrderOperation).where(ProductionOrderOperation.id.in_({r.order_operation_id for r in rows if r.order_operation_id}))):
-            poos[poo.id] = poo
-    res = {str(r.id): r for r in s.scalars(select(Resource).where(Resource.plant_id == plant_id))}
-    plan_orders = {o["order_id"]: o for o in (plan.analysis or {}).get("orders", [])}
+        q = q.where(SO.resource_key == resource_id)
+    rows = s.execute(q.limit(DISPATCH_MAX_ROWS + 1)).all()
+    truncated = len(rows) > DISPATCH_MAX_ROWS
+    rows = rows[:DISPATCH_MAX_ROWS]
+    PO = ProductionOrder
+    orders = {o.id: o for part in plan_store.chunks({r.order_id for r in rows if r.order_id}) for o in s.execute(select(PO.id, PO.number, PO.item_id).where(PO.id.in_(part)))}
+    items = {i.id: i for part in plan_store.chunks({o.item_id for o in orders.values()}) for i in s.execute(select(Item.id, Item.code, Item.name).where(Item.id.in_(part)))}
+    res = {str(r.id): r for r in s.execute(select(Resource.id, Resource.code).where(Resource.plant_id == plant_id))}
+    plan_orders = plan_store.order_results(s, plan, {r.order_key for r in rows})
     out = []
     for r in rows:
         o = orders.get(r.order_id)
         it = items.get(o.item_id) if o else None
-        poo = poos.get(r.order_operation_id)
         out.append(
             {
                 "resource_id": r.resource_key,
                 "resource": res[r.resource_key].code if r.resource_key in res else r.resource_key,
                 "op_id": r.op_key,
-                "operation": poo.name if poo else r.op_key,
+                "operation": r.op_name or r.op_key,
                 "order": o.number if o else None,
                 "product": it.code if it else None,
                 "product_name": it.name if it else None,
@@ -439,48 +567,79 @@ def dispatch_list(s: Session, ctx: Ctx, plant_id: uuid.UUID, resource_id: str | 
                 "end": to_json(_aware(r.end)),
                 "setup_minutes": r.setup_minutes,
                 "material": plan_orders.get(r.order_key, {}).get("material_status"),
-                "status": poo.status if poo else "PLANNED",
+                "status": r.op_status or "PLANNED",
                 "late": r.is_late,
                 "fixed": r.is_fixed,
             }
         )
-    return {"plan": plan_summary(plan), "from": t0.isoformat(), "to": t1.isoformat(), "rows": out}
+    return {"plan": plan_summary(plan), "from": t0.isoformat(), "to": t1.isoformat(), "rows": out, "truncated": truncated, "row_limit": DISPATCH_MAX_ROWS}
 
 
-def supervisor_view(s: Session, ctx: Ctx, plant_id: uuid.UUID) -> dict[str, Any]:
+def supervisor_view(s: Session, ctx: Ctx, plant_id: uuid.UUID, area_id: uuid.UUID | None = None) -> dict[str, Any]:
     ctx.require("plan:read")
     plan = _published_or_head(s, ctx, plant_id)
     t = now()
-    rows = list(s.scalars(select(ScheduledOperation).where(ScheduledOperation.plan_id == plan.id, ScheduledOperation.end >= t - timedelta(hours=12), ScheduledOperation.setup_start <= t + timedelta(hours=16)).order_by(ScheduledOperation.setup_start)))
-    poos = {p.id: p for p in s.scalars(select(ProductionOrderOperation).where(ProductionOrderOperation.id.in_({r.order_operation_id for r in rows if r.order_operation_id})))} if rows else {}
-    res = {str(r.id): r for r in s.scalars(select(Resource).where(Resource.plant_id == plant_id, Resource.kind.in_(["MACHINE", "WORK_CENTER"])))}
-    orders = {o.id: o for o in s.scalars(select(ProductionOrder).where(ProductionOrder.id.in_({r.order_id for r in rows if r.order_id})))} if rows else {}
-    plan_orders = {o["order_id"]: o for o in (plan.analysis or {}).get("orders", [])}
+    rq = select(Resource.id, Resource.code, Resource.status).where(Resource.plant_id == plant_id, Resource.kind.in_(["MACHINE", "WORK_CENTER"]))
+    if area_id is not None:
+        rq = rq.where(Resource.area_id == area_id)
+    res = {str(r.id): r for r in s.execute(rq)}
+    SO, POO, PO = ScheduledOperation, ProductionOrderOperation, ProductionOrder
+    q = (
+        select(SO.op_key, SO.order_key, SO.order_id, SO.resource_key, SO.setup_start, SO.start, SO.end, SO.quantity, POO.name.label("op_name"), POO.status.label("op_status"))
+        .outerjoin(POO, POO.id == SO.order_operation_id)
+        .where(SO.plan_id == plan.id, SO.end >= t - timedelta(hours=12), SO.setup_start <= t + timedelta(hours=16))
+        .order_by(SO.setup_start)
+    )
+    rows = []
+    if area_id is not None:
+        for part in plan_store.chunks(res):
+            rows.extend(s.execute(q.where(SO.resource_key.in_(part))).all())
+        rows.sort(key=lambda r: _aware(r.setup_start))
+    else:
+        rows = s.execute(q).all()
+    blocked_orders = set(s.scalars(select(PO.id).where(PO.plant_id == plant_id, PO.status == "BLOCKED")))
+    short = {"SHORTAGE", "LATE_SUPPLY"}
+    material_orders = {k for k, v in plan_store.material_status_keys(s, plan, short).items()}
     by_res: dict[str, dict[str, Any]] = {}
     for rid, rr in res.items():
-        by_res[rid] = {"resource_id": rid, "resource": rr.code, "status": rr.status, "now": None, "next": [], "delayed": [], "blocked": [], "material_issues": []}
+        by_res[rid] = {"resource_id": rid, "resource": rr.code, "status": rr.status, "now": None, "next": [], "delayed": [], "blocked": [], "material_issues": [], "delayed_total": 0, "blocked_total": 0, "material_issues_total": 0}
+    picked: list[dict[str, Any]] = []
+    cap = SUPERVISOR_LIST_CAP
+
+    def add(slot: dict[str, Any], key: str, item: dict[str, Any]) -> None:
+        slot[key + "_total"] += 1
+        if len(slot[key]) < cap:
+            slot[key].append(item)
+
+    horizon = t + timedelta(hours=16)
     for r in rows:
         slot = by_res.get(r.resource_key)
         if slot is None:
             continue
-        poo = poos.get(r.order_operation_id)
-        o = orders.get(r.order_id)
-        item = {"op_id": r.op_key, "order": o.number if o else None, "operation": poo.name if poo else None, "start": to_json(_aware(r.start)), "end": to_json(_aware(r.end)), "quantity": r.quantity, "status": poo.status if poo else None}
-        st = poo.status if poo else "PLANNED"
-        if _aware(r.setup_start) <= t < _aware(r.end):
+        item = {"op_id": r.op_key, "order_id": r.order_id, "order": None, "operation": r.op_name, "start": to_json(_aware(r.start)), "end": to_json(_aware(r.end)), "quantity": r.quantity, "status": r.op_status}
+        st = r.op_status or "PLANNED"
+        ss, ee = _aware(r.setup_start), _aware(r.end)
+        if ss <= t < ee:
             slot["now"] = item
-            if st not in ("IN_PROGRESS", "COMPLETED") and t - _aware(r.setup_start) > timedelta(minutes=30):
-                slot["delayed"].append({**item, "reason": "planned start passed, not started"})
-        elif _aware(r.setup_start) > t:
+            if st not in ("IN_PROGRESS", "COMPLETED") and t - ss > timedelta(minutes=30):
+                add(slot, "delayed", {**item, "reason": "planned start passed, not started"})
+        elif ss > t:
             if len(slot["next"]) < 3:
                 slot["next"].append(item)
-        elif _aware(r.end) <= t and st not in ("COMPLETED",):
-            slot["delayed"].append({**item, "reason": "should be finished"})
-        if o and o.status == "BLOCKED":
-            slot["blocked"].append(item)
-        if plan_orders.get(r.order_key, {}).get("material_status") in ("SHORTAGE", "LATE_SUPPLY") and _aware(r.setup_start) < t + timedelta(hours=16):
-            slot["material_issues"].append(item)
-    return {"plan": {"id": str(plan.id), "number": plan.number, "status": plan.status}, "at": t.isoformat(), "resources": sorted(by_res.values(), key=lambda x: x["resource"])}
+        elif ee <= t and st not in ("COMPLETED",):
+            add(slot, "delayed", {**item, "reason": "should be finished"})
+        if r.order_id in blocked_orders:
+            add(slot, "blocked", item)
+        if r.order_key in material_orders and ss < horizon:
+            add(slot, "material_issues", item)
+    # order numbers only for the items shown
+    for slot in by_res.values():
+        picked.extend(x for x in [slot["now"], *slot["next"], *slot["delayed"], *slot["blocked"], *slot["material_issues"]] if x is not None)
+    numbers = {i: n for part in plan_store.chunks({x["order_id"] for x in picked if x["order_id"]}) for i, n in s.execute(select(PO.id, PO.number).where(PO.id.in_(part)))}
+    for x in picked:
+        oid = x.pop("order_id", None)
+        x["order"] = numbers.get(oid)
+    return {"plan": {"id": str(plan.id), "number": plan.number, "status": plan.status}, "at": t.isoformat(), "list_limit": cap, "resources": sorted(by_res.values(), key=lambda x: x["resource"])}
 
 
 def operator_view(s: Session, ctx: Ctx, plant_id: uuid.UUID, resource_id: str) -> dict[str, Any]:
@@ -491,8 +650,10 @@ def operator_view(s: Session, ctx: Ctx, plant_id: uuid.UUID, resource_id: str) -
     if res is None:
         raise NotFound("Resource not found")
     rows = list(s.scalars(select(ScheduledOperation).where(ScheduledOperation.plan_id == plan.id, ScheduledOperation.resource_key == resource_id, ScheduledOperation.end >= t).order_by(ScheduledOperation.setup_start).limit(6)))
+    explanations = plan_store.explanations_for(s, plan, resource_id) if rows else {}
     jobs = []
     for r in rows:
+        reasons = (explanations.get(r.op_key) or {}).get("reasons", [])
         poo = s.get(ProductionOrderOperation, r.order_operation_id) if r.order_operation_id else None
         o = s.get(ProductionOrder, r.order_id) if r.order_id else None
         it = s.get(Item, o.item_id) if o else None
@@ -512,7 +673,7 @@ def operator_view(s: Session, ctx: Ctx, plant_id: uuid.UUID, resource_id: str) -
                 "end": to_json(_aware(r.end)),
                 "setup_minutes": r.setup_minutes,
                 "setup_instructions": (ro.instructions if ro else None),
-                "setup_attributes": (r.explanation or {}).get("reasons", []) and [x for x in (r.explanation or {}).get("reasons", []) if x.get("code") == "SETUP"],
+                "setup_attributes": reasons and [x for x in reasons if x.get("code") == "SETUP"],
                 "quality": "First-article inspection required" if (ro and ro.instructions and "inspection" in ro.instructions.lower()) else None,
                 "status": poo.status if poo else "PLANNED",
             }
@@ -532,30 +693,36 @@ def plan_vs_actual(s: Session, ctx: Ctx, plant_id: uuid.UUID, days: int = 14) ->
     Schedule adherence = share of operations started within ±60 min of the planned start."""
     ctx.require("analytics:read")
     t0 = now() - timedelta(days=days)
+    AP, POO, PO = ActualProduction, ProductionOrderOperation, ProductionOrder
     acts = s.execute(
-        select(ActualProduction, ProductionOrderOperation, ProductionOrder)
-        .join(ProductionOrderOperation, ProductionOrderOperation.id == ActualProduction.order_operation_id)
-        .join(ProductionOrder, ProductionOrder.id == ProductionOrderOperation.order_id)
-        .where(ProductionOrder.plant_id == plant_id, ActualProduction.start >= t0)
+        select(AP.resource_id, AP.start, AP.end, AP.good_quantity, AP.scrap_quantity, POO.seq, POO.name, PO.number)
+        .join(POO, POO.id == AP.order_operation_id)
+        .join(PO, PO.id == POO.order_id)
+        .where(PO.plant_id == plant_id, AP.start >= t0)
+        .order_by(AP.start.desc())
+        .limit(PVA_MAX_ACTUALS + 1)
     ).all()
-    keys = {f"{o.number}/{poo.seq:03d}": (a, poo, o) for a, poo, o in acts}
+    capped = len(acts) > PVA_MAX_ACTUALS
+    keys = {f"{x.number}/{x.seq:03d}": x for x in acts[:PVA_MAX_ACTUALS]}
     plans = {p.id: p for p in s.scalars(select(Plan).where(Plan.plant_id == plant_id, Plan.status.in_(["PUBLISHED", "SUPERSEDED"])))}
-    planned: dict[str, ScheduledOperation] = {}
+    planned: dict[str, Any] = {}
     if plans and keys:
-        for so in s.scalars(select(ScheduledOperation).where(ScheduledOperation.plan_id.in_(list(plans)), ScheduledOperation.op_key.in_(list(keys)))):
-            prev = planned.get(so.op_key)
-            if prev is None or plans[so.plan_id].created_at > plans[prev.plan_id].created_at:
-                planned[so.op_key] = so
+        SO = ScheduledOperation
+        for part in plan_store.chunks(keys):
+            for so in s.execute(select(SO.plan_id, SO.op_key, SO.start, SO.end).where(SO.plan_id.in_(list(plans)), SO.op_key.in_(part))):
+                prev = planned.get(so.op_key)
+                if prev is None or plans[so.plan_id].created_at > plans[prev.plan_id].created_at:
+                    planned[so.op_key] = so
     rows = []
     on_time = 0
     dev_start, dev_dur = [], []
-    res_codes = {r.id: r.code for r in s.scalars(select(Resource).where(Resource.plant_id == plant_id))}
-    for key, (a, poo, o) in keys.items():
+    res_codes = {r.id: r.code for r in s.execute(select(Resource.id, Resource.code).where(Resource.plant_id == plant_id))}
+    for key, a in keys.items():
         so = planned.get(key)
         row = {
             "op_id": key,
-            "order": o.number,
-            "operation": poo.name,
+            "order": a.number,
+            "operation": a.name,
             "resource": res_codes.get(a.resource_id),
             "actual_start": to_json(_aware(a.start)),
             "actual_end": to_json(_aware(a.end)),
@@ -587,6 +754,7 @@ def plan_vs_actual(s: Session, ctx: Ctx, plant_id: uuid.UUID, days: int = 14) ->
         "mean_abs_start_deviation_min": round(sum(dev_start) / len(dev_start), 1) if dev_start else None,
         "mean_duration_deviation_pct": round(sum(dev_dur) / len(dev_dur), 1) if dev_dur else None,
         "note": None if compared else "No published plan covers the executed operations of this period yet.",
+        "sample_limited_to": PVA_MAX_ACTUALS if capped else None,  # measured on the most recent executions
         "rows": sorted(rows, key=lambda r: r["actual_start"] or "", reverse=True)[:500],
     }
 

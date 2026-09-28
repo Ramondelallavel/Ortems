@@ -20,9 +20,9 @@ from sqlalchemy.orm import Session
 
 from ..core.errors import ValidationFailed
 from ..models import Alert, ConstraintViolation, Customer, ExportJob, Item, Plant, ProductionOrder, ProductionOrderOperation, Resource, ScheduledOperation
+from . import plan_store
 from .analytics import KPI_CATALOGUE
 from .context import Ctx
-from .engine_view import replay
 from .views import _get_plan
 
 SHEETS = ["Schedule", "Orders", "Operations", "Capacity", "Materials", "Alerts", "KPIs"]
@@ -55,15 +55,22 @@ def _h(minutes: float | int | None) -> float | None:
 
 
 def _schedule(s: Session, plan, tz: ZoneInfo, res_codes: dict[str, str]) -> _Table:
-    rows = list(s.scalars(select(ScheduledOperation).where(ScheduledOperation.plan_id == plan.id).order_by(ScheduledOperation.resource_key, ScheduledOperation.setup_start)))
-    orders = {o.id: o for o in s.scalars(select(ProductionOrder).where(ProductionOrder.plant_id == plan.plant_id))}
-    items = {i.id: i for i in s.scalars(select(Item))}
-    poos = {p.id: p for p in s.scalars(select(ProductionOrderOperation).where(ProductionOrderOperation.id.in_({r.order_operation_id for r in rows if r.order_operation_id})))} if rows else {}
+    SO, POO, PO = ScheduledOperation, ProductionOrderOperation, ProductionOrder
+    rows = s.execute(
+        select(
+            SO.resource_key, SO.op_key, SO.order_key, SO.order_id, SO.quantity, SO.setup_start, SO.start, SO.end, SO.setup_minutes, SO.run_minutes, SO.overtime_minutes,
+            SO.secondary, SO.zone, SO.is_locked, SO.fixed_reason, SO.is_fixed, SO.is_late, SO.subcontracted, SO.binding, POO.name.label("op_name"),
+        )
+        .outerjoin(POO, POO.id == SO.order_operation_id)
+        .where(SO.plan_id == plan.id)
+        .order_by(SO.resource_key, SO.setup_start)
+    ).all()
+    orders = {o.id: o for o in s.execute(select(PO.id, PO.number, PO.item_id).where(PO.plant_id == plan.plant_id))}
+    items = {i.id: i for i in s.execute(select(Item.id, Item.code))}
     out = []
     for r in rows:
         o = orders.get(r.order_id)
         it = items.get(o.item_id) if o else None
-        poo = poos.get(r.order_operation_id)
         sec = ", ".join(res_codes.get(x.get("resource_id"), x.get("resource_id", "")) for x in (r.secondary or []) if isinstance(x, dict))
         b = r.binding or {}
         out.append(
@@ -72,7 +79,7 @@ def _schedule(s: Session, plan, tz: ZoneInfo, res_codes: dict[str, str]) -> _Tab
                 r.op_key,
                 o.number if o else r.order_key,
                 it.code if it else None,
-                poo.name if poo else None,
+                r.op_name,
                 r.quantity,
                 _local(r.setup_start, tz),
                 _local(r.start, tz),
@@ -98,16 +105,16 @@ def _schedule(s: Session, plan, tz: ZoneInfo, res_codes: dict[str, str]) -> _Tab
 
 
 def _orders(s: Session, plan, tz: ZoneInfo) -> _Table:
-    an = plan.analysis or {}
     late = {x["order_id"]: x for x in (plan.kpi_details or {}).get("late_orders", [])}
-    db = {str(o.id): o for o in s.scalars(select(ProductionOrder).where(ProductionOrder.plant_id == plan.plant_id))}
-    items = {i.id: i for i in s.scalars(select(Item))}
-    custs = {c.id: c for c in s.scalars(select(Customer))}
+    PO = ProductionOrder
+    db = {str(o.id): o for o in s.execute(select(PO.id, PO.item_id, PO.quantity, PO.customer_id, PO.priority, PO.expedite).where(PO.plant_id == plan.plant_id))}
+    items = {i.id: i for i in s.execute(select(Item.id, Item.code, Item.name))}
+    custs = {c.id: c for c in s.execute(select(Customer.id, Customer.name))}
     out = []
-    for o in sorted(an.get("orders", []), key=lambda x: x.get("due") or ""):
+    for o in sorted(plan_store.order_results(s, plan).values(), key=lambda x: x.get("due") or ""):
         d = db.get(o["order_id"])
         it = items.get(d.item_id) if d else None
-        li = late.get(o["order_id"], {})
+        li = {"cause": o["cause"]} if o.get("cause") is not None else late.get(o["order_id"], {})
         out.append(
             [
                 o.get("number"),
@@ -134,30 +141,27 @@ def _operations(s: Session, plan, tz: ZoneInfo, res_codes: dict[str, str]) -> _T
     sched = _schedule(s, plan, tz, res_codes)
     out = [[r[1], r[2], r[3], r[4], r[0], r[5], r[7], r[8], "SCHEDULED", None] for r in sched.rows]
     numbers = {str(i): n for i, n in s.execute(select(ProductionOrder.id, ProductionOrder.number).where(ProductionOrder.plant_id == plan.plant_id))}
-    for u in (plan.analysis or {}).get("unscheduled", []):
+    for u in plan_store.unscheduled(s, plan):
         out.append([u.get("op_id"), numbers.get(u.get("order_id"), u.get("order_id")), None, None, None, None, None, None, "UNSCHEDULED", f"{u.get('reason')}: {u.get('message', '')}"])
     return _Table("Operations", ["Operation ID", "Order", "Item", "Operation", "Resource", "Quantity", "Start", "End", "State", "Reason"], out)
 
 
 def _capacity(s: Session, plan, tz: ZoneInfo) -> _Table:
-    from monxuplan_engine.capacity import load_profile
+    from .analytics import _expand_capacity_row, capacity_profile
 
-    cp, res = replay(s, plan)
-    bks, loads = load_profile(cp, res.placements, res.timing, "day", None, None)
+    view = capacity_profile(s, plan, "day")
     out = []
-    for rl in loads:
-        r = cp.resources[rl.resource]
-        if r.kind in ("SUBCONTRACTOR", "STORAGE", "TRANSPORT"):
-            continue
-        for bk, b in zip(bks, rl.buckets, strict=True):
+    for raw in view["rows"]:
+        r = _expand_capacity_row(raw)
+        for bk, b in zip(view["buckets"], r["buckets"], strict=True):
             if not b["capacity"] and not b["scheduled"] and not b["requirement"]:
                 continue
             out.append(
                 [
-                    r.code,
-                    r.kind,
-                    r.area,
-                    _local(cp.dt(bk.start), tz).date(),
+                    r["code"],
+                    r["kind"],
+                    r["area"],
+                    _local(bk["start"], tz).date(),
                     _h(b["capacity"]),
                     _h(b["scheduled"]),
                     _h(b["requirement"]),
@@ -171,10 +175,10 @@ def _capacity(s: Session, plan, tz: ZoneInfo) -> _Table:
 
 
 def _materials(s: Session, plan, tz: ZoneInfo) -> _Table:
-    items = {str(i.id): i for i in s.scalars(select(Item))}
+    items = {str(i.id): i for i in s.execute(select(Item.id, Item.code, Item.uom))}
     orders = {str(i): n for i, n in s.execute(select(ProductionOrder.id, ProductionOrder.number).where(ProductionOrder.plant_id == plan.plant_id))}
     out = []
-    for p in (plan.analysis or {}).get("pegging", []):
+    for p in plan_store.pegs(s, plan):
         it = items.get(p["material_id"])
         late = bool(p.get("supply_time") and p.get("need_time") and p["supply_time"] > p["need_time"])
         out.append(
@@ -191,9 +195,7 @@ def _materials(s: Session, plan, tz: ZoneInfo) -> _Table:
                 "yes" if late else "",
             ]
         )
-    for u in (plan.analysis or {}).get("unscheduled", []):
-        if u.get("reason") != "MATERIAL_SHORTAGE":
-            continue
+    for u in plan_store.unscheduled(s, plan, reason="MATERIAL_SHORTAGE"):
         for m in (u.get("details") or {}).get("materials", []):
             out.append([orders.get(u.get("order_id"), u.get("order_id")), u.get("op_id"), m.get("material"), m.get("uom"), m.get("required"), "SHORTAGE", f"shortfall {m.get('shortfall')}", None, None, "shortage"])
     return _Table("Materials", ["Consumer order", "Operation", "Material", "UoM", "Quantity", "Supply kind", "Supply reference", "Available at", "Needed at", "Late / shortage"], out)

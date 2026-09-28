@@ -25,6 +25,8 @@ from ..contract import ModeSelection
 from ..timing import Timing
 from .base import Evaluator, OptimizationProvider, ProviderCapabilities, ProviderResult, SolveContext, decisions_of, decode
 
+EXPLAIN_FIRST_MIN_OPS = 20_000
+
 PORTFOLIO: list[tuple[str, ...]] = [
     ("HYBRID_APS",),
     ("EDD",),
@@ -64,13 +66,20 @@ class HeuristicProvider(OptimizationProvider):
         tried = 0
         ctx.report("Generating initial plan", 0.0, f"{len(starts)} dispatching strategies")
         decode_s = 0.0
+        # on large problems the first construction records its explanations right away: it is usually
+        # the final plan (one construction takes most of the time limit) and a second, explained
+        # construction of the same plan would double the run time
+        explain_first = bool(cp.solver.explain) and len(cp.ops) >= EXPLAIN_FIRST_MIN_OPS
+        first = None
         for k, (rules, msel) in enumerate(starts):
             if k > 0 and (ctx.expired() or ctx.remaining() < 1.2 * decode_s):
                 if not ctx.expired():
                     ctx.messages.append(f"{len(starts) - k} alternative dispatching strategies skipped: one construction takes {decode_s:.0f} s and would not fit in the time left")
                 break
             t_dec = time.monotonic()
-            res = decode(cp, timing, rules=rules, mode_selection=msel)
+            res = decode(cp, timing, rules=rules, mode_selection=msel, explain=explain_first and k == 0)
+            if k == 0:
+                first = res
             decode_s = max(decode_s, time.monotonic() - t_dec)
             tried += 1
             comp, _vec = ev.evaluate(res)
@@ -91,7 +100,7 @@ class HeuristicProvider(OptimizationProvider):
             iterations += it
             if improved:
                 decisions.update(priority=prio, forced=forced or None)
-        if cp.solver.explain:
+        if cp.solver.explain and not (explain_first and best is first and not improved):
             best = decode(cp, timing, explain=True, **decisions)
         return ProviderResult(
             result=best,

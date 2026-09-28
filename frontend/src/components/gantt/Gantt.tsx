@@ -34,7 +34,33 @@ export type GOp = {
   order_status: string | null;
   material_status: string | null;
 };
-export type GanttData = { plan: { id: string; number: string }; timezone: string; window: { start: string; end: string }; now: string; frozen_until: string | null; resources: GRes[]; operations: GOp[] };
+/** Busy block of a lane in zoomed-out views of dense plans: [start ms, end ms, operations, late, locked]. */
+export type GBlock = [number, number, number, number, number];
+export type GanttData = {
+  plan: { id: string; number: string };
+  timezone: string;
+  window: { start: string; end: string };
+  now: string;
+  frozen_until: string | null;
+  resources: GRes[];
+  operations: GOp[];
+  blocks?: Record<string, GBlock[]> | null;
+};
+/** What the chart shows: visible time span and resource rows (with some rows of margin). */
+export type GanttViewport = { start: number; end: number; rowIds: string[]; pxPerMin: number };
+type OpT = { o: GOp; ss: number; st: number; en: number };
+type Lane = { list: OpT[]; maxDur: number };
+
+function firstFrom(list: OpT[], t: number): number {
+  let lo = 0;
+  let hi = list.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (list[mid].ss < t) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
 
 export const ZOOMS = [
   { id: "15m", label: "15 min", pxPerMin: 4 },
@@ -53,8 +79,9 @@ const BAR_H = 16;
 
 type Row = { type: "group"; label: string } | { type: "res"; res: GRes };
 type Hit = { op: GOp; x: number; y: number; w: number; h: number };
+type BlockHit = { res: string; a: number; b: number; x: number; y: number; w: number; h: number };
 
-export type GanttHandle = { scrollToTime: (ms: number) => void; scrollToOp: (id: string) => void; zoom: (dir: 1 | -1) => void };
+export type GanttHandle = { scrollToTime: (ms: number) => void; scrollToOp: (id: string) => void; scrollTo: (resourceId: string, ms: number) => void; zoom: (dir: 1 | -1) => void };
 
 export const Gantt = forwardRef<GanttHandle, {
   data: GanttData;
@@ -70,7 +97,8 @@ export const Gantt = forwardRef<GanttHandle, {
   canEdit: boolean;
   height: number;
   onLegend?: (items: { label: string; color: string }[]) => void;
-}>(function Gantt({ data, zoom, onZoom, colorBy, selectedId, highlightOps, deps, onSelect, onOpen, onMove, canEdit, height, onLegend }, ref) {
+  onViewport?: (v: GanttViewport) => void;
+}>(function Gantt({ data, zoom, onZoom, colorBy, selectedId, highlightOps, deps, onSelect, onOpen, onMove, canEdit, height, onLegend, onViewport }, ref) {
   const wrap = useRef<HTMLDivElement>(null);
   const canvas = useRef<HTMLCanvasElement>(null);
   const [width, setWidth] = useState(1000);
@@ -83,18 +111,28 @@ export const Gantt = forwardRef<GanttHandle, {
   const [hover, setHover] = useState<{ op: GOp; x: number; y: number } | null>(null);
   const [drag, setDrag] = useState<{ op: GOp; dx: number; dy: number; x0: number; y0: number; moved: boolean } | null>(null);
   const hits = useRef<Hit[]>([]);
+  const blockHits = useRef<BlockHit[]>([]);
   const [live, setLive] = useState("");
 
+  // times parsed once per data set (not once per frame), lanes sorted for binary search
   const opsByRes = useMemo(() => {
-    const m = new Map<string, GOp[]>();
+    const m = new Map<string, Lane>();
     for (const o of data.operations) {
-      const arr = m.get(o.resource_id) || [];
-      arr.push(o);
-      m.set(o.resource_id, arr);
+      const ss = Date.parse(o.setup_start);
+      const en = Date.parse(o.end);
+      let lane = m.get(o.resource_id);
+      if (!lane) m.set(o.resource_id, (lane = { list: [], maxDur: 0 }));
+      lane.list.push({ o, ss, st: Date.parse(o.start), en });
+      if (en - ss > lane.maxDur) lane.maxDur = en - ss;
     }
-    for (const arr of m.values()) arr.sort((a, b) => a.setup_start.localeCompare(b.setup_start));
+    for (const lane of m.values()) lane.list.sort((a, b) => a.ss - b.ss);
     return m;
   }, [data.operations]);
+  const resTimes = useMemo(() => {
+    const m = new Map<string, { nw: [number, number][]; un: { a: number; b: number; kind: string }[] }>();
+    for (const r of data.resources) m.set(r.id, { nw: r.non_working.map(([a, b]) => [Date.parse(a), Date.parse(b)] as [number, number]), un: r.unavailability.map((u) => ({ a: Date.parse(u.start), b: Date.parse(u.end), kind: u.kind })) });
+    return m;
+  }, [data.resources]);
 
   const rows: Row[] = useMemo(() => {
     const out: Row[] = [];
@@ -167,6 +205,11 @@ export const Gantt = forwardRef<GanttHandle, {
       const ri = resRowIndex.get(o.resource_id);
       if (ri !== undefined) setScrollY(clampY(rowY[ri] - (height - HEAD_H) / 3));
     },
+    scrollTo: (resourceId, ms) => {
+      setViewStart(clampX(ms - ((width - LABEL_W) / pxPerMs) * 0.3));
+      const ri = resRowIndex.get(resourceId);
+      if (ri !== undefined) setScrollY(clampY(rowY[ri] - (height - HEAD_H) / 3));
+    },
     zoom: (dir) => {
       const i = ZOOMS.findIndex((x) => x.id === zoom);
       const n = ZOOMS[Math.max(0, Math.min(ZOOMS.length - 1, i + dir))];
@@ -200,6 +243,7 @@ export const Gantt = forwardRef<GanttHandle, {
     g.textBaseline = "middle";
     const viewEnd = msOf(width);
     const newHits: Hit[] = [];
+    const newBlocks: BlockHit[] = [];
 
     const hatch = (x: number, y: number, w: number, h: number, color: string, gap = 5) => {
       g.save();
@@ -237,18 +281,19 @@ export const Gantt = forwardRef<GanttHandle, {
         continue;
       }
       const res = r.res;
+      const rt = resTimes.get(res.id);
       // non-working time
       g.fillStyle = "#eceff3";
-      for (const [a, b] of res.non_working) {
-        const xa = xOf(new Date(a).getTime());
-        const xb = xOf(new Date(b).getTime());
+      for (const [a, b] of rt?.nw || []) {
+        const xa = xOf(a);
+        const xb = xOf(b);
         if (xb < LABEL_W || xa > width) continue;
         g.fillRect(Math.max(LABEL_W, xa), y, Math.min(width, xb) - Math.max(LABEL_W, xa), ROW_H);
       }
       // maintenance / downtime (striped + label)
-      for (const u of res.unavailability) {
-        const xa = xOf(new Date(u.start).getTime());
-        const xb = xOf(new Date(u.end).getTime());
+      for (const u of rt?.un || []) {
+        const xa = xOf(u.a);
+        const xb = xOf(u.b);
         if (xb < LABEL_W || xa > width) continue;
         const x = Math.max(LABEL_W, xa);
         const w = Math.min(width, xb) - x;
@@ -266,13 +311,39 @@ export const Gantt = forwardRef<GanttHandle, {
       g.lineTo(width, y + ROW_H - 0.5);
       g.stroke();
 
+      // busy blocks (zoomed-out view of a dense plan): one bar per busy stretch of the machine
+      const blocks = data.blocks?.[res.id];
+      if (blocks) {
+        const by = y + (ROW_H - BAR_H) / 2;
+        for (const [a, b, n, late, locked] of blocks) {
+          if (b < viewStart || a > viewEnd) continue;
+          const xa = Math.max(LABEL_W, xOf(a));
+          const w = Math.max(1.5, Math.min(width, xOf(b)) - xa);
+          g.fillStyle = "#5b6b82";
+          g.fillRect(xa, by, w, BAR_H);
+          if (late) {
+            g.fillStyle = "#b8321f";
+            g.fillRect(xa, by, w, 3);
+          }
+          if (w > 44) {
+            g.save();
+            g.beginPath();
+            g.rect(xa, by, w, BAR_H);
+            g.clip();
+            g.fillStyle = "#ffffff";
+            g.fillText(`${locked ? "🔒︎ " : ""}${n} op${n === 1 ? "" : "s"}${late ? ` · ${late} ▲` : ""}`, xa + 4, by + BAR_H / 2 + 0.5);
+            g.restore();
+          }
+          newBlocks.push({ res: res.id, a, b, x: xa, y: by, w, h: BAR_H });
+        }
+      }
       // bars
-      const ops = opsByRes.get(res.id) || [];
-      for (const o of ops) {
-        const ss = new Date(o.setup_start).getTime();
-        const en = new Date(o.end).getTime();
-        if (en < viewStart || ss > viewEnd) continue;
-        const st = new Date(o.start).getTime();
+      const lane = opsByRes.get(res.id);
+      const list = lane ? lane.list : [];
+      for (let k = lane ? firstFrom(list, viewStart - lane.maxDur) : 0; k < list.length; k++) {
+        const { o, ss, st, en } = list[k];
+        if (ss > viewEnd) break;
+        if (en < viewStart) continue;
         const xs = xOf(ss);
         const xr = xOf(st);
         const xe = xOf(en);
@@ -527,7 +598,24 @@ export const Gantt = forwardRef<GanttHandle, {
     }
     g.restore();
     hits.current = newHits;
-  }, [data, rows, rowY, width, height, viewStart, scrollY, z.pxPerMin, xOf, msOf, opsByRes, colorBy, families, selectedId, highlightOps, deps, drag, nowMs, t0]);
+    blockHits.current = newBlocks;
+  }, [data, rows, rowY, width, height, viewStart, scrollY, z.pxPerMin, xOf, msOf, opsByRes, resTimes, colorBy, families, selectedId, highlightOps, deps, drag, nowMs, t0]);
+
+  // tell the page what is on screen (debounced): large plans load the operations of the viewport only
+  useEffect(() => {
+    if (!onViewport) return;
+    const h = setTimeout(() => {
+      const top = scrollY - 10 * ROW_H;
+      const bottom = scrollY + (height - HEAD_H) + 10 * ROW_H;
+      const ids: string[] = [];
+      for (let i = 0; i < rows.length; i++) {
+        const r = rows[i];
+        if (r.type === "res" && rowY[i + 1] > top && rowY[i] < bottom) ids.push(r.res.id);
+      }
+      onViewport({ start: viewStart, end: msOf(width), rowIds: ids, pxPerMin: z.pxPerMin });
+    }, 120);
+    return () => clearTimeout(h);
+  }, [onViewport, viewStart, scrollY, width, height, rows, rowY, msOf, z.pxPerMin]);
 
   // ------------------------------------------------------------------ interaction
   const hitAt = (x: number, y: number): GOp | null => {
@@ -552,10 +640,21 @@ export const Gantt = forwardRef<GanttHandle, {
     return { x: e.clientX - r.left, y: e.clientY - r.top };
   };
 
+  const blockAt = (x: number, y: number): BlockHit | null => blockHits.current.find((b) => x >= b.x - 1 && x <= b.x + b.w + 1 && y >= b.y - 2 && y <= b.y + b.h + 2) || null;
+
   const onMouseDown = (e: React.MouseEvent) => {
     const { x, y } = local(e);
     if (y < HEAD_H || x < LABEL_W) return;
     const op = hitAt(x, y);
+    const block = op ? null : blockAt(x, y);
+    if (block) {
+      // a busy block opens at hour zoom, where its operations are drawn one by one
+      const hour = ZOOMS.find((q) => q.id === "h")!;
+      prevZoom.current = hour.pxPerMin; // position set here, not re-centred by the zoom effect
+      onZoom("h");
+      setViewStart(clampX(block.a - 30 * 60000));
+      return;
+    }
     if (op) {
       onSelect(op);
       setLive(describe(op));
@@ -620,8 +719,9 @@ export const Gantt = forwardRef<GanttHandle, {
     if (drag) return;
     const { x, y } = local(e);
     const op = y > HEAD_H && x > LABEL_W ? hitAt(x, y) : null;
+    const block = !op && y > HEAD_H && x > LABEL_W ? blockAt(x, y) : null;
     setHover(op ? { op, x, y } : null);
-    if (canvas.current) canvas.current.style.cursor = op ? (canEdit && onMove ? "grab" : "pointer") : "default";
+    if (canvas.current) canvas.current.style.cursor = op ? (canEdit && onMove ? "grab" : "pointer") : block ? "zoom-in" : "default";
   };
 
   const onWheel = useCallback(
@@ -660,7 +760,7 @@ export const Gantt = forwardRef<GanttHandle, {
       e.preventDefault();
       return;
     }
-    const list = opsByRes.get(sel.resource_id) || [];
+    const list = (opsByRes.get(sel.resource_id)?.list || []).map((x) => x.o);
     const idx = list.findIndex((o) => o.id === sel.id);
     let next: GOp | undefined;
     if (e.key === "ArrowRight") next = list[idx + 1];
@@ -671,7 +771,7 @@ export const Gantt = forwardRef<GanttHandle, {
       for (let i = ri + step; i >= 0 && i < rows.length; i += step) {
         const r = rows[i];
         if (r.type !== "res") continue;
-        const cand = opsByRes.get(r.res.id) || [];
+        const cand = (opsByRes.get(r.res.id)?.list || []).map((x) => x.o);
         if (!cand.length) continue;
         const ref = new Date(sel.start).getTime();
         next = cand.reduce((a, b) => (Math.abs(new Date(b.start).getTime() - ref) < Math.abs(new Date(a.start).getTime() - ref) ? b : a));

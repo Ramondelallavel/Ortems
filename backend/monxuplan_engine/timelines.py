@@ -43,6 +43,9 @@ class Block:
     def __repr__(self) -> str:  # pragma: no cover
         return f"Block(op={self.op}, {self.setup_start}->{self.end})"
 
+    def copy(self) -> Block:
+        return Block(self.op, self.setup_start, self.start, self.end, self.setup, self.setup_base, self.state_key, self.cal, self.fixed)
+
 
 class UnaryTimeline:
     __slots__ = ("res", "starts", "ends", "blocks")
@@ -84,16 +87,33 @@ class UnaryTimeline:
             j += 1
         return t, last
 
-    def remove_op(self, op: int) -> Block | None:
-        for i, b in enumerate(self.blocks):
-            if b.op == op:
-                del self.starts[i]
-                del self.ends[i]
-                del self.blocks[i]
-                return b
-        return None
+    def remove_op(self, op: int, setup_start: int | None = None) -> Block | None:
+        """Remove the block of ``op`` (found by bisection when its setup start is given)."""
+        i = self.index_of(op, setup_start)
+        if i < 0:
+            return None
+        b = self.blocks[i]
+        del self.starts[i]
+        del self.ends[i]
+        del self.blocks[i]
+        return b
 
-    def index_of(self, op: int) -> int:
+    def copy(self) -> UnaryTimeline:
+        """Independent copy (blocks included: the builder adjusts blocks in place)."""
+        t = UnaryTimeline(self.res)
+        t.starts = list(self.starts)
+        t.ends = list(self.ends)
+        t.blocks = [b.copy() for b in self.blocks]
+        return t
+
+    def index_of(self, op: int, setup_start: int | None = None) -> int:
+        if setup_start is not None:
+            # blocks with the same setup start are few: scan them from the bisection point
+            i = bisect_right(self.starts, setup_start) - 1
+            while i >= 0 and self.starts[i] == setup_start:
+                if self.blocks[i].op == op:
+                    return i
+                i -= 1
         for i, b in enumerate(self.blocks):
             if b.op == op:
                 return i
@@ -173,6 +193,13 @@ class CumulativeTimeline:
 
     def release(self, a: int, b: int, units: int) -> None:
         self.reserve(a, b, -units)
+
+    def copy(self) -> CumulativeTimeline:
+        t = CumulativeTimeline.__new__(CumulativeTimeline)
+        t.res = self.res
+        t.times = list(self.times)
+        t.free = list(self.free)
+        return t
 
     def shortfalls(self) -> list[tuple[int, int, int]]:
         """Segments where free < 0: (start, end, missing units)."""

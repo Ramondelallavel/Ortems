@@ -36,7 +36,20 @@ from .master import (
     UomConversion,
 )
 from .org import Company, PlanningArea, Plant, Site, Tenant, WorkCenter
-from .planning import ConstraintViolation, KpiValue, Plan, PlanningRun, ProblemSnapshot, Scenario, ScenarioChange, ScheduledOperation
+from .planning import (
+    ConstraintViolation,
+    KpiValue,
+    Plan,
+    PlanDocument,
+    PlanningRun,
+    PlanOrder,
+    PlanPeg,
+    PlanUnscheduled,
+    ProblemSnapshot,
+    Scenario,
+    ScenarioChange,
+    ScheduledOperation,
+)
 from .security import ApiKey, Permission, Role, User, UserRole
 from .transactions import (
     Customer,

@@ -64,6 +64,14 @@ class TenantMixin:
     tenant_id: Mapped[uuid.UUID] = mapped_column(Uuid, index=True, nullable=False)
 
 
+class PlanRowTenantMixin(TenantMixin):
+    """Tenant column without an index of its own, for the high-volume rows of a plan version
+    (200 000+ per version) that are always read through their plan id: one index less on every
+    insert. Tenant filtering and checks apply exactly as for :class:`TenantMixin`."""
+
+    tenant_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
+
+
 _engine: Engine | None = None
 _SessionFactory: sessionmaker | None = None
 

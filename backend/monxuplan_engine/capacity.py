@@ -11,6 +11,7 @@ Two loads are computed:
 
 from __future__ import annotations
 
+from bisect import bisect_right
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -85,16 +86,20 @@ def buckets(cp: CompiledProblem, size: str, start: int | None = None, end: int |
     return out
 
 
-def _spread(cal, a: int, b: int, bks: list[Bucket], acc: dict[int, int]) -> None:
-    """Add the working minutes of [a, b) on `cal` to the buckets."""
-    for k, bk in enumerate(bks):
-        if bk.end <= a:
-            continue
+def _spread(cal, a: int, b: int, bks: list[Bucket], acc: dict[int, int], ends: list[int] | None = None) -> None:
+    """Add the working minutes of [a, b) on `cal` to the buckets (``ends``: bucket ends, to jump
+    straight to the first overlapping bucket)."""
+    k = bisect_right(ends, a) if ends is not None else 0
+    n = len(bks)
+    while k < n:
+        bk = bks[k]
         if bk.start >= b:
             break
-        w = cal.working_between(max(a, bk.start), min(b, bk.end))
-        if w:
-            acc[k] = acc.get(k, 0) + w
+        if bk.end > a:
+            w = cal.working_between(max(a, bk.start), min(b, bk.end))
+            if w:
+                acc[k] = acc.get(k, 0) + w
+        k += 1
 
 
 def requirement_intervals(cp: CompiledProblem, placements, timing) -> dict[int, list[tuple[int, int, int]]]:
@@ -104,7 +109,9 @@ def requirement_intervals(cp: CompiledProblem, placements, timing) -> dict[int, 
         if not op.modes:
             continue
         p = placements[op.idx]
-        if p is not None and p.fixed:
+        # frozen / locked / in-progress work is required where it is; positions merely kept by the
+        # replay of a stored plan ("KEPT") are not requirements: their requirement is the backward pass
+        if p is not None and p.fixed and p.fixed_reason != "KEPT":
             out[p.res].append((op.idx, p.setup_start, p.end))
             continue
         if p is not None:
@@ -123,9 +130,20 @@ def requirement_intervals(cp: CompiledProblem, placements, timing) -> dict[int, 
     return out
 
 
-def load_profile(cp: CompiledProblem, placements, timing, size: str = "day", start: int | None = None, end: int | None = None, resources: list[int] | None = None) -> tuple[list[Bucket], list[ResourceLoad]]:
+def load_profile(
+    cp: CompiledProblem,
+    placements,
+    timing,
+    size: str = "day",
+    start: int | None = None,
+    end: int | None = None,
+    resources: list[int] | None = None,
+    req: dict[int, list[tuple[int, int, int]]] | None = None,
+) -> tuple[list[Bucket], list[ResourceLoad]]:
     bks = buckets(cp, size, start, end)
-    req = requirement_intervals(cp, placements, timing)
+    ends = [bk.end for bk in bks]
+    if req is None:
+        req = requirement_intervals(cp, placements, timing)
     by_res: dict[int, list] = defaultdict(list)
     for p in placements:
         if p is not None:
@@ -146,8 +164,11 @@ def load_profile(cp: CompiledProblem, placements, timing, size: str = "day", sta
         for p in by_res.get(ri, ()):
             m = cp.ops[p.op].modes[p.mode]
             units = 1 if p.res == ri else next((u for rr, u in m.sec if rr == ri), 1)
+            if units == 1:
+                _spread(m.cal, p.setup_start, p.end, bks, sched, ends)
+                continue
             tmp: dict[int, int] = {}
-            _spread(m.cal, p.setup_start, p.end, bks, tmp)
+            _spread(m.cal, p.setup_start, p.end, bks, tmp, ends)
             for k, v in tmp.items():
                 sched[k] = sched.get(k, 0) + v * units
         rq: dict[int, int] = {}
@@ -157,7 +178,7 @@ def load_profile(cp: CompiledProblem, placements, timing, size: str = "day", sta
             # requirement before the first bucket is backlog → first bucket
             if s < bks[0].start if bks else False:
                 s = bks[0].start
-            _spread(cal, s, e, bks, rq)
+            _spread(cal, s, e, bks, rq, ends)
         rl = ResourceLoad(ri)
         for k, bk in enumerate(bks):
             cap = cap_acc.get(k, 0)

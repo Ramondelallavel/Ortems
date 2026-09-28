@@ -17,7 +17,7 @@ from __future__ import annotations
 from datetime import datetime, time
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
 
 SCHEMA_VERSION = "1.0"
 
@@ -34,29 +34,31 @@ class _Model(BaseModel):
         ~20x cheaper than the constructor. Missing fields take their defaults."""
         spec = cls.__dict__.get("_fast_spec")
         if spec is None:
-            spec = []
-            for name, f in cls.model_fields.items():
+            template: dict[str, Any] = {}
+            factories, required = [], []
+            for name, f in cls.model_fields.items():  # schema order, like the constructor
+                template[name] = None if f.default_factory is not None or f.is_required() else f.default
                 if f.default_factory is not None:
-                    spec.append((name, True, None, f.default_factory))
-                elif not f.is_required():
-                    spec.append((name, True, f.default, None))
-                else:
-                    spec.append((name, False, None, None))
+                    factories.append((name, f.default_factory))
+                elif f.is_required():
+                    required.append(name)
+            private = {k: v.get_default() for k, v in cls.__private_attributes__.items()} or None
+            spec = (template, tuple(factories), tuple(required), private)
             type.__setattr__(cls, "_fast_spec", spec)
-        data = {}
-        get = values.get
-        for name, has_default, default, factory in spec:  # schema order, like the constructor
-            v = get(name, _MISSING)
-            if v is _MISSING:
-                if has_default:
-                    data[name] = factory() if factory is not None else default
-            else:
-                data[name] = v
+        template, factories, required, private = spec
+        data = template.copy()
+        data.update(values)  # keeps the schema order of the template
+        for name, factory in factories:
+            if name not in values:
+                data[name] = factory()
+        for name in required:
+            if name not in values:
+                del data[name]
         obj = cls.__new__(cls)
         object.__setattr__(obj, "__dict__", data)
         object.__setattr__(obj, "__pydantic_fields_set__", set(values))
         object.__setattr__(obj, "__pydantic_extra__", None)
-        object.__setattr__(obj, "__pydantic_private__", None)
+        object.__setattr__(obj, "__pydantic_private__", dict(private) if private else None)
         return obj
 
 
@@ -770,3 +772,6 @@ class Solution(_Model):
     explanations: dict[str, Explanation] = Field(default_factory=dict)
     pegging: list[PegLink] = Field(default_factory=list)
     solver_metadata: SolverMetadata
+    # the engine state behind the solution, in-process only (read models are derived from it when
+    # the platform stores a plan); never part of the JSON contract
+    _state: Any = PrivateAttr(default=None)

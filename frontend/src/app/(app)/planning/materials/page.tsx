@@ -149,6 +149,13 @@ export default function MaterialsPage() {
                   { key: "end", label: "Planned end", render: (r: any) => dt(r.end) },
                 ]}
                 onRowClick={(r: any) => router.push(`/planning/orders?q=${r.number}`)}
+                toolbar={
+                  d.orders_total > d.orders.length ? (
+                    <span className="text-[11.5px] text-slate-600">
+                      The {d.orders.length.toLocaleString()} most critical of {d.orders_total.toLocaleString()} orders with material status — the order book filters all of them
+                    </span>
+                  ) : undefined
+                }
               />
             </div>
           )}

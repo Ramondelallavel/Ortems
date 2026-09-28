@@ -1,40 +1,48 @@
 "use client";
 import { useEffect, useMemo, useState } from "react";
-import { Badge, Button, DataTable, Dialog, Drawer, ErrorState, Field, Loading, PageHeader, Select, StatusPill, useToast, type Column } from "@/components/ui";
+import { Badge, Button, Dialog, Drawer, ErrorState, Field, Loading, PageHeader, Select, StatusPill, useToast, type Column } from "@/components/ui";
 import { api } from "@/lib/api";
 import { date, dt, duration, localInputToIso } from "@/lib/format";
 import { useApi, useQueryParam } from "@/lib/hooks";
 import { useSession } from "@/lib/session";
+import { RemoteTable } from "@/components/data/RemoteTable";
 import { SectionData } from "@/components/data/SectionData";
 
 type Row = Record<string, any>;
+
+// server sort keys of the sortable columns (the order book is sorted and paged by the server)
+const SORT_KEYS: Record<string, string> = {
+  number: "number",
+  quantity: "quantity",
+  priority: "priority",
+  due_date: "due_date",
+  planned_end: "planned_end",
+  lateness_minutes: "lateness_minutes",
+  plan_status: "plan_status",
+  material_status: "material_status",
+  status: "status",
+};
 
 export default function OrdersPage() {
   const { t, plant, can } = useSession();
   const qParam = useQueryParam("q");
   const statusParam = useQueryParam("status");
   const [scope, setScope] = useState("open");
-  const orders = useApi<any>(plant ? "/orders" : null, plant ? { plant_id: plant.id, limit: 5000, all: scope === "all" ? 1 : undefined } : undefined);
   const [planFilter, setPlanFilter] = useState("");
   const [open, setOpen] = useState<Row | null>(null);
   const [creating, setCreating] = useState(false);
+  const [meta, setMeta] = useState<{ total: number; plan_id: string | null; plan_number: string | null } | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
   useEffect(() => {
     if (statusParam) setPlanFilter(statusParam);
   }, [statusParam]);
-
-  const rows: Row[] = useMemo(() => {
-    let r: Row[] = orders.data?.items || [];
-    if (planFilter) r = r.filter((o) => o.plan_status === planFilter || o.material_status === planFilter);
-    if (qParam) {
-      const q = qParam.toLowerCase();
-      const exact = r.filter((o) => o.number.toLowerCase() === q);
-      if (exact.length) r = exact;
-    }
-    return r;
-  }, [orders.data, planFilter, qParam]);
+  // a link to one order (?q=number) opens it directly
+  const exact = useApi<any>(plant && qParam ? "/orders" : null, plant && qParam ? { plant_id: plant.id, q: qParam, all: 1, limit: 5 } : undefined);
   useEffect(() => {
-    if (qParam && rows.length === 1) setOpen(rows[0]);
-  }, [qParam, rows]);
+    const hit = (exact.data?.items || []).find((o: Row) => o.number.toLowerCase() === (qParam || "").toLowerCase());
+    if (hit) setOpen(hit);
+  }, [exact.data, qParam]);
+  const query = useMemo(() => (plant ? { plant_id: plant.id, all: scope === "all" ? 1 : undefined, plan_status: planFilter || undefined } : undefined), [plant, scope, planFilter]);
 
   const cols: Column<Row>[] = [
     { key: "number", label: t("common.order"), mono: true, width: 110 },
@@ -58,10 +66,10 @@ export default function OrdersPage() {
     <div className="flex flex-col h-full min-h-0">
       <PageHeader
         title={t("nav.orders")}
-        subtitle={orders.data ? `${orders.data.total} production orders · plan ${orders.data.plan_number || "—"}` : undefined}
+        subtitle={meta ? `${meta.total.toLocaleString()} production orders · plan ${meta.plan_number || "—"}` : undefined}
         actions={
           <>
-            <SectionData tables={["production-orders", "production-orders.operations", "sales-orders", "sales-orders.lines", "demands", "customers"]} onChanged={orders.reload} />
+            <SectionData tables={["production-orders", "production-orders.operations", "sales-orders", "sales-orders.lines", "demands", "customers"]} onChanged={() => setReloadKey((k) => k + 1)} />
             <Select ariaLabel="Scope" value={scope} onChange={setScope} options={[{ value: "open", label: "Open orders" }, { value: "all", label: "All orders" }]} />
             <Select
               ariaLabel="Plan status"
@@ -78,12 +86,24 @@ export default function OrdersPage() {
         }
       />
       <div className="flex-1 min-h-0 bg-white">
-        {orders.error ? <ErrorState error={orders.error} onRetry={orders.reload} /> : !orders.data ? <Loading /> : <DataTable rows={rows} columns={cols} rowKey={(r) => r.id} onRowClick={setOpen} selectedKey={open?.id} exportName="orders" initialSort={{ key: "due_date", dir: 1 }} />}
+        <RemoteTable
+          path="/orders"
+          query={query}
+          columns={cols}
+          rowKey={(r) => r.id}
+          onRowClick={setOpen}
+          selectedKey={open?.id}
+          sortKeys={SORT_KEYS}
+          initialSort={{ key: "due_date", dir: 1 }}
+          onMeta={(d) => setMeta({ total: d.total, plan_id: d.plan_id ?? null, plan_number: d.plan_number ?? null })}
+          reloadKey={reloadKey}
+          searchPlaceholder="Order, item or description…"
+        />
       </div>
       <Drawer open={!!open} onClose={() => setOpen(null)} title={open ? `${open.number} · ${open.item}` : ""} width={520}>
-        {open && <OrderDetail order={open} planId={orders.data?.plan_id} />}
+        {open && <OrderDetail order={open} planId={meta?.plan_id ?? exact.data?.plan_id ?? null} />}
       </Drawer>
-      <NewOrder open={creating} onClose={() => setCreating(false)} onCreated={() => orders.reload()} />
+      <NewOrder open={creating} onClose={() => setCreating(false)} onCreated={() => setReloadKey((k) => k + 1)} />
     </div>
   );
 }

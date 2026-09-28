@@ -26,6 +26,7 @@ from sqlalchemy.orm import Session
 from ..core.config import get_settings
 from ..core.errors import NotFound, ValidationFailed
 from ..models import ConstraintViolation, Item, Plan, Plant, ProductionOrder, Resource, Scenario
+from . import plan_store
 from .context import Ctx
 from .views import _get_plan
 
@@ -144,7 +145,7 @@ class Tools:
             "kpis": {x: k.get(x) for x in ("otif", "on_time_delivery", "late_orders", "orders_unscheduled", "average_delay_h", "maximum_delay_h", "utilization", "setup_h", "overtime_h", "material_shortages", "constraint_violations_hard", "throughput_units")},
             "solver": {"provider": md.get("provider"), "status": md.get("status"), "gap": md.get("gap"), "runtime_s": md.get("runtime_s")},
             "late_causes": (p.kpi_details or {}).get("late_causes", {}),
-            "unscheduled_operations": len((p.analysis or {}).get("unscheduled", [])),
+            "unscheduled_operations": plan_store.unscheduled_count(self.s, p),
             "hard_violations_placed": self.s.scalar(
                 select(func.count()).select_from(ConstraintViolation).where(ConstraintViolation.plan_id == p.id, ConstraintViolation.hardness == "HARD", ConstraintViolation.type != "UNSCHEDULED")
             )
@@ -195,10 +196,11 @@ class Tools:
         return r.code if r else rid
 
     def late_orders(self, limit: int = 10) -> dict[str, Any]:
-        late = (self.plan.kpi_details or {}).get("late_orders", [])
+        details = self.plan.kpi_details or {}
+        late = details.get("late_orders", [])
         self._src("kpi", "late_orders", "Late orders")
         return {
-            "count": len(late),
+            "count": details.get("late_orders_total", len(late)),
             "causes": (self.plan.kpi_details or {}).get("late_causes", {}),
             "orders": [{"number": x["number"], "status": x["status"], "lateness_minutes": x.get("lateness_minutes"), "due": x.get("due"), "end": x.get("end"), "cause": (x.get("cause") or {}).get("category"), "cause_text": (x.get("cause") or {}).get("text")} for x in late[: max(1, min(limit, 50))]],
         }

@@ -8,6 +8,7 @@ Center) — nothing is silently skipped.
 
 from __future__ import annotations
 
+import json
 import math
 import uuid
 from collections import defaultdict
@@ -15,12 +16,22 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import Text, cast, select
 from sqlalchemy.orm import Session
 
 from monxuplan_engine.calendars import TimeAxis, expand_calendar
 from monxuplan_engine.changes import apply_changes
-from monxuplan_engine.contract import CalendarSpec, Problem
+from monxuplan_engine.contract import (
+    BaselineOpSpec,
+    CalendarSpec,
+    DurationSpec,
+    FixedAssignmentSpec,
+    LotRulesSpec,
+    MaterialUseSpec,
+    OperationSpec,
+    OrderSpec,
+    Problem,
+)
 
 from ..core.clock import now
 from ..models import (
@@ -127,6 +138,12 @@ def _iso(dt: datetime | None) -> str | None:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=UTC)
     return dt.isoformat()
+
+
+def _aware(dt: datetime | None) -> datetime | None:
+    if dt is None:
+        return None
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=UTC)
 
 
 def build_problem(
@@ -366,17 +383,25 @@ def build_problem(
             frontier.append(c.parent_id)
 
     # ------------------------------------------------------------------ orders
-    # high-volume tables are read as plain rows (attribute access like ORM objects, no identity map)
-    # and restricted with joins/subqueries rather than id lists (100 000 orders exceed any IN list)
+    # high-volume tables are read as plain rows (attribute access like ORM objects, no identity map),
+    # restricted with joins/subqueries rather than id lists (100 000 orders exceed any IN list) and
+    # fetched in one call per query
     PO, POO = ProductionOrder.__table__, ProductionOrderOperation.__table__
     open_orders = select(PO.c.id).where(PO.c.plant_id == plant.id, PO.c.status.in_(OPEN_STATUSES))
-    orders = list(s.execute(select(PO).where(PO.c.plant_id == plant.id, PO.c.status.in_(OPEN_STATUSES + ("BLOCKED",)))))
+    po_cols = [
+        PO.c[n]
+        for n in ("id", "number", "item_id", "quantity", "completed_quantity", "status", "due_date", "release_date", "requested_date", "promised_date", "priority", "customer_id", "expedite", "planner_priority", "sales_order_line_id", "bom_id", "routing_id")
+    ]
+    orders = s.execute(select(*po_cols).where(PO.c.plant_id == plant.id, PO.c.status.in_(OPEN_STATUSES + ("BLOCKED",)))).all()
     for o in [o for o in orders if o.status == "BLOCKED"]:
         info.excluded_orders.append({"order_id": str(o.id), "number": o.number, "reason": "BLOCKED"})
         info.issues.append({"severity": "WARNING", "type": "ORDER_BLOCKED", "message": f"{o.number} is blocked and not scheduled", "order_id": str(o.id)})
     orders = [o for o in orders if o.status != "BLOCKED"]
     item_ids = {o.item_id for o in orders}
-    ops_all = list(s.execute(select(POO).where(POO.c.order_id.in_(open_orders)))) if orders else []
+    poo_cols = [POO.c[n] for n in ("id", "order_id", "seq", "code", "name", "status", "routing_operation_id", "completed_quantity", "pinned_resource_id", "actual_start", "actual_resource_id")]
+    # overrides are rare: read as text and parsed only when present
+    poo_cols.append(cast(POO.c.overrides, Text).label("overrides_json"))
+    ops_all = s.execute(select(*poo_cols).where(POO.c.order_id.in_(open_orders))).all() if orders else []
     ops_by_order: dict[uuid.UUID, list] = defaultdict(list)
     for op in ops_all:
         ops_by_order[op.order_id].append(op)
@@ -394,7 +419,8 @@ def build_problem(
     tool_compat: dict[uuid.UUID, set[uuid.UUID]] = defaultdict(set)
     for tc in s.scalars(select(ToolCompatibility)):
         tool_compat[tc.tool_id].add(tc.machine_id)
-    customers = {c.id: c for c in s.scalars(select(Customer))}
+    cust_ids = {o.customer_id for o in orders if o.customer_id}
+    customers = {c.id: c for part in _chunks(cust_ids) for c in s.scalars(select(Customer).where(Customer.id.in_(part)))}
     suppliers = {x.id: x for x in s.scalars(select(Supplier))}
 
     # BOMs (explicit or the item's active BOM)
@@ -420,24 +446,140 @@ def build_problem(
     pos_cols = (SO.c.op_key, SO.c.resource_id, SO.c.setup_start, SO.c.start, SO.c.end, SO.c.is_locked, SO.c.setup_minutes)
     base_positions: dict[str, Any] = {}
     if baseline_plan is not None:
-        for so in s.execute(select(*pos_cols).where(SO.c.plan_id == baseline_plan.id)):
+        for so in s.execute(select(*pos_cols).where(SO.c.plan_id == baseline_plan.id)).all():
             base_positions[so.op_key] = so
     frozen_positions: dict[str, Any] = {}
     fp = frozen_plan
     if fp is not None and frozen_until is not None and (cfg.get("constraints") or {}).get("frozen", "HARD") == "HARD":
-        for so in s.execute(select(*pos_cols).where(SO.c.plan_id == fp.id, SO.c.setup_start < frozen_until)):
+        for so in s.execute(select(*pos_cols).where(SO.c.plan_id == fp.id, SO.c.setup_start < frozen_until)).all():
             frozen_positions[so.op_key] = so
 
-    order_specs, op_specs, prec_specs = [], [], []
+    # Orders and operations are built as engine objects directly: the parts shared by many orders
+    # (an operation template per routing operation, lot rules and attributes per item) are
+    # validated once, the per-order values are computed here with explicit guards. Validating
+    # 200 000 operations one by one would take longer than scheduling them.
+    order_specs: list[OrderSpec] = []
+    op_specs: list[OperationSpec] = []
+    prec_specs: list[dict[str, Any]] = []
     consumed_items: set[uuid.UUID] = set()
     for o in orders:
         b = order_bom.get(o.id)
         if b is not None:
             consumed_items.update(ln.component_id for ln in lines.get(b.id, []))
+    res_str = {rid: str(rid) for rid in res_by_id}
+    item_parts: dict[uuid.UUID, tuple] = {}
+
+    def item_part(item: Item) -> tuple:
+        part = item_parts.get(item.id)
+        if part is None:
+            fam = families.get(item.family_id) if item.family_id else None
+            attrs = {k: v for k, v in (item.attributes or {}).items() if isinstance(v, str | int | float | bool)}
+            lot = LotRulesSpec.model_validate({"min_lot": item.min_lot, "max_lot": item.max_lot, "multiple": item.lot_multiple, "integer": item.quantity_type == "INTEGER"})
+            part = (str(item.id), fam.code if fam else None, attrs, lot, str(item.id) if item.id in consumed_items else None, float(item.safety_time_minutes or 0))
+            item_parts[item.id] = part
+        return part
+
+    def bounded(v: Any, default: int, what: str, o) -> int:
+        """Priorities are 0-10 in the engine contract: out-of-range values are clamped and reported."""
+        n = int(default if v is None else v)
+        if 0 <= n <= 10:
+            return n
+        info.issues.append({"severity": "WARNING", "type": "PRIORITY_OUT_OF_RANGE", "message": f"{o.number}: {what} {n} is outside 0-10 and was clamped", "order_id": str(o.id)})
+        return min(max(n, 0), 10)
+
+    templates: dict[uuid.UUID | None, tuple] = {}
+
+    def template(ro, ov: dict[str, Any]) -> tuple:
+        """(duration, modes, setup state, interruptible, splittable, transfer batch, overlap %) of a
+        routing operation — validated once and shared by every order operation without overrides."""
+        cacheable = not ov
+        if cacheable and (ro.id if ro is not None else None) in templates:
+            return templates[ro.id if ro is not None else None]
+
+        def param(name: str, default: Any = 0) -> Any:
+            if name in ov:
+                return ov[name]
+            return getattr(ro, name, default) if ro is not None else default
+
+        modes = []
+        labor_res = None
+        if param("labor_pool_id", None):
+            lp = pool_by_id.get(param("labor_pool_id", None))
+            labor_res = lp.resource_id if lp else None
+        tool = param("tool_id", None)
+        for orr in sorted(op_res.get(ro.id, []) if ro else [], key=lambda x: x.preference):
+            targets = [orr.resource_id] if orr.resource_id else list(members.get(orr.group_id, []))
+            for rid in targets:
+                if rid not in res_by_id:
+                    continue
+                if orr.role == "SUBCONTRACT":
+                    sup = suppliers.get(orr.supplier_id) if orr.supplier_id else None
+                    modes.append(
+                        {
+                            "resource_id": res_str[rid],
+                            "preference": orr.preference,
+                            "subcontract": {"supplier_id": sup.code if sup else None, "lead_time_minutes": int(orr.subcontract_lead_time_minutes or 0), "cost": float(orr.subcontract_cost or 0)},
+                            "label": "subcontract",
+                        }
+                    )
+                    continue
+                if tool and tool_compat.get(tool) and rid not in tool_compat[tool]:
+                    continue
+                sec = []
+                if labor_res is not None:
+                    sec.append({"resource_id": str(labor_res), "units": int(param("labor_units", 1) or 1)})
+                if tool and tool in res_by_id:
+                    sec.append({"resource_id": str(tool), "units": int(param("tool_units", 1) or 1)})
+                modes.append(
+                    {
+                        "resource_id": res_str[rid],
+                        "preference": orr.preference,
+                        "speed_factor": orr.speed_factor or 1.0,
+                        "setup_minutes": orr.setup_minutes,
+                        "run_minutes_per_unit": orr.run_minutes_per_unit,
+                        "secondary": sec,
+                    }
+                )
+        duration = DurationSpec.model_validate(
+            {
+                "setup_minutes": float(param("setup_minutes", 0) or 0),
+                "run_minutes_per_unit": float(param("run_minutes_per_unit", 0) or 0),
+                "run_tiers": param("run_tiers", []) or [],
+                "fixed_minutes": float(param("fixed_minutes", 0) or 0),
+                "batch_size": param("batch_size", None),
+                "minutes_per_batch": float(param("minutes_per_batch", 0) or 0),
+                "teardown_minutes": float(param("teardown_minutes", 0) or 0),
+                "queue_minutes": float(param("queue_minutes", 0) or 0),
+                "move_minutes": float(param("move_minutes", 0) or 0),
+                "wait_minutes": float(param("wait_minutes", 0) or 0),
+                "buffer_before_minutes": float(param("buffer_before_minutes", 0) or 0),
+                "buffer_after_minutes": float(param("buffer_after_minutes", 0) or 0),
+            }
+        )
+        head = OperationSpec.model_validate(
+            {
+                "id": "template",
+                "order_id": "template",
+                "seq": 0,
+                "quantity": 1,
+                "modes": modes,
+                "setup_state": dict(param("setup_attributes", {}) or {}),
+                "interruptible": bool(param("interruptible", True)),
+                "splittable": bool(param("splittable", False)),
+                "transfer_batch": param("transfer_batch", None),
+                "overlap_percent": param("overlap_percent", None),
+            }
+        )
+        t = (duration, head.modes, head.setup_state, head.interruptible, head.splittable, head.transfer_batch, head.overlap_percent)
+        if cacheable:
+            templates[ro.id if ro is not None else None] = t
+        return t
+
     for o in sorted(orders, key=lambda x: x.number):
         item = items.get(o.item_id)
+        oid = str(o.id)
         if item is None:
-            info.issues.append({"severity": "CRITICAL", "type": "ORDER_UNKNOWN_ITEM", "message": f"{o.number} references an unknown item", "order_id": str(o.id)})
+            info.issues.append({"severity": "CRITICAL", "type": "ORDER_UNKNOWN_ITEM", "message": f"{o.number} references an unknown item", "order_id": oid})
             continue
         remaining = max(float(o.quantity) - float(o.completed_quantity or 0), 0.0)
         o_ops = sorted(ops_by_order.get(o.id, []), key=lambda x: x.seq)
@@ -445,94 +587,49 @@ def build_problem(
         if remaining <= 0 or not open_ops:
             continue
         if not o_ops:
-            info.issues.append({"severity": "CRITICAL", "type": "ORDER_WITHOUT_OPERATIONS", "message": f"{o.number} has no operations (routing missing)", "order_id": str(o.id)})
+            info.issues.append({"severity": "CRITICAL", "type": "ORDER_WITHOUT_OPERATIONS", "message": f"{o.number} has no operations (routing missing)", "order_id": oid})
             continue
         cust = customers.get(o.customer_id) if o.customer_id else None
-        fam = families.get(item.family_id) if item.family_id else None
-        info.order_numbers[str(o.id)] = o.number
-        attrs = {k: v for k, v in (item.attributes or {}).items() if isinstance(v, str | int | float | bool)}
+        info.order_numbers[oid] = o.number
+        item_s, fam_code, attrs, lot, produces, item_safety = item_part(item)
         order_specs.append(
-            {
-                "id": str(o.id),
-                "number": o.number,
-                "item_id": str(item.id),
-                "item_code": item.code,
-                "quantity": remaining,
-                "due": _iso(o.due_date),
-                "release": _iso(o.release_date),
-                "requested": _iso(o.requested_date),
-                "promised": _iso(o.promised_date),
-                "priority": int(o.priority or 5),
-                "customer_id": str(cust.id) if cust else None,
-                "customer_priority": int(cust.priority) if cust else 5,
-                "strategic": bool(cust.is_strategic) if cust else False,
-                "expedite": bool(o.expedite),
-                "planner_priority": o.planner_priority,
-                "family": fam.code if fam else None,
-                "attributes": attrs,
-                "produces_material_id": str(item.id) if item.id in consumed_items else None,
-                "safety_time_minutes": float(item.safety_time_minutes or 0) + float(cust.safety_time_minutes if cust else 0),
-                "lot": {"min_lot": item.min_lot, "max_lot": item.max_lot, "multiple": item.lot_multiple, "integer": item.quantity_type == "INTEGER"},
-                "status": o.status,
-                "sales_order_ref": str(o.sales_order_line_id) if o.sales_order_line_id else None,
-            }
+            OrderSpec.fast(
+                id=oid,
+                number=o.number,
+                item_id=item_s,
+                item_code=item.code,
+                quantity=remaining,
+                due=_aware(o.due_date),
+                release=_aware(o.release_date),
+                requested=_aware(o.requested_date),
+                promised=_aware(o.promised_date),
+                priority=bounded(o.priority, 5, "priority", o),
+                customer_id=str(cust.id) if cust else None,
+                customer_priority=bounded(cust.priority, 5, "customer priority", o) if cust else 5,
+                strategic=bool(cust.is_strategic) if cust else False,
+                expedite=bool(o.expedite),
+                planner_priority=bounded(o.planner_priority, 5, "planner priority", o) if o.planner_priority is not None else None,
+                family=fam_code,
+                attributes=attrs,
+                produces_material_id=produces,
+                safety_time_minutes=item_safety + float(cust.safety_time_minutes if cust else 0),
+                lot=lot,
+                status=o.status,
+                sales_order_ref=str(o.sales_order_line_id) if o.sales_order_line_id else None,
+            )
         )
         bom = order_bom.get(o.id)
         bom_lines = lines.get(bom.id, []) if bom else []
         first_open_seq = open_ops[0].seq
         for op in o_ops:
-            key = op_key(o.number, op.seq)
             if op.status == "COMPLETED":
                 continue
+            key = op_key(o.number, op.seq)
             ro = rops.get(op.routing_operation_id) if op.routing_operation_id else None
-            ov = op.overrides or {}
-
-            def param(name: str, default: Any = 0, _ro=ro, _ov=ov) -> Any:
-                if name in _ov:
-                    return _ov[name]
-                return getattr(_ro, name, default) if _ro is not None else default
-
+            ov = json.loads(op.overrides_json) if op.overrides_json not in (None, "", "{}", "null") else {}
+            duration, modes, state, interruptible, splittable, transfer_batch, overlap = template(ro, ov or {})
             done = float(op.completed_quantity or 0)
             qty = max(remaining if op.status != "IN_PROGRESS" else float(o.quantity) - done, 0.001)
-            modes = []
-            labor_res = None
-            if param("labor_pool_id", None):
-                lp = pool_by_id.get(param("labor_pool_id", None))
-                labor_res = lp.resource_id if lp else None
-            tool = param("tool_id", None)
-            for orr in sorted(op_res.get(ro.id, []) if ro else [], key=lambda x: x.preference):
-                targets = [orr.resource_id] if orr.resource_id else list(members.get(orr.group_id, []))
-                for rid in targets:
-                    if rid not in res_by_id:
-                        continue
-                    if orr.role == "SUBCONTRACT":
-                        sup = suppliers.get(orr.supplier_id) if orr.supplier_id else None
-                        modes.append(
-                            {
-                                "resource_id": str(rid),
-                                "preference": orr.preference,
-                                "subcontract": {"supplier_id": sup.code if sup else None, "lead_time_minutes": int(orr.subcontract_lead_time_minutes or 0), "cost": float(orr.subcontract_cost or 0)},
-                                "label": "subcontract",
-                            }
-                        )
-                        continue
-                    if tool and tool_compat.get(tool) and rid not in tool_compat[tool]:
-                        continue
-                    sec = []
-                    if labor_res is not None:
-                        sec.append({"resource_id": str(labor_res), "units": int(param("labor_units", 1) or 1)})
-                    if tool and tool in res_by_id:
-                        sec.append({"resource_id": str(tool), "units": int(param("tool_units", 1) or 1)})
-                    modes.append(
-                        {
-                            "resource_id": str(rid),
-                            "preference": orr.preference,
-                            "speed_factor": orr.speed_factor or 1.0,
-                            "setup_minutes": orr.setup_minutes,
-                            "run_minutes_per_unit": orr.run_minutes_per_unit,
-                            "secondary": sec,
-                        }
-                    )
             mats = []
             for ln in bom_lines:
                 at_seq = ln.operation_seq if ln.operation_seq is not None else first_open_seq
@@ -543,53 +640,47 @@ def build_problem(
                 comp = items.get(ln.component_id)
                 if comp is not None and comp.quantity_type == "INTEGER":
                     need = math.ceil(need - 1e-9)
-                mats.append({"material_id": str(ln.component_id), "quantity": need})
-            state = dict(param("setup_attributes", {}) or {})
-            spec: dict[str, Any] = {
-                "id": key,
-                "order_id": str(o.id),
-                "seq": op.seq,
-                "code": op.code,
-                "name": op.name,
-                "quantity": qty,
-                "duration": {
-                    "setup_minutes": float(param("setup_minutes", 0) or 0),
-                    "run_minutes_per_unit": float(param("run_minutes_per_unit", 0) or 0),
-                    "run_tiers": param("run_tiers", []) or [],
-                    "fixed_minutes": float(param("fixed_minutes", 0) or 0),
-                    "batch_size": param("batch_size", None),
-                    "minutes_per_batch": float(param("minutes_per_batch", 0) or 0),
-                    "teardown_minutes": float(param("teardown_minutes", 0) or 0),
-                    "queue_minutes": float(param("queue_minutes", 0) or 0),
-                    "move_minutes": float(param("move_minutes", 0) or 0),
-                    "wait_minutes": float(param("wait_minutes", 0) or 0),
-                    "buffer_before_minutes": float(param("buffer_before_minutes", 0) or 0),
-                    "buffer_after_minutes": float(param("buffer_after_minutes", 0) or 0),
-                },
-                "modes": modes,
-                "materials": mats,
-                "setup_state": state,
-                "interruptible": bool(param("interruptible", True)),
-                "splittable": bool(param("splittable", False)),
-                "transfer_batch": param("transfer_batch", None),
-                "overlap_percent": param("overlap_percent", None),
-                "status": "IN_PROGRESS" if op.status == "IN_PROGRESS" else ("RELEASED" if op.status == "RELEASED" else "PLANNED"),
-                "pinned_resource_id": str(op.pinned_resource_id) if op.pinned_resource_id else None,
-            }
+                if need <= 0:
+                    info.issues.append({"severity": "WARNING", "type": "BOM_ZERO_QUANTITY", "message": f"{key}: component {comp.code if comp else ln.component_id} has no quantity to consume", "op_id": key, "order_id": oid})
+                    continue
+                mats.append(MaterialUseSpec.fast(material_id=str(ln.component_id), quantity=float(need)))
+            fixed = None
+            remaining_qty = None
             if op.status == "IN_PROGRESS":
-                spec["remaining_quantity"] = max(float(o.quantity) - done, 0.001)
+                remaining_qty = max(float(o.quantity) - done, 0.001)
                 if op.actual_start and op.actual_resource_id:
-                    spec["fixed"] = {"resource_id": str(op.actual_resource_id), "start": _iso(op.actual_start), "reason": "IN_PROGRESS"}
+                    fixed = FixedAssignmentSpec.fast(resource_id=str(op.actual_resource_id), start=_aware(op.actual_start), reason="IN_PROGRESS")
             elif key in frozen_positions:
                 so = frozen_positions[key]
                 if so.resource_id is not None:
-                    spec["fixed"] = {"resource_id": str(so.resource_id), "start": _iso(so.setup_start), "end": _iso(so.end), "reason": "FROZEN", "setup_minutes": so.setup_minutes}
+                    fixed = FixedAssignmentSpec.fast(resource_id=str(so.resource_id), start=_aware(so.setup_start), end=_aware(so.end), reason="FROZEN", setup_minutes=float(so.setup_minutes))
             elif key in base_positions and base_positions[key].is_locked and base_positions[key].resource_id is not None:
                 so = base_positions[key]
-                spec["fixed"] = {"resource_id": str(so.resource_id), "start": _iso(so.setup_start), "end": _iso(so.end), "reason": "LOCKED", "setup_minutes": so.setup_minutes}
+                fixed = FixedAssignmentSpec.fast(resource_id=str(so.resource_id), start=_aware(so.setup_start), end=_aware(so.end), reason="LOCKED", setup_minutes=float(so.setup_minutes))
             if not modes:
-                info.issues.append({"severity": "CRITICAL", "type": "OPERATION_WITHOUT_RESOURCE", "message": f"{key} ({op.name}) has no active compatible resource in {plant.code}", "op_id": key, "order_id": str(o.id)})
-            op_specs.append(spec)
+                info.issues.append({"severity": "CRITICAL", "type": "OPERATION_WITHOUT_RESOURCE", "message": f"{key} ({op.name}) has no active compatible resource in {plant.code}", "op_id": key, "order_id": oid})
+            op_specs.append(
+                OperationSpec.fast(
+                    id=key,
+                    order_id=oid,
+                    seq=op.seq,
+                    code=op.code,
+                    name=op.name,
+                    quantity=qty,
+                    duration=duration,
+                    modes=list(modes),
+                    materials=mats,
+                    setup_state=state,
+                    interruptible=interruptible,
+                    splittable=splittable,
+                    transfer_batch=transfer_batch,
+                    overlap_percent=overlap,
+                    status="IN_PROGRESS" if op.status == "IN_PROGRESS" else ("RELEASED" if op.status == "RELEASED" else "PLANNED"),
+                    remaining_quantity=remaining_qty,
+                    fixed=fixed,
+                    pinned_resource_id=str(op.pinned_resource_id) if op.pinned_resource_id else None,
+                )
+            )
             info.op_rows[key] = (o.id, op.id)
         # precedences from the routing (else the engine chains operations by sequence)
         if o.routing_id and precs.get(o.routing_id):
@@ -601,11 +692,11 @@ def build_problem(
     # ------------------------------------------------------------------ materials
     mat_ids = set()
     for sp in op_specs:
-        for m in sp["materials"]:
-            mat_ids.add(uuid.UUID(m["material_id"]))
+        for m in sp.materials:
+            mat_ids.add(uuid.UUID(m.material_id))
     for os_ in order_specs:
-        if os_["produces_material_id"]:
-            mat_ids.add(uuid.UUID(os_["produces_material_id"]))
+        if os_.produces_material_id:
+            mat_ids.add(uuid.UUID(os_.produces_material_id))
     inv = defaultdict(float)
     for chunk in _chunks(mat_ids):
         for row in s.scalars(select(Inventory).where(Inventory.plant_id == plant.id, Inventory.item_id.in_(chunk))):
@@ -675,10 +766,11 @@ def build_problem(
         if r.type == "NOT_IMMEDIATELY_AFTER"
     ]
 
-    baseline = []
-    for key, so in base_positions.items():
-        if key in info.op_rows and so.resource_id is not None:
-            baseline.append({"op_id": key, "resource_id": str(so.resource_id), "start": _iso(so.start), "end": _iso(so.end), "setup_start": _iso(so.setup_start)})
+    baseline = [
+        BaselineOpSpec.fast(op_id=key, resource_id=str(so.resource_id), start=_aware(so.start), end=_aware(so.end), setup_start=_aware(so.setup_start))
+        for key, so in base_positions.items()
+        if key in info.op_rows and so.resource_id is not None
+    ]
 
     used_matrix_ids = {m for lst in res_matrices.values() for m in lst}
     data: dict[str, Any] = {
@@ -709,19 +801,21 @@ def build_problem(
         ],
         "setup_rules": setup_rules,
         "materials": mat_specs,
-        "orders": order_specs,
-        "operations": op_specs,
+        "orders": [],
+        "operations": [],
         "precedences": prec_specs,
         "sequence_constraints": seq_constraints,
         "rules": rules,
         "constraints": cfg.get("constraints") or {},
         "objectives": cfg.get("objectives") or {},
         "solver": cfg.get("solver") or {},
-        "baseline": baseline,
+        "baseline": [],
     }
     if data["constraints"].get("frozen_zone_blocks_new_work") is None:
         data["constraints"]["frozen_zone_blocks_new_work"] = fp is not None
     problem = Problem.model_validate(data)
+    # the high-volume lists were built as engine objects above
+    problem.orders, problem.operations, problem.baseline = order_specs, op_specs, baseline
     if apply_scenario_changes:
         changes = list(s.scalars(select(ScenarioChange).where(ScenarioChange.scenario_id == scenario.id, ScenarioChange.is_active.is_(True)).order_by(ScenarioChange.seq)))
         chain: list[ScenarioChange] = []

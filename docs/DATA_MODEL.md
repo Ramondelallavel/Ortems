@@ -94,8 +94,12 @@ Tenant ─┬─ Company ─┬─ Site ── Plant ─┬─ PlanningArea ─�
 | `scenario` | plant, name, parent, is_live, status, owner, config (horizon, frozen, objectives, strategies), head plan, baseline plan, lock |
 | `scenario_change` | scenario, seq, type (ADD_RESOURCE, DOWNTIME, ADD_SHIFT, RUSH_ORDER, MATERIAL_DELAY, …), payload |
 | `planning_run` | scenario, status, mode, params, progress steps, solver, status, objective, bound, gap, input hash, duration, error, log |
-| `plan` | scenario, run, number (`PLAN-YYYY-MM-DD-Vnnn`), version, parent, kind, status DRAFT/VALIDATED/PUBLISHED/SUPERSEDED, KPIs, problem snapshot (gzip) + hash, solver metadata, published by/at |
-| `scheduled_operation` | plan, order, order operation, op key, resource, secondary allocations, setup start, start, end, setup/run minutes, qty, flags (frozen, locked, late), binding constraint, explanation |
+| `plan` | scenario, run, number (`PLAN-YYYY-MM-DD-Vnnn`), version, parent, kind, status DRAFT/VALIDATED/PUBLISHED/SUPERSEDED, KPIs, problem snapshot (gzip) + hash, solver metadata, published by/at; `analysis` (bottlenecks, data issues, change log, counts) and `kpi_details` are loaded only when read |
+| `scheduled_operation` | plan, order, order operation, op key, resource, secondary allocations, setup start, start, end, setup/run minutes, qty, flags (frozen, locked, late), binding constraint. Order, operation and resource ids are plain references (a version is an immutable snapshot: no foreign keys to check on 200 000-row inserts or to cascade) |
+| `plan_order` | plan, order key + id, result status, planned start/end, due, lateness, weight, earliest possible end, limiting constraint, material status, rules applied, first cause of lateness |
+| `plan_peg` | plan, material, supply (id, kind, reference, supplying order, time), consuming operation and order, need time, quantity |
+| `plan_unscheduled` | plan, operation, order, reason, message, details |
+| `plan_document` | plan, kind, key, item count, gzip JSON: `EXPLANATIONS` per resource, `CAPACITY` per bucket size, `CALENDAR` per resource, `MATERIAL` per material, `CHAINS` (order dependency chains, 256 shards) |
 | `constraint_violation` | plan, severity, type, order, operation, resource, message, details |
 | `kpi_value` | plan, code, value, details |
 | `actual_production` | order operation, resource, start, end, good qty, scrap qty, operator, source |
@@ -110,7 +114,20 @@ Tenant ─┬─ Company ─┬─ Site ── Plant ─┬─ PlanningArea ─�
 ## Indexing highlights
 
 * `(tenant_id, code)` unique on master data; `(tenant_id, number)` unique on orders and plans.
-* `scheduled_operation (plan_id, resource_id, start)` for Gantt window queries;
-  `(plan_id, order_id)` for order views.
+* `scheduled_operation (plan_id, resource_key, setup_start)` for Gantt lanes, dispatch lists and
+  operator screens; `(plan_id, order_key)` for order views; `(plan_id, op_key)` unique.
+* `plan_order (plan_id, status, lateness_minutes)` for late-order lists, `(plan_id, order_id)` to join
+  the order book (sort and filter it by plan result); `plan_peg (plan_id, consumer_order_id)`,
+  `(plan_id, material_id)`, `(plan_id, supply_order_id)` for pegging in both directions.
+* The per-plan tables have no tenant index of their own (`PlanRowTenantMixin`): they are always read
+  through their plan id, and one index less matters on every 200 000-row version.
 * `production_order (tenant_id, plant_id, status, due_date)`; `planning_run (status, created_at)` for
   the job queue; `audit_log (tenant_id, entity_type, entity_id, at)`.
+
+## Plan versions at scale
+
+A plan of a plant with 100 000 orders a day holds ~200 000 scheduled operations, 100 000 order
+results and ~100 000–200 000 pegging links per version. They are written with PostgreSQL `COPY`
+(executemany elsewhere) in the transaction that creates the version, and never read as one document:
+every screen queries an index or reads a few compressed read models (`plan_document`), computed once
+from the engine state when the version is stored. Migration `0003` moved existing plans to this layout.

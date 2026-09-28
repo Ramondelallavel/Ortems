@@ -33,7 +33,7 @@ def _block_reasons(cp: CompiledProblem, slot) -> list[Reason]:
     """Summarise what delayed or blocked an alternative."""
     out: list[Reason] = []
     if not slot.feasible:
-        out.append(Reason(code=slot.reason or "INFEASIBLE", text=slot.detail or "not feasible"))
+        out.append(Reason.fast(code=slot.reason or "INFEASIBLE", text=slot.detail or "not feasible"))
         return out
     seen: set[tuple] = set()
     busy_ops: list[str] = []
@@ -49,7 +49,7 @@ def _block_reasons(cp: CompiledProblem, slot) -> list[Reason]:
             kind = p.data["kind"]
             code = "MAINTENANCE" if kind.startswith("MAINTENANCE") else "DOWNTIME"
             out.append(
-                Reason(
+                Reason.fast(
                     code=code,
                     text=p.detail or kind,
                     data={"from": cp.dt(p.data.get("from")).isoformat(), "to": cp.dt(p.data.get("to")).isoformat(), "kind": kind},
@@ -61,7 +61,7 @@ def _block_reasons(cp: CompiledProblem, slot) -> list[Reason]:
             continue
         seen.add(key)
         code = {"LABOR": "LABOR_UNAVAILABLE", "TOOL": "TOOL_UNAVAILABLE", "SETUP": "SETUP_CONFLICT", "PREDECESSOR": "PREDECESSOR", "CALENDAR": "NON_WORKING_TIME"}.get(p.type, p.type)
-        out.append(Reason(code=code, text=p.detail or p.type, data={"ref": p.ref, "until": cp.dt(p.at).isoformat()}))
+        out.append(Reason.fast(code=code, text=p.detail or p.type, data={"ref": p.ref, "until": cp.dt(p.at).isoformat()}))
     # maintenance / downtime inside the candidate interval (the job would pause over it)
     for ri in (slot.mode.res, *(r for r, _ in slot.mode.sec)):
         res = cp.resources[ri]
@@ -70,7 +70,7 @@ def _block_reasons(cp: CompiledProblem, slot) -> list[Reason]:
                 seen.add(("MAINT", uid or res.id))
                 code = "MAINTENANCE" if kind.startswith("MAINTENANCE") else "DOWNTIME"
                 out.append(
-                    Reason(
+                    Reason.fast(
                         code=code,
                         text=f"{res.code} {kind.replace('_', ' ').lower()} {cp.dt(a).isoformat()} – {cp.dt(b).isoformat()}" + (f" ({reason})" if reason else ""),
                         data={"from": cp.dt(a).isoformat(), "to": cp.dt(b).isoformat(), "kind": kind},
@@ -79,7 +79,7 @@ def _block_reasons(cp: CompiledProblem, slot) -> list[Reason]:
     if busy_ops:
         uniq = list(dict.fromkeys(busy_ops))
         res = cp.resources[slot.mode.res]
-        out.insert(0, Reason(code="RESOURCE_BUSY", text=f"{res.code} busy with {len(uniq)} job(s) ({', '.join(uniq[:3])}{'…' if len(uniq) > 3 else ''})", data={"operations": uniq[:20]}))
+        out.insert(0, Reason.fast(code="RESOURCE_BUSY", text=f"{res.code} busy with {len(uniq)} job(s) ({', '.join(uniq[:3])}{'…' if len(uniq) > 3 else ''})", data={"operations": uniq[:20]}))
     return out
 
 
@@ -90,35 +90,35 @@ def explain_operation(result: BuildResult, i: int) -> Explanation:
     pl = result.placements[i]
     if pl is None:
         u = result.unscheduled.get(i)
-        return Explanation(
+        return Explanation.fast(
             op_id=op.id,
             order_id=order.id,
             resource_id=None,
-            reasons=[Reason(code=u.reason if u else "UNSCHEDULED", text=u.message if u else "not scheduled", data=u.details if u else {})],
+            reasons=[Reason.fast(code=u.reason if u else "UNSCHEDULED", text=u.message if u else "not scheduled", data=u.details if u else {})],
             rules_applied=op.rules_applied + order.rules_applied,
         )
     m = op.modes[pl.mode]
     res = cp.resources[pl.res]
     reasons: list[Reason] = []
     if pl.fixed:
-        reasons.append(Reason(code="FIXED", text=f"Kept fixed ({pl.fixed_reason})", data={"reason": pl.fixed_reason}))
+        reasons.append(Reason.fast(code="FIXED", text=f"Kept fixed ({pl.fixed_reason})", data={"reason": pl.fixed_reason}))
     if m.adhoc:
-        reasons.append(Reason(code="NOT_ROUTING_RESOURCE", text=f"{res.code} is not a routing resource of this operation"))
+        reasons.append(Reason.fast(code="NOT_ROUTING_RESOURCE", text=f"{res.code} is not a routing resource of this operation"))
     elif m.sub:
-        reasons.append(Reason(code="SUBCONTRACTED", text=f"Subcontracted to {res.code} (lead time {m.run // 60}h)", data={"cost": m.sub_cost}))
+        reasons.append(Reason.fast(code="SUBCONTRACTED", text=f"Subcontracted to {res.code} (lead time {m.run // 60}h)", data={"cost": m.sub_cost}))
     else:
-        reasons.append(Reason(code="COMPATIBLE", text=f"{res.code} is {'the primary' if m.pref == 0 else 'an alternative'} resource for {op.name}", data={"preference": m.pref}))
+        reasons.append(Reason.fast(code="COMPATIBLE", text=f"{res.code} is {'the primary' if m.pref == 0 else 'an alternative'} resource for {op.name}", data={"preference": m.pref}))
     for ri, units in m.sec:
         sr = cp.resources[ri]
         code = "LABOR_AVAILABLE" if sr.kind in ("LABOR_POOL", "HUMAN") else "TOOL_AVAILABLE" if sr.kind == "TOOL" else "RESOURCE_AVAILABLE"
         what = "qualified operator" if code == "LABOR_AVAILABLE" else "tool" if code == "TOOL_AVAILABLE" else "resource"
-        reasons.append(Reason(code=code, text=f"{sr.code}: {units} {what}(s) available for the whole operation", data={"resource": sr.code, "units": units}))
+        reasons.append(Reason.fast(code=code, text=f"{sr.code}: {units} {what}(s) available for the whole operation", data={"resource": sr.code, "units": units}))
     if op.materials:
         for mi, q in op.materials:
             mat = cp.materials[mi]
             ready = pl.mat_ready
             reasons.append(
-                Reason(
+                Reason.fast(
                     code="MATERIAL_READY",
                     text=f"{mat.code}: {q:g} {mat.uom} available" + (f" at {cp.dt(ready).isoformat()}" if ready is not None and pl.mat_wait > 0 else ""),
                     data={"material": mat.code, "quantity": q, "ready": cp.dt(ready).isoformat() if ready is not None else None},
@@ -126,42 +126,42 @@ def explain_operation(result: BuildResult, i: int) -> Explanation:
             )
     if pl.shortage:
         for mi, q, a in pl.shortage:
-            reasons.append(Reason(code="MATERIAL_SHORTAGE_ALLOWED", text=f"{cp.materials[mi].code}: short {q - a:g} (shortage allowed by scenario)"))
+            reasons.append(Reason.fast(code="MATERIAL_SHORTAGE_ALLOWED", text=f"{cp.materials[mi].code}: short {q - a:g} (shortage allowed by scenario)"))
     if pl.prev_op is not None:
         prev = cp.ops[pl.prev_op]
         if prev.family and prev.family == op.family:
-            reasons.append(Reason(code="KEEPS_FAMILY", text=f"Keeps product family {op.family} after {prev.id}", data={"family": op.family}))
+            reasons.append(Reason.fast(code="KEEPS_FAMILY", text=f"Keeps product family {op.family} after {prev.id}", data={"family": op.family}))
     feasible_alts = [s for s in pl.alternatives if s.feasible and s.mode.idx != pl.mode]
     if pl.alternatives:
         if feasible_alts:
             best_alt_end = min(s.end for s in feasible_alts)
             if pl.end <= best_alt_end:
-                reasons.append(Reason(code="EARLIEST_FINISH", text=f"Earliest finish: {fmt_minutes(best_alt_end - pl.end)[1:]} before the best alternative", data={"minutes": best_alt_end - pl.end}))
+                reasons.append(Reason.fast(code="EARLIEST_FINISH", text=f"Earliest finish: {fmt_minutes(best_alt_end - pl.end)[1:]} before the best alternative", data={"minutes": best_alt_end - pl.end}))
             min_alt_setup = min(s.setup for s in feasible_alts)
             if pl.setup < min_alt_setup:
-                reasons.append(Reason(code="SETUP_SAVING", text=f"Reduces {min_alt_setup - pl.setup} min of setup versus the best alternative", data={"minutes": min_alt_setup - pl.setup}))
+                reasons.append(Reason.fast(code="SETUP_SAVING", text=f"Reduces {min_alt_setup - pl.setup} min of setup versus the best alternative", data={"minutes": min_alt_setup - pl.setup}))
         elif len(pl.alternatives) > 1:
-            reasons.append(Reason(code="ONLY_FEASIBLE", text="Only feasible resource at this time"))
+            reasons.append(Reason.fast(code="ONLY_FEASIBLE", text="Only feasible resource at this time"))
     if pl.setup:
         brk = cp.setup.breakdown(res.idx, _prev_state(result, pl), _state(result, i), m.setup_base)
-        reasons.append(Reason(code="SETUP", text=f"Setup {pl.setup} min", data={"minutes": pl.setup, "breakdown": brk}))
+        reasons.append(Reason.fast(code="SETUP", text=f"Setup {pl.setup} min", data={"minutes": pl.setup, "breakdown": brk}))
     # due-date status
     c = result.order_completion(op.order)
     if c is not None:
         if c <= order.due:
-            reasons.append(Reason(code="MEETS_DUE_DATE", text=f"Allows order {order.number} to meet its due date ({fmt_minutes(order.due - c)[1:]} slack)", data={"slack_minutes": order.due - c}))
+            reasons.append(Reason.fast(code="MEETS_DUE_DATE", text=f"Allows order {order.number} to meet its due date ({fmt_minutes(order.due - c)[1:]} slack)", data={"slack_minutes": order.due - c}))
         else:
-            reasons.append(Reason(code="ORDER_LATE", text=f"Order {order.number} is late by {fmt_minutes(c - order.due)[1:]}", data={"lateness_minutes": c - order.due}))
+            reasons.append(Reason.fast(code="ORDER_LATE", text=f"Order {order.number} is late by {fmt_minutes(c - order.due)[1:]}", data={"lateness_minutes": c - order.due}))
     b = pl.binding
     if b is not None and b.type not in ("NONE", "HORIZON_START", "FIXED"):
-        reasons.append(Reason(code=f"BOUND_BY_{b.type}", text=f"Start determined by {b.type.lower()}: {b.detail or b.ref or ''}".strip(), data={"ref": b.ref, "wait_minutes": b.wait}))
+        reasons.append(Reason.fast(code=f"BOUND_BY_{b.type}", text=f"Start determined by {b.type.lower()}: {b.detail or b.ref or ''}".strip(), data={"ref": b.ref, "wait_minutes": b.wait}))
     for rid in op.rules_applied + order.rules_applied:
-        reasons.append(Reason(code="RULE", text=f"Planning rule {rid} applied", data={"rule": rid}))
+        reasons.append(Reason.fast(code="RULE", text=f"Planning rule {rid} applied", data={"rule": rid}))
     alts: list[Alternative] = []
     for s in pl.alternatives:
         r = cp.resources[s.mode.res]
         alts.append(
-            Alternative(
+            Alternative.fast(
                 mode_index=s.mode.idx,
                 resource_id=r.id,
                 feasible=s.feasible,
@@ -173,7 +173,7 @@ def explain_operation(result: BuildResult, i: int) -> Explanation:
                 blocking=[] if s.mode.idx == pl.mode else _block_reasons(cp, s),
             )
         )
-    return Explanation(
+    return Explanation.fast(
         op_id=op.id,
         order_id=order.id,
         resource_id=res.id,

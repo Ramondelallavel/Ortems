@@ -10,7 +10,7 @@ from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, Lar
 from sqlalchemy.orm import Mapped, mapped_column
 
 from ..core.clock import now
-from ..core.db import Base, IdMixin, JSONType, TenantMixin, TimestampMixin, VersionMixin
+from ..core.db import Base, IdMixin, JSONType, PlanRowTenantMixin, TenantMixin, TimestampMixin, VersionMixin
 
 
 class Scenario(IdMixin, TenantMixin, TimestampMixin, VersionMixin, Base):
@@ -100,9 +100,12 @@ class Plan(IdMixin, TenantMixin, TimestampMixin, VersionMixin, Base):
     horizon_end: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     frozen_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     kpis: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
-    kpi_details: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
+    # the two larger documents load only when read (headers, lists and trends never need them)
+    kpi_details: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict, deferred=True)
     solver_metadata: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
-    analysis: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)  # orders, bottlenecks, pegging, unscheduled
+    # bottlenecks, data issues, excluded orders, change log and counts; per-order results, pegging and
+    # unscheduled operations live in plan_order / plan_peg / plan_unscheduled
+    analysis: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict, deferred=True)
     params: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
     snapshot_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, ForeignKey("problem_snapshot.id", ondelete="SET NULL"))
     input_hash: Mapped[str | None] = mapped_column(String(64))
@@ -114,19 +117,23 @@ class Plan(IdMixin, TenantMixin, TimestampMixin, VersionMixin, Base):
     publish_reason: Mapped[str | None] = mapped_column(Text)
 
 
-class ScheduledOperation(IdMixin, TenantMixin, Base):
+class ScheduledOperation(IdMixin, PlanRowTenantMixin, Base):
+    """One scheduled operation of a plan version. Versions are immutable snapshots, so order,
+    operation and resource ids are plain references (no foreign keys to check on 200 000-row inserts
+    or to cascade when master data is deleted); ``*_key`` columns keep the engine identifiers."""
+
     __tablename__ = "scheduled_operation"
     __table_args__ = (
-        Index("ix_sched_op_window", "plan_id", "resource_id", "start"),
-        Index("ix_sched_op_order", "plan_id", "order_id"),
+        Index("ix_sched_op_lane", "plan_id", "resource_key", "setup_start"),
+        Index("ix_sched_op_order_key", "plan_id", "order_key"),
         UniqueConstraint("plan_id", "op_key"),
     )
     plan_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("plan.id", ondelete="CASCADE"))
     op_key: Mapped[str] = mapped_column(String(120))
-    order_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, ForeignKey("production_order.id", ondelete="SET NULL"))
+    order_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
     order_key: Mapped[str] = mapped_column(String(120))
-    order_operation_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, ForeignKey("production_order_operation.id", ondelete="SET NULL"))
-    resource_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, ForeignKey("resource.id", ondelete="SET NULL"))
+    order_operation_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
+    resource_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
     resource_key: Mapped[str] = mapped_column(String(120))
     secondary: Mapped[list[Any]] = mapped_column(JSONType, default=list)
     setup_start: Mapped[datetime] = mapped_column(DateTime(timezone=True))
@@ -146,11 +153,87 @@ class ScheduledOperation(IdMixin, TenantMixin, Base):
     prev_op_key: Mapped[str | None] = mapped_column(String(120))
     material_ready: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     binding: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
-    explanation: Mapped[dict[str, Any] | None] = mapped_column(JSONType)
     cost: Mapped[float] = mapped_column(Float, default=0)
 
 
-class ConstraintViolation(IdMixin, TenantMixin, Base):
+class PlanOrder(IdMixin, PlanRowTenantMixin, Base):
+    """Result of one order in a plan version: status, planned dates, lateness and its first cause."""
+
+    __tablename__ = "plan_order"
+    __table_args__ = (
+        UniqueConstraint("plan_id", "order_key"),
+        Index("ix_plan_order_status", "plan_id", "status", "lateness_minutes"),
+        Index("ix_plan_order_order", "plan_id", "order_id"),
+    )
+    plan_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("plan.id", ondelete="CASCADE"))
+    order_key: Mapped[str] = mapped_column(String(120))
+    order_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)  # the production order (joins the order book)
+    number: Mapped[str] = mapped_column(String(120))
+    status: Mapped[str] = mapped_column(String(20))
+    start: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    due: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    lateness_minutes: Mapped[int] = mapped_column(Integer, default=0)
+    weight: Mapped[float] = mapped_column(Float, default=1.0)
+    earliest_possible_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    limiting: Mapped[dict[str, Any] | None] = mapped_column(JSONType)
+    material_status: Mapped[str] = mapped_column(String(20), default="NONE")
+    rules_applied: Mapped[list[Any]] = mapped_column(JSONType, default=list)
+    cause: Mapped[dict[str, Any] | None] = mapped_column(JSONType)  # first cause of a late / unscheduled order
+
+
+class PlanPeg(IdMixin, PlanRowTenantMixin, Base):
+    """Material pegging of a plan version: which supply covers which consuming operation."""
+
+    __tablename__ = "plan_peg"
+    __table_args__ = (
+        Index("ix_plan_peg_consumer", "plan_id", "consumer_order_id"),
+        Index("ix_plan_peg_material", "plan_id", "material_id"),
+        Index("ix_plan_peg_supply_order", "plan_id", "supply_order_id"),
+    )
+    plan_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("plan.id", ondelete="CASCADE"))
+    material_id: Mapped[str] = mapped_column(String(120))
+    supply_id: Mapped[str] = mapped_column(String(200))
+    supply_kind: Mapped[str] = mapped_column(String(30))
+    supply_ref: Mapped[str | None] = mapped_column(String(200))
+    supply_order_id: Mapped[str | None] = mapped_column(String(120))
+    supply_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    consumer_op_id: Mapped[str] = mapped_column(String(120))
+    consumer_order_id: Mapped[str] = mapped_column(String(120))
+    need_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    quantity: Mapped[float] = mapped_column(Float)
+
+
+class PlanUnscheduled(IdMixin, PlanRowTenantMixin, Base):
+    """An operation the plan version could not schedule, with the engine's reason."""
+
+    __tablename__ = "plan_unscheduled"
+    __table_args__ = (Index("ix_plan_unsched_order", "plan_id", "order_key"), Index("ix_plan_unsched_op", "plan_id", "op_key"))
+    plan_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("plan.id", ondelete="CASCADE"))
+    op_key: Mapped[str] = mapped_column(String(120))
+    order_key: Mapped[str] = mapped_column(String(120))
+    reason: Mapped[str] = mapped_column(String(60))
+    message: Mapped[str] = mapped_column(Text)
+    details: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
+
+
+class PlanDocument(IdMixin, PlanRowTenantMixin, Base):
+    """Read models of a plan version, computed once when it is stored: gzip-compressed JSON
+    documents keyed by ``(kind, key)`` — operation explanations per resource (``EXPLANATIONS``),
+    capacity profiles per bucket size (``CAPACITY``), resource calendars (``CALENDAR``) and material
+    projections (``MATERIAL``). A screen reads the few small documents it shows instead of
+    rebuilding the engine state of a 200 000-operation plan."""
+
+    __tablename__ = "plan_document"
+    __table_args__ = (UniqueConstraint("plan_id", "kind", "key"),)
+    plan_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("plan.id", ondelete="CASCADE"))
+    kind: Mapped[str] = mapped_column(String(20))
+    key: Mapped[str] = mapped_column(String(120))
+    item_count: Mapped[int] = mapped_column(Integer, default=0)
+    data: Mapped[bytes] = mapped_column(LargeBinary)
+
+
+class ConstraintViolation(IdMixin, PlanRowTenantMixin, Base):
     __tablename__ = "constraint_violation"
     plan_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("plan.id", ondelete="CASCADE"), index=True)
     severity: Mapped[str] = mapped_column(String(10))

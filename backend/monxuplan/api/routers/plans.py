@@ -12,11 +12,12 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from ...models import ConstraintViolation, ScheduledOperation
+from ...services import plan_store, views
 from ...services import planning as planning_svc
-from ...services import views
 from ...services.context import Ctx
 from ...services.masterdata import row_dict
 from ..deps import get_ctx, get_db
+from ..fastjson import fast_json
 
 router = APIRouter(tags=["plans"])
 
@@ -27,19 +28,43 @@ def plan(plan_id: uuid.UUID, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
 
 
 @router.get("/plans/{plan_id}/gantt")
-def gantt(plan_id: uuid.UUID, start: datetime | None = None, end: datetime | None = None, resource_ids: list[str] | None = Query(None), include_secondary: bool = False, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
-    return views.gantt(s, ctx, plan_id, start, end, resource_ids, include_secondary)
+def gantt(
+    plan_id: uuid.UUID,
+    start: datetime | None = None,
+    end: datetime | None = None,
+    resource_ids: list[str] | None = Query(None),
+    include_secondary: bool = False,
+    operations: bool = True,
+    resources: bool = True,
+    ctx: Ctx = Depends(get_ctx),
+    s=Depends(get_db),
+):
+    """Gantt window: resource rows (calendars, unavailability, load) and the operations inside it.
+    Large plans are read window by window: rows once (``operations=false``), then the operations of
+    the visible rows and time span (``resources=false``)."""
+    return fast_json(views.gantt(s, ctx, plan_id, start, end, resource_ids, include_secondary, operations, resources))
+
+
+@router.get("/plans/{plan_id}/operations/find")
+def find_operations(plan_id: uuid.UUID, q: str, limit: int = Query(20, ge=1, le=200), ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+    return views.find_operations(s, ctx, plan_id, q, limit)
+
+
+@router.get("/plans/{plan_id}/gantt/blocks")
+def gantt_blocks(plan_id: uuid.UUID, start: datetime, end: datetime, resource_ids: list[str] | None = Query(None), resolution_minutes: int = Query(30, ge=1, le=1440), ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+    """Busy blocks per resource for zoomed-out views of dense plans."""
+    return fast_json(views.gantt_blocks(s, ctx, plan_id, start, end, resource_ids, resolution_minutes))
 
 
 @router.get("/plans/{plan_id}/schedule")
 def schedule(plan_id: uuid.UUID, resource_id: str | None = None, order_id: str | None = None, offset: int = 0, limit: int = Query(2000, le=20000), ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
     views._get_plan(s, ctx, plan_id)
-    q = select(ScheduledOperation).where(ScheduledOperation.plan_id == plan_id).order_by(ScheduledOperation.resource_key, ScheduledOperation.start)
+    q = select(ScheduledOperation).where(ScheduledOperation.plan_id == plan_id).order_by(ScheduledOperation.resource_key, ScheduledOperation.setup_start)
     if resource_id:
         q = q.where(ScheduledOperation.resource_key == resource_id)
     if order_id:
         q = q.where(ScheduledOperation.order_key == order_id)
-    return [row_dict(r, skip={"explanation"}) for r in s.scalars(q.offset(offset).limit(limit))]
+    return [row_dict(r) for r in s.scalars(q.offset(offset).limit(limit))]
 
 
 @router.get("/plans/{plan_id}/violations")
@@ -55,15 +80,16 @@ def violations(plan_id: uuid.UUID, hardness: str | None = None, ctx: Ctx = Depen
 
 
 @router.get("/plans/{plan_id}/unscheduled")
-def unscheduled(plan_id: uuid.UUID, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def unscheduled(plan_id: uuid.UUID, reason: str | None = None, order_id: str | None = None, offset: int = 0, limit: int = Query(5000, ge=1, le=50000), ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
     p = views._get_plan(s, ctx, plan_id)
-    return (p.analysis or {}).get("unscheduled", [])
+    return fast_json(plan_store.unscheduled(s, p, reason=reason, order_key=order_id, offset=offset, limit=limit))
 
 
 @router.get("/plans/{plan_id}/orders")
-def plan_orders(plan_id: uuid.UUID, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def plan_orders(plan_id: uuid.UUID, status: str | None = None, sort: str = Query("lateness", pattern="^(lateness|due)$"), offset: int = 0, limit: int = Query(5000, ge=1, le=50000), ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+    """Order results of a plan, paged (a plan of a large plant holds 100 000+ of them)."""
     p = views._get_plan(s, ctx, plan_id)
-    return (p.analysis or {}).get("orders", [])
+    return fast_json(plan_store.order_page(s, p, status.split(",") if status else None, offset, limit, sort))
 
 
 @router.get("/plans/{plan_id}/operations/{op_key:path}/explore")

@@ -6,28 +6,33 @@ import uuid
 from collections import defaultdict
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import case, select
 from sqlalchemy.orm import Session
 
 from ..core.errors import NotFound
-from ..models import Customer, Item, Plan, ProductionOrder, PurchaseOrder, PurchaseOrderLine, SalesOrder, SalesOrderLine, ScheduledOperation, Supplier
+from ..models import Customer, Item, Plan, PlanOrder, ProductionOrder, PurchaseOrder, PurchaseOrderLine, SalesOrder, SalesOrderLine, ScheduledOperation, Supplier
+from . import plan_store
 from .context import Ctx
 from .engine_view import replay
 from .views import _get_plan
+
+ORDERS_LIMIT = 2000  # order rows of the availability view (most critical first; totals are given)
+IMPACT_LIMIT = 2000  # affected orders listed by a reverse pegging (totals are given)
+_SEVERITY = {"SHORTAGE": 0, "LATE_SUPPLY": 1, "RISK": 2, "OK": 3}
+
+
+def _item_codes(s: Session, ids: set[str]) -> dict[str, Item]:
+    ok = [uuid.UUID(x) for x in ids if _is_uuid(x)]
+    return {str(i.id): i for part in plan_store.chunks(ok) for i in s.execute(select(Item.id, Item.code, Item.uom).where(Item.id.in_(part)))}
 
 
 def availability(s: Session, ctx: Ctx, plan_id: uuid.UUID) -> dict[str, Any]:
     """Material status per order + shortages list (OK / RISK / SHORTAGE / LATE_SUPPLY)."""
     ctx.require("orders:read")
     plan = _get_plan(s, ctx, plan_id)
-    orders = (plan.analysis or {}).get("orders", [])
-    counts: dict[str, int] = defaultdict(int)
-    for o in orders:
-        counts[o.get("material_status") or "NONE"] += 1
+    counts = plan_store.material_status_counts(s, plan)
     shortages: dict[str, dict[str, Any]] = {}
-    for u in (plan.analysis or {}).get("unscheduled", []):
-        if u["reason"] != "MATERIAL_SHORTAGE":
-            continue
+    for u in plan_store.unscheduled(s, plan, reason="MATERIAL_SHORTAGE"):
         for m in u["details"].get("materials", []):
             e = shortages.setdefault(m["material_id"], {"material_id": m["material_id"], "material": m["material"], "uom": m.get("uom"), "required": 0.0, "shortfall": 0.0, "operations": [], "orders": set(), "replenishment_lead_time_minutes": m.get("replenishment_lead_time_minutes")})
             e["required"] += m["required"]
@@ -36,24 +41,40 @@ def availability(s: Session, ctx: Ctx, plan_id: uuid.UUID) -> dict[str, Any]:
             e["orders"].add(u["order_id"])
     for e in shortages.values():
         e["orders"] = sorted(e["orders"])
-    # late supply: operations that waited for material, grouped by material
+    # late supply: operations whose start was bound by a material, grouped by material
     late: dict[str, dict[str, Any]] = {}
-    cp, _res = replay(s, plan)
-    for so in s.scalars(select(ScheduledOperation).where(ScheduledOperation.plan_id == plan.id)):
+    SO = ScheduledOperation
+    for so in s.execute(select(SO.order_key, SO.binding).where(SO.plan_id == plan.id, SO.binding["type"].as_string() == "MATERIAL")):
         b = so.binding or {}
-        if b.get("type") == "MATERIAL":
-            mi = cp.mat_index.get(b.get("ref") or "")
-            code = cp.materials[mi].code if mi is not None else b.get("ref")
-            e = late.setdefault(b.get("ref"), {"material_id": b.get("ref"), "material": code, "operations": 0, "wait_minutes": 0, "orders": set()})
-            e["operations"] += 1
-            e["wait_minutes"] += b.get("wait_minutes", 0)
-            e["orders"].add(so.order_key)
-    for e in late.values():
+        e = late.setdefault(b.get("ref"), {"material_id": b.get("ref"), "material": b.get("ref"), "operations": 0, "wait_minutes": 0, "orders": set()})
+        e["operations"] += 1
+        e["wait_minutes"] += b.get("wait_minutes", 0)
+        e["orders"].add(so.order_key)
+    codes = _item_codes(s, {k for k in late if k})
+    for k, e in late.items():
+        if k in codes:
+            e["material"] = codes[k].code
         e["orders"] = sorted(e["orders"])
+    # orders with a material status, most critical first
+    PO = PlanOrder
+    rows = s.execute(
+        select(PO.order_key, PO.number, PO.status, PO.material_status, PO.due, PO.end)
+        .where(PO.plan_id == plan.id, PO.material_status.in_(list(_SEVERITY)))
+        .order_by(case(_SEVERITY, value=PO.material_status, else_=9), PO.due, PO.order_key)
+        .limit(ORDERS_LIMIT)
+    ).all()
+    orders = [{"order_id": r.order_key, "number": r.number, "status": r.status, "material_status": r.material_status, "due": plan_store.iso(r.due), "end": plan_store.iso(r.end)} for r in rows]
+    if not orders:
+        legacy = [o for o in plan_store.order_results(s, plan).values() if o.get("material_status") not in (None, "NONE")]
+        legacy.sort(key=lambda o: (_SEVERITY.get(o["material_status"], 9), o.get("due") or ""))
+        orders = [{"order_id": o["order_id"], "number": o["number"], "status": o["status"], "material_status": o.get("material_status"), "due": o["due"], "end": o.get("end")} for o in legacy[:ORDERS_LIMIT]]
+    total = sum(v for k, v in counts.items() if k not in (None, "NONE"))
     return {
         "plan_id": str(plan.id),
-        "status_counts": dict(counts),
-        "orders": [{"order_id": o["order_id"], "number": o["number"], "status": o["status"], "material_status": o.get("material_status"), "due": o["due"], "end": o.get("end")} for o in orders if o.get("material_status") not in (None, "NONE")],
+        "status_counts": counts,
+        "orders": orders,
+        "orders_total": total,
+        "orders_limit": ORDERS_LIMIT,
         "shortages": sorted(shortages.values(), key=lambda e: -e["shortfall"]),
         "late_supply": sorted(late.values(), key=lambda e: -e["wait_minutes"]),
     }
@@ -63,54 +84,46 @@ def projection(s: Session, ctx: Ctx, plan_id: uuid.UUID, material_id: str) -> di
     """Projected stock of one material under the plan (supplies, consumptions, safety stock)."""
     ctx.require("orders:read")
     plan = _get_plan(s, ctx, plan_id)
-    cp, res = replay(s, plan)
+    doc = plan_store.document(s, plan, plan_store.DOC_MATERIAL, material_id)
+    if doc is not None:
+        return doc
+    if plan_store.has_documents(s, plan, plan_store.DOC_MATERIAL):
+        raise NotFound("Material not used by this plan")
+    from monxuplan_engine.views import material_projection
+
+    cp, res = replay(s, plan)  # plans stored before the read models
     mi = cp.mat_index.get(material_id)
     if mi is None:
         raise NotFound("Material not used by this plan")
-    m = cp.materials[mi]
-    acc = res.ledger.accounts[mi]
-    level = 0.0
-    points = []
-    for e in acc.events:
-        level += e.delta
-        points.append(
-            {
-                "time": cp.dt(max(e.time, cp.as_of)).isoformat(),
-                "delta": round(e.delta, 4),
-                "level": round(level, 4),
-                "kind": e.kind,
-                "ref": e.meta.get("ref") or e.ref,
-                "supply_kind": e.meta.get("kind"),
-                "supplier": e.meta.get("supplier"),
-            }
-        )
-    alerts = []
-    min_level, t = acc.min_level()
-    if min_level < -1e-9:
-        alerts.append({"type": "STOCKOUT", "at": cp.dt(t).isoformat() if t is not None else None, "level": min_level})
-    elif m.safety_stock and min_level < m.safety_stock:
-        alerts.append({"type": "SAFETY_STOCK_BREACH", "at": cp.dt(t).isoformat() if t is not None else None, "level": min_level, "safety_stock": m.safety_stock})
-    total_in = sum(e.delta for e in acc.events if e.delta > 0)
-    total_out = -sum(e.delta for e in acc.events if e.delta < 0)
-    if total_out > 0 and level > 3 * total_out:
-        alerts.append({"type": "EXCESS_INVENTORY", "level": level})
-    return {"material_id": m.id, "code": m.code, "name": m.name, "uom": m.uom, "safety_stock": m.safety_stock, "points": points, "alerts": alerts, "supply_total": total_in, "demand_total": total_out}
+    return material_projection(res, mi)
 
 
 def pegging_for_order(s: Session, ctx: Ctx, plan_id: uuid.UUID, order_id: str) -> dict[str, Any]:
     """Sales order → production order → sub-assembly orders → raw materials → purchase orders."""
     ctx.require("orders:read")
     plan = _get_plan(s, ctx, plan_id)
-    pegs = (plan.analysis or {}).get("pegging", [])
+    # the order's supply tree, level by level (component orders feed their parents through pegging)
     by_consumer: dict[str, list[dict]] = defaultdict(list)
-    for p in pegs:
-        by_consumer[p["consumer_order_id"]].append(p)
-    orders = {str(o.id): o for o in s.scalars(select(ProductionOrder).where(ProductionOrder.plant_id == plan.plant_id))}
-    items = {str(i.id): i for i in s.scalars(select(Item))}
+    seen: set[str] = set()
+    frontier = [order_id]
+    depth = 0
+    while frontier and depth <= 10:
+        batch = [o for o in frontier if o not in seen]
+        seen.update(batch)
+        frontier = []
+        for p in plan_store.pegs(s, plan, consumer_orders=batch):
+            by_consumer[p["consumer_order_id"]].append(p)
+            if p.get("supply_order_id") and p["supply_order_id"] not in seen:
+                frontier.append(p["supply_order_id"])
+        depth += 1
+    order_uuids = [uuid.UUID(x) for x in seen if _is_uuid(x)]
+    orders = {str(o.id): o for part in plan_store.chunks(order_uuids) for o in s.execute(select(ProductionOrder.id, ProductionOrder.number, ProductionOrder.item_id, ProductionOrder.quantity, ProductionOrder.sales_order_line_id).where(ProductionOrder.id.in_(part)))}
+    items = _item_codes(s, {str(o.item_id) for o in orders.values()} | {p["material_id"] for lst in by_consumer.values() for p in lst})
 
     def node(oid: str, depth: int, seen: set[str]) -> dict[str, Any]:
         o = orders.get(oid)
-        n = {"type": "PRODUCTION_ORDER", "order_id": oid, "number": o.number if o else oid, "item": items[str(o.item_id)].code if o and str(o.item_id) in items else None, "quantity": o.quantity if o else None, "children": []}
+        it = items.get(str(o.item_id)) if o else None
+        n = {"type": "PRODUCTION_ORDER", "order_id": oid, "number": o.number if o else oid, "item": it.code if it else None, "quantity": o.quantity if o else None, "children": []}
         if depth > 10 or oid in seen:
             return n
         agg: dict[tuple, dict[str, Any]] = {}
@@ -140,33 +153,29 @@ def impact_of_material(s: Session, ctx: Ctx, plan_id: uuid.UUID, material_id: st
     """Reverse pegging: which orders and customers depend on a material (or one receipt of it)?"""
     ctx.require("orders:read")
     plan = _get_plan(s, ctx, plan_id)
-    pegs = (plan.analysis or {}).get("pegging", [])
-    by_supply_order: dict[str, list[dict]] = defaultdict(list)
-    for p in pegs:
-        if p.get("supply_order_id"):
-            by_supply_order[p["supply_order_id"]].append(p)
-    direct = [p for p in pegs if p["material_id"] == material_id and (supply_ref is None or p.get("supply_ref") == supply_ref or p.get("supply_id") == supply_ref)]
+    direct = [p for p in plan_store.pegs(s, plan, material_id=material_id) if supply_ref is None or p.get("supply_ref") == supply_ref or p.get("supply_id") == supply_ref]
+    direct_orders = {p["consumer_order_id"] for p in direct}
     affected: set[str] = set()
-    frontier = [p["consumer_order_id"] for p in direct]
+    frontier = list(direct_orders)
     while frontier:
-        oid = frontier.pop()
-        if oid in affected:
-            continue
-        affected.add(oid)
-        for p in by_supply_order.get(oid, []):
-            frontier.append(p["consumer_order_id"])
-    orders = {str(o.id): o for o in s.scalars(select(ProductionOrder).where(ProductionOrder.id.in_([uuid.UUID(x) for x in affected if _is_uuid(x)])))} if affected else {}
-    custs = {c.id: c for c in s.scalars(select(Customer))}
-    res_orders = {o["order_id"]: o for o in (plan.analysis or {}).get("orders", [])}
+        batch = [o for o in set(frontier) if o not in affected]
+        affected.update(batch)
+        frontier = [p["consumer_order_id"] for p in plan_store.pegs(s, plan, supply_orders=batch)] if batch else []
+    ids = [uuid.UUID(x) for x in affected if _is_uuid(x)]
+    PO = ProductionOrder
+    orders = {str(o.id): o for part in plan_store.chunks(ids) for o in s.execute(select(PO.id, PO.number, PO.customer_id, PO.due_date, PO.sales_order_line_id).where(PO.id.in_(part)))}
+    cust_ids = {o.customer_id for o in orders.values() if o.customer_id}
+    custs = {c.id: c for part in plan_store.chunks(cust_ids) for c in s.execute(select(Customer.id, Customer.name).where(Customer.id.in_(part)))}
+    line_ids = {o.sales_order_line_id for o in orders.values() if o.sales_order_line_id}
+    lines = {sl.id: sl for part in plan_store.chunks(line_ids) for sl in s.execute(select(SalesOrderLine.id, SalesOrderLine.unit_price, SalesOrderLine.quantity).where(SalesOrderLine.id.in_(part)))}
+    res_orders = plan_store.order_results(s, plan, list(orders))
     rows = []
     revenue = 0.0
-    for oid in affected:
-        o = orders.get(oid)
-        if o is None:
-            continue
-        sl = s.get(SalesOrderLine, o.sales_order_line_id) if o.sales_order_line_id else None
-        if sl is not None and sl.unit_price:
-            revenue += float(sl.unit_price) * float(sl.quantity)
+    for oid, o in orders.items():
+        sl = lines.get(o.sales_order_line_id) if o.sales_order_line_id else None
+        value = round(float(sl.unit_price) * float(sl.quantity), 2) if sl is not None and sl.unit_price else None
+        if value:
+            revenue += value
         rows.append(
             {
                 "order_id": oid,
@@ -175,8 +184,8 @@ def impact_of_material(s: Session, ctx: Ctx, plan_id: uuid.UUID, material_id: st
                 "due": o.due_date.isoformat(),
                 "planned_end": res_orders.get(oid, {}).get("end"),
                 "status": res_orders.get(oid, {}).get("status"),
-                "direct": any(p["consumer_order_id"] == oid for p in direct),
-                "revenue": round(float(sl.unit_price) * float(sl.quantity), 2) if sl is not None and sl.unit_price else None,
+                "direct": oid in direct_orders,
+                "revenue": value,
             }
         )
     rows.sort(key=lambda r: r["due"])
@@ -188,7 +197,8 @@ def impact_of_material(s: Session, ctx: Ctx, plan_id: uuid.UUID, material_id: st
         "orders_affected": len(rows),
         "customers_affected": len({r["customer"] for r in rows if r["customer"]}),
         "revenue_exposure": round(revenue, 2) if revenue else None,
-        "orders": rows,
+        "orders": rows[:IMPACT_LIMIT],
+        "orders_limit": IMPACT_LIMIT,
     }
 
 

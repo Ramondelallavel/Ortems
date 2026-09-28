@@ -5,11 +5,12 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from ..core.errors import NotFound
-from ..models import Bom, BomLine, Customer, Item, Plan, Plant, ProductFamily, ProductionOrder, Scenario
+from ..models import Bom, BomLine, Customer, Item, Plan, PlanOrder, Plant, ProductFamily, ProductionOrder, Scenario
+from . import plan_store
 from .context import Ctx
 from .masterdata import to_json
 
@@ -26,10 +27,30 @@ def _plan_for(s: Session, plant_id: uuid.UUID | None, plan_id: uuid.UUID | None)
     return None
 
 
+PLAN_STATUSES = ("ON_TIME", "LATE", "UNSCHEDULED", "PARTIAL", "COMPLETED")
+MATERIAL_STATUSES = ("OK", "RISK", "SHORTAGE", "LATE_SUPPLY")
+ORDER_SORTS: dict[str, Any] = {
+    "number": ProductionOrder.number,
+    "due_date": ProductionOrder.due_date,
+    "release_date": ProductionOrder.release_date,
+    "priority": ProductionOrder.priority,
+    "quantity": ProductionOrder.quantity,
+    "status": ProductionOrder.status,
+    "planned_start": PlanOrder.start,
+    "planned_end": PlanOrder.end,
+    "lateness_minutes": PlanOrder.lateness_minutes,
+    "plan_status": PlanOrder.status,
+    "material_status": PlanOrder.material_status,
+}
+
+
 def list_orders(s: Session, ctx: Ctx, plant_id: uuid.UUID | None, q: str | None, filters: dict[str, Any], offset: int, limit: int, plan_id: uuid.UUID | None = None) -> dict[str, Any]:
+    """The order book, paged, sorted and filtered in the database — also by the result of each order
+    in the plan (a large plant has 100 000+ open orders; only the requested page leaves the server)."""
     ctx.require("orders:read")
     if plant_id:
         ctx.require_plant(plant_id)
+    plan = _plan_for(s, plant_id, plan_id)
     stmt = select(ProductionOrder)
     if plant_id:
         stmt = stmt.where(ProductionOrder.plant_id == plant_id)
@@ -41,20 +62,37 @@ def list_orders(s: Session, ctx: Ctx, plant_id: uuid.UUID | None, q: str | None,
     if q:
         like = f"%{q.lower()}%"
         stmt = stmt.join(Item, Item.id == ProductionOrder.item_id).where(or_(func.lower(ProductionOrder.number).like(like), func.lower(Item.code).like(like), func.lower(Item.name).like(like)))
+    sort = filters.get("sort") or "due_date"
+    sort_col = ORDER_SORTS.get(sort, ProductionOrder.due_date)
+    wanted = [x for x in (filters.get("plan_status") or "").split(",") if x]
+    if plan is not None and (wanted or sort_col.class_ is PlanOrder):
+        on = and_(PlanOrder.plan_id == plan.id, PlanOrder.order_id == ProductionOrder.id)
+        if wanted:
+            stmt = stmt.join(PlanOrder, on).where(or_(PlanOrder.status.in_([x for x in wanted if x in PLAN_STATUSES]), PlanOrder.material_status.in_([x for x in wanted if x in MATERIAL_STATUSES])))
+        else:
+            stmt = stmt.outerjoin(PlanOrder, on)
+    elif sort_col.class_ is PlanOrder:
+        sort_col = ProductionOrder.due_date
     total = s.scalar(select(func.count()).select_from(stmt.subquery()))
-    rows = list(s.scalars(stmt.order_by(ProductionOrder.due_date).offset(offset).limit(min(limit, 5000))))
+    order = sort_col.desc() if filters.get("dir") == "desc" else sort_col.asc()
+    rows = list(s.scalars(stmt.order_by(order.nulls_last(), ProductionOrder.number).offset(offset).limit(min(limit, 5000))))
     items = {i.id: i for i in s.scalars(select(Item).where(Item.id.in_({r.item_id for r in rows})))} if rows else {}
     fams = {f.id: f for f in s.scalars(select(ProductFamily))}
-    custs = {c.id: c for c in s.scalars(select(Customer))}
-    plan = _plan_for(s, plant_id, plan_id)
-    res_by_order = {o["order_id"]: o for o in ((plan.analysis or {}).get("orders", []) if plan else [])}
-    late_info = {x["order_id"]: x for x in ((plan.kpi_details or {}).get("late_orders", []) if plan else [])}
+    cust_ids = {r.customer_id for r in rows if r.customer_id}
+    custs = {c.id: c for c in s.scalars(select(Customer).where(Customer.id.in_(cust_ids)))} if cust_ids else {}
+    # plan results of this page only (a plan holds one result per order: 100 000+ at scale)
+    res_by_order = plan_store.order_results(s, plan, [str(r.id) for r in rows]) if plan is not None and rows else {}
+    legacy_causes: dict[str, Any] | None = None
     out = []
     for r in rows:
         it = items.get(r.item_id)
         fam = fams.get(it.family_id) if it and it.family_id else None
         pr = res_by_order.get(str(r.id), {})
-        li = late_info.get(str(r.id), {})
+        cause = pr.get("cause")
+        if cause is None and pr and "cause" not in pr and plan is not None:  # plans stored before plan_order
+            if legacy_causes is None:
+                legacy_causes = {x["order_id"]: x.get("cause") for x in (plan.kpi_details or {}).get("late_orders", [])}
+            cause = legacy_causes.get(str(r.id))
         out.append(
             {
                 "id": str(r.id),
@@ -84,7 +122,7 @@ def list_orders(s: Session, ctx: Ctx, plant_id: uuid.UUID | None, q: str | None,
                 "lateness_minutes": pr.get("lateness_minutes"),
                 "material_status": pr.get("material_status"),
                 "earliest_possible_end": pr.get("earliest_possible_end"),
-                "cause": li.get("cause"),
+                "cause": cause,
                 "version": r.version,
             }
         )

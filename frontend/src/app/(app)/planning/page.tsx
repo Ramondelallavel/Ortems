@@ -2,6 +2,7 @@
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Gantt, ZOOMS, type GanttHandle, type GOp } from "@/components/gantt/Gantt";
+import { LARGE_PLAN_OPS, useGanttWindow } from "@/components/gantt/useGanttWindow";
 import { MovePreview } from "@/components/planning/MovePreview";
 import { OperationPanel } from "@/components/planning/OperationPanel";
 import { RunDialog } from "@/components/planning/RunDialog";
@@ -26,8 +27,16 @@ export default function PlanningBoard() {
     setPlanId(selected?.head_plan_id || null);
   }, [selected?.id, selected?.head_plan_id]);
   const header = useApi<any>(planId ? `/plans/${planId}` : null);
-  const gantt = useApi<any>(planId ? `/plans/${planId}/gantt` : null);
-  const unscheduled = useApi<any[]>(planId ? `/plans/${planId}/unscheduled` : null);
+  // large plans (100 000+ orders) are loaded by viewport; smaller ones in one request
+  const large = (header.data?.operations ?? 0) > LARGE_PLAN_OPS && header.data?.id === planId;
+  const full = useApi<any>(planId && header.data?.id === planId && !large ? `/plans/${planId}/gantt` : null);
+  const winPlan = useMemo(
+    () => (large && header.data ? { operations: header.data.operations, horizon_start: header.data.horizon_start, horizon_end: header.data.horizon_end } : null),
+    [large, header.data?.operations, header.data?.horizon_start, header.data?.horizon_end],
+  );
+  const win = useGanttWindow(planId, winPlan, large);
+  const gantt = large ? { data: win.data, error: win.error, reload: win.reloadAll } : full;
+  const unscheduled = useApi<any[]>(planId ? `/plans/${planId}/unscheduled` : null, { limit: 2000 });
 
   const [zoom, setZoom] = useLocalState("mx.gantt.zoom", "d");
   const [colorBy, setColorBy] = useLocalState<"family" | "status" | "customer">("mx.gantt.color", "family");
@@ -120,16 +129,27 @@ export default function PlanningBoard() {
       () => api(`/plans/${planId}/validate`, { method: "POST" }),
       (r) => `Validation: ${r.feasible ? "feasible" : "not feasible"} — ${r.hard_count} hard, ${r.soft_count} soft`,
     );
-  const lock = (op: string, locked: boolean) => planId && act("lock", () => api(`/plans/${planId}/locks`, { body: { op_ids: [op], locked } }), () => (locked ? `${op} locked` : `${op} unlocked`)).then(() => gantt.reload());
+  const lock = (op: string, locked: boolean) => planId && act("lock", () => api(`/plans/${planId}/locks`, { body: { op_ids: [op], locked } }), () => (locked ? `${op} locked` : `${op} unlocked`)).then(() => (large ? win.reload() : gantt.reload()));
 
-  const find = () => {
+  const find = async () => {
     const q = search.trim().toLowerCase();
-    if (!q || !gantt.data) return;
+    if (!q || !gantt.data || !planId) return;
     const hit = gantt.data.operations.find((o: GOp) => o.id.toLowerCase().includes(q) || o.order.toLowerCase().includes(q) || (o.item || "").toLowerCase().includes(q));
     if (hit) {
       setSel(hit);
       gref.current?.scrollToOp(hit.id);
-    } else toast.warn(`Nothing matches "${search}" in this plan.`);
+      return;
+    }
+    if (large) {
+      // the board holds only the visible window: ask the server where the operation is
+      const found = await api<any[]>(`/plans/${planId}/operations/find`, { query: { q, limit: 1 } }).catch(() => []);
+      if (found.length) {
+        gref.current?.scrollTo(found[0].resource_id, Date.parse(found[0].setup_start));
+        setPanelOp(found[0].op_id);
+        return;
+      }
+    }
+    toast.warn(`Nothing matches "${search}" in this plan.`);
   };
 
   useHotkeys({
@@ -286,13 +306,19 @@ export default function PlanningBoard() {
                 canEdit={!!editable}
                 height={h}
                 onLegend={setLegend}
+                onViewport={large ? win.onViewport : undefined}
               />
+            )}
+            {large && gantt.data && (
+              <div className="absolute right-3 bottom-2 z-10 text-[11px] bg-white/90 border border-gray-200 rounded-[3px] px-2 py-0.5 text-slate-600" aria-live="polite">
+                {win.loading ? "Loading window…" : gantt.data.blocks ? `${(header.data?.operations ?? 0).toLocaleString()} operations · busy blocks — zoom in or click a block for operations` : `${gantt.data.operations.length.toLocaleString()} operations in view of ${(header.data?.operations ?? 0).toLocaleString()}`}
+              </div>
             )}
           </div>
           {bottom === "exceptions" && planId && (
             <div className="h-[170px] border-t border-gray-200 bg-white flex flex-col min-h-0">
               <div className="mx-panel-head !min-h-[28px]">
-                <span className="flex-1">Exceptions — unscheduled operations ({unscheduled.data?.length ?? "…"})</span>
+                <span className="flex-1">Exceptions — unscheduled operations ({hd?.unscheduled_count ?? unscheduled.data?.length ?? "…"})</span>
                 <button className="mx-btn mx-btn-ghost mx-btn-sm" aria-label="Hide exceptions" onClick={() => setBottom("none")}>
                   <Icon name="chevronDown" />
                 </button>
@@ -321,7 +347,7 @@ export default function PlanningBoard() {
           )}
           {bottom === "none" && (
             <button className="h-6 border-t border-gray-200 bg-white text-[11.5px] text-slate-600 hover:bg-gray-50" onClick={() => setBottom("exceptions")}>
-              ▲ Exceptions ({unscheduled.data?.length ?? 0})
+              ▲ Exceptions ({hd?.unscheduled_count ?? unscheduled.data?.length ?? 0})
             </button>
           )}
         </div>

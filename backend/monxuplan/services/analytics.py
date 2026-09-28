@@ -3,17 +3,18 @@
 from __future__ import annotations
 
 import uuid
-from collections import Counter, defaultdict
+from collections import defaultdict
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from monxuplan_engine.capacity import load_profile
+from monxuplan_engine.capacity import heat_state
 from monxuplan_engine.diff import compare_solutions
 
 from ..core.errors import NotFound, ValidationFailed
-from ..models import KpiValue, Plan, Scenario
+from ..models import KpiValue, Plan, Scenario, ScheduledOperation
+from . import plan_store
 from .context import Ctx
 from .engine_view import replay
 from .planning import solution_from_plan
@@ -51,20 +52,93 @@ KPI_CATALOGUE: list[dict[str, Any]] = [
 ]
 
 
-def capacity(s: Session, ctx: Ctx, plan_id: uuid.UUID, bucket: str = "day", group_by: str = "resource", start=None, end=None) -> dict[str, Any]:
+def _expand_capacity_row(r: dict[str, Any]) -> dict[str, Any]:
+    """A stored (compact) capacity row → the bucket dictionaries of the API."""
+    buckets = []
+    for k, (cap, sc, rq) in enumerate(zip(r["capacity"], r["scheduled"], r["requirement"], strict=True)):
+        buckets.append(
+            {
+                "bucket": k,
+                "capacity": cap,
+                "scheduled": sc,
+                "requirement": rq,
+                "overload": max(0, rq - cap),
+                "available": max(0, cap - sc),
+                "utilization": (sc / cap) if cap else None,
+                "requirement_utilization": (rq / cap) if cap else None,
+                "state": heat_state(cap, sc, rq),
+            }
+        )
+    return {
+        "id": r["id"],
+        "code": r["code"],
+        "name": r["name"],
+        "kind": r["kind"],
+        "area": r["area"],
+        "groups": r["groups"],
+        "buckets": buckets,
+        "capacity": sum(r["capacity"]),
+        "scheduled": sum(r["scheduled"]),
+        "requirement": sum(r["requirement"]),
+    }
+
+
+def capacity_profile(s: Session, plan: Plan, bucket: str, start=None, end=None) -> dict[str, Any]:
+    """Compact capacity profile of a plan: the stored read model for the plan horizon, computed from
+    a replay of the plan for other windows (and for plans stored before the read models)."""
+    if start is None and end is None:
+        doc = plan_store.document(s, plan, plan_store.DOC_CAPACITY, bucket)
+        if doc is not None:
+            return doc
+    from monxuplan_engine.views import capacity_view
+
+    cp, res = replay(s, plan)
+    return capacity_view(res, bucket, cp.axis.to_min(start) if start else None, cp.axis.to_min(end) if end else None)
+
+
+def _peak_load(r: dict[str, Any]) -> float:
+    """Highest requirement (or scheduled load) over capacity among a compact row's buckets."""
+    peak = 0.0
+    for cap, sc, rq in zip(r["capacity"], r["scheduled"], r["requirement"], strict=True):
+        if cap:
+            peak = max(peak, max(sc, rq) / cap)
+        elif sc or rq:
+            return float("inf")
+    return peak
+
+
+def capacity(
+    s: Session,
+    ctx: Ctx,
+    plan_id: uuid.UUID,
+    bucket: str = "day",
+    group_by: str = "resource",
+    start=None,
+    end=None,
+    offset: int = 0,
+    limit: int | None = None,
+    q: str | None = None,
+    sort: str = "code",
+) -> dict[str, Any]:
+    """Load vs capacity per resource (or group / area / plant) and bucket. A plant with 1000 machines
+    is paged: ``q`` filters by code or name, ``sort="load"`` puts the most loaded rows first."""
     if bucket not in ("hour", "shift", "day", "week", "month"):
         raise ValidationFailed("bucket must be hour, shift, day, week or month")
     plan = _get_plan(s, ctx, plan_id)
-    cp, res = replay(s, plan)
-    a = cp.axis.to_min(start) if start else None
-    b = cp.axis.to_min(end) if end else None
-    bks, loads = load_profile(cp, res.placements, res.timing, bucket, a, b)
-    rows = []
-    for rl in loads:
-        r = cp.resources[rl.resource]
-        if r.kind in ("SUBCONTRACTOR", "STORAGE", "TRANSPORT"):
-            continue
-        rows.append({"id": r.id, "code": r.code, "name": r.name, "kind": r.kind, "area": r.area, "groups": r.groups, "buckets": rl.buckets, "capacity": rl.capacity, "scheduled": rl.scheduled, "requirement": rl.requirement})
+    view = capacity_profile(s, plan, bucket, start, end)
+    compact = view["rows"]
+    if group_by == "resource":
+        if q:
+            ql = q.lower()
+            compact = [r for r in compact if ql in (r["code"] or "").lower() or ql in (r["name"] or "").lower()]
+        if sort == "load":
+            compact = sorted(compact, key=lambda r: (-_peak_load(r), r["code"]))
+        # only the requested page is expanded (hour buckets × 1000 machines would be 100 000 cells)
+        total_rows = len(compact)
+        if offset or limit is not None:
+            compact = compact[offset : offset + limit if limit is not None else None]
+            offset, limit = 0, None
+    rows = [_expand_capacity_row(r) for r in compact]
     if group_by in ("group", "area", "plant"):
         agg: dict[str, dict[str, Any]] = {}
         for r in rows:
@@ -78,8 +152,6 @@ def capacity(s: Session, ctx: Ctx, plan_id: uuid.UUID, bucket: str = "day", grou
                         gb[f] += rb[f]
                 for f in ("capacity", "scheduled", "requirement"):
                     g[f] += r[f]
-        from monxuplan_engine.capacity import heat_state
-
         for g in agg.values():
             for gb in g["buckets"]:
                 c = gb["capacity"]
@@ -89,12 +161,16 @@ def capacity(s: Session, ctx: Ctx, plan_id: uuid.UUID, bucket: str = "day", grou
                 gb["requirement_utilization"] = gb["requirement"] / c if c else None
                 gb["state"] = heat_state(c, gb["scheduled"], gb["requirement"])
         rows = sorted(agg.values(), key=lambda g: g["code"])
+    total = total_rows if group_by == "resource" else len(rows)
+    if offset or limit is not None:
+        rows = rows[offset : offset + limit if limit is not None else None]
     return {
         "plan_id": str(plan.id),
         "bucket": bucket,
         "group_by": group_by,
-        "buckets": [{"label": bk.label, "start": cp.dt(bk.start).isoformat(), "end": cp.dt(bk.end).isoformat()} for bk in bks],
+        "buckets": view["buckets"],
         "rows": rows,
+        "rows_total": total,
         "states": ["UNDERLOADED", "BALANCED", "HIGH_LOAD", "OVERLOADED", "UNAVAILABLE"],
     }
 
@@ -110,35 +186,41 @@ def drilldown(s: Session, ctx: Ctx, plan_id: uuid.UUID, code: str) -> dict[str, 
     ctx.require("analytics:read")
     plan = _get_plan(s, ctx, plan_id)
     d = plan.kpi_details or {}
-    orders = (plan.analysis or {}).get("orders", [])
     if code in ("otif", "on_time_delivery", "late_orders", "average_delay_h", "maximum_delay_h", "orders_unscheduled"):
         late = d.get("late_orders", [])
-        by_cat = Counter((x.get("cause") or {}).get("category", "Unknown") for x in late)
-        by_res = Counter((x.get("cause") or {}).get("resource") for x in late if (x.get("cause") or {}).get("resource"))
-        total = sum(1 for o in orders if o["status"] != "COMPLETED")
+        n_late = d.get("late_orders_total", len(late))
+        # causes over every late / unscheduled order of the plan (not only the listed ones)
+        by_cat, by_res = plan_store.cause_counts(s, plan)
+        if not by_cat and late:  # plans stored before plan_order
+            for x in late:
+                c = x.get("cause") or {}
+                by_cat[c.get("category", "Unknown")] = by_cat.get(c.get("category", "Unknown"), 0) + 1
+                if c.get("resource"):
+                    by_res[c["resource"]] = by_res.get(c["resource"], 0) + 1
+        statuses = plan_store.status_counts(s, plan)
+        total = sum(v for k, v in statuses.items() if k != "COMPLETED")
         return {
             "code": code,
             "value": (plan.kpis or {}).get(code),
             "levels": [
                 {"label": "Orders", "value": total},
-                {"label": "Late or unscheduled", "value": len(late), "share": round(len(late) / total, 4) if total else None},
+                {"label": "Late or unscheduled", "value": n_late, "share": round(n_late / total, 4) if total else None},
             ],
             "breakdown": d.get("otif_breakdown", {}),
-            "causes": [{"category": k, "orders": v, "share": round(v / len(late), 4) if late else 0} for k, v in by_cat.most_common()],
-            "resources": [{"resource": k, "orders": v} for k, v in by_res.most_common(10)],
+            "causes": [{"category": k, "orders": v, "share": round(v / n_late, 4) if n_late else 0} for k, v in sorted(by_cat.items(), key=lambda kv: -kv[1])],
+            "resources": [{"resource": k, "orders": v} for k, v in sorted(by_res.items(), key=lambda kv: -kv[1])[:10]],
             "orders": late[:500],
+            "orders_total": n_late,
         }
     if code in ("utilization", "capacity_h", "idle_h"):
         return {"code": code, "value": (plan.kpis or {}).get(code), "resources": [{"resource_id": k, **v} for k, v in sorted(d.get("resources", {}).items(), key=lambda kv: -(kv[1].get("utilization") or 0))]}
     if code in ("material_shortages", "material_delayed_operations", "inventory_risk_materials"):
-        unsched = [u for u in (plan.analysis or {}).get("unscheduled", []) if u["reason"] == "MATERIAL_SHORTAGE"]
-        return {"code": code, "value": (plan.kpis or {}).get(code), "materials": d.get("material_shortages", []), "inventory_risk": d.get("inventory_risk", []), "operations": unsched[:300]}
+        unsched = plan_store.unscheduled(s, plan, reason="MATERIAL_SHORTAGE", limit=300)
+        return {"code": code, "value": (plan.kpis or {}).get(code), "materials": d.get("material_shortages", []), "inventory_risk": d.get("inventory_risk", []), "operations": unsched}
     if code in ("setup_h",):
-        sched = solution_from_plan(s, plan).schedule
-        per_res: dict[str, int] = defaultdict(int)
-        for x in sched:
-            per_res[x.resource_id] += x.setup_minutes
-        return {"code": code, "value": (plan.kpis or {}).get(code), "resources": [{"resource_id": k, "setup_h": round(v / 60, 2)} for k, v in sorted(per_res.items(), key=lambda kv: -kv[1])]}
+        SO = ScheduledOperation
+        per_res = s.execute(select(SO.resource_key, func.sum(SO.setup_minutes)).where(SO.plan_id == plan.id).group_by(SO.resource_key)).all()
+        return {"code": code, "value": (plan.kpis or {}).get(code), "resources": [{"resource_id": k, "setup_h": round((v or 0) / 60, 2)} for k, v in sorted(per_res, key=lambda kv: -(kv[1] or 0))]}
     if code.startswith("schedule_stability"):
         return {"code": code, "value": (plan.kpis or {}).get(code), "stability": d.get("stability", {})}
     return {"code": code, "value": (plan.kpis or {}).get(code), "details": None}

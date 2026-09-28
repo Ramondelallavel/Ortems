@@ -16,7 +16,7 @@ import json
 import random
 import time as _time
 import uuid
-from datetime import UTC, datetime, time, timedelta
+from datetime import time, timedelta
 from typing import Any
 
 from sqlalchemy import delete, insert, select

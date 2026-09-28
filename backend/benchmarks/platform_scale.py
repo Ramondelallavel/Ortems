@@ -71,7 +71,8 @@ def run_plan(time_limit: float) -> str:
 def views() -> None:
     from monxuplan import models as M
     from monxuplan.core.db import new_session
-    from monxuplan.services import analytics, materials, orders, overview, views as V
+    from monxuplan.services import analytics, materials, orders, overview
+    from monxuplan.services import views as V
     from monxuplan.services.context import system_ctx
 
     with new_session(None, "bench") as s:
@@ -79,15 +80,27 @@ def views() -> None:
         tid, pid = plant.tenant_id, plant.id
         sc = s.get(M.Scenario, plant.live_scenario_id)
         plan_id = sc.head_plan_id
+        some = s.execute(select(M.ScheduledOperation.op_key, M.ScheduledOperation.order_key, M.ScheduledOperation.resource_key).where(M.ScheduledOperation.plan_id == plan_id).limit(1)).one()
+        lanes = [r for (r,) in s.execute(select(M.ScheduledOperation.resource_key).where(M.ScheduledOperation.plan_id == plan_id).distinct().limit(40))]
+        material = s.scalar(select(M.PlanPeg.material_id).where(M.PlanPeg.plan_id == plan_id).limit(1))
     ctx = system_ctx(tid, "planner")
     calls = [
         ("dashboard", lambda s: overview.command_center(s, ctx, pid)),
         ("plan_header", lambda s: V.plan_header(s, ctx, plan_id)),
         ("orders_page_1", lambda s: orders.list_orders(s, ctx, pid, None, {}, 0, 200)),
+        ("orders_page_last", lambda s: orders.list_orders(s, ctx, pid, None, {}, 99_800, 200)),
         ("orders_search", lambda s: orders.list_orders(s, ctx, pid, "SCL-00123", {}, 0, 200)),
-        ("gantt_default", lambda s: V.gantt(s, ctx, plan_id)),
+        ("gantt_default_window", lambda s: V.gantt(s, ctx, plan_id)),
+        ("gantt_40_rows_day", lambda s: V.gantt(s, ctx, plan_id, resource_ids=lanes)),
+        ("operation_detail", lambda s: V.operation_detail(s, ctx, plan_id, some.op_key)),
+        ("order_detail", lambda s: V.order_detail(s, ctx, plan_id, some.order_key)),
+        ("order_chain", lambda s: V.order_chain(s, ctx, plan_id, some.order_key)),
         ("capacity_day", lambda s: analytics.capacity(s, ctx, plan_id, "day")),
-        ("materials", lambda s: materials.overview(s, ctx, plan_id) if hasattr(materials, "overview") else None),
+        ("capacity_hour_page", lambda s: analytics.capacity(s, ctx, plan_id, "hour", limit=100)),
+        ("materials_availability", lambda s: materials.availability(s, ctx, plan_id)),
+        ("material_projection", lambda s: materials.projection(s, ctx, plan_id, material) if material else None),
+        ("dispatch_one_machine", lambda s: V.dispatch_list(s, ctx, pid, some.resource_key)),
+        ("supervisor", lambda s: V.supervisor_view(s, ctx, pid)),
     ]
     for name, fn in calls:
         with new_session(tid, "planner") as s:

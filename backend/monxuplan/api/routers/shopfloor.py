@@ -11,18 +11,19 @@ from pydantic import BaseModel, Field
 from ...services import views
 from ...services.context import Ctx
 from ..deps import get_ctx, get_db
+from ..fastjson import fast_json
 
 router = APIRouter(tags=["shop-floor"])
 
 
 @router.get("/dispatch")
 def dispatch(plant_id: uuid.UUID, resource_id: str | None = None, date_from: datetime | None = None, hours: int = Query(24, ge=1, le=24 * 14), ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
-    return views.dispatch_list(s, ctx, plant_id, resource_id, date_from, hours)
+    return fast_json(views.dispatch_list(s, ctx, plant_id, resource_id, date_from, hours))
 
 
 @router.get("/supervisor")
-def supervisor(plant_id: uuid.UUID, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
-    return views.supervisor_view(s, ctx, plant_id)
+def supervisor(plant_id: uuid.UUID, area_id: uuid.UUID | None = None, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+    return fast_json(views.supervisor_view(s, ctx, plant_id, area_id))
 
 
 @router.get("/operator")

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import gzip
+import hashlib
 import logging
 import threading
 import time
@@ -16,7 +17,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from monxuplan_engine.contract import (
-    OrderResult,
+    BaselineOpSpec,
+    FixedAssignmentSpec,
     Problem,
     Solution,
     SolverMetadata,
@@ -26,6 +28,7 @@ from monxuplan_engine.contract import (
     ScheduledOperation as EngScheduled,
 )
 from monxuplan_engine.diff import compare_solutions
+from monxuplan_engine.perf import paused_gc
 from monxuplan_engine.pipeline import PIPELINE_STEPS, solve
 from monxuplan_engine.providers.mip import NotSupported
 from monxuplan_engine.repair import move as engine_move
@@ -36,8 +39,8 @@ from ..core.db import new_session
 from ..core.errors import Conflict, DomainError, Forbidden, NotFound, PlanningBlocked, ValidationFailed
 from ..core.events import bus
 from ..core.observability import PLANNING_RUNS, SOLVER_SECONDS
-from ..models import ConstraintViolation, KpiValue, Plan, PlanningRun, Plant, ProblemSnapshot, Scenario, ScheduledOperation
-from . import audit
+from ..models import ConstraintViolation, Plan, PlanningRun, Plant, ProblemSnapshot, Scenario, ScheduledOperation
+from . import audit, plan_store
 from .context import Ctx, system_ctx
 from .problem_builder import build_problem
 
@@ -189,6 +192,12 @@ class _Progress:
 
 def execute_run(run_id: uuid.UUID, tenant_id: uuid.UUID) -> None:
     """Executed by a worker (thread or process). Never raises: failures are stored on the run."""
+    # a 100 000-order run allocates millions of long-lived objects: one collection at the end
+    with paused_gc():
+        _execute_run(run_id, tenant_id)
+
+
+def _execute_run(run_id: uuid.UUID, tenant_id: uuid.UUID) -> None:
     t0 = time.monotonic()
     with new_session(tenant_id, "worker") as s:
         run = s.get(PlanningRun, run_id)
@@ -214,6 +223,7 @@ def execute_run(run_id: uuid.UUID, tenant_id: uuid.UUID) -> None:
             solution = solve(problem, progress=prog, cancelled=prog.is_cancelled)
             prog.mark("Save schedule", "RUNNING")
             plan = persist_solution(s, ctx, sc, problem, solution, info, kind="OPTIMIZED" if run.kind != "REPAIR" else "REPAIR", run=run, parent=baseline, note=params.get("note"))
+            solution._state = None  # the engine state (gigabytes on a large plant) is no longer needed
             if baseline is not None:
                 try:
                     plan.change_summary = _summary(compare_solutions(solution_from_plan(s, baseline), solution))
@@ -290,10 +300,15 @@ def _next_number(s: Session, tenant_id: uuid.UUID) -> tuple[str, int]:
     return f"{prefix}{n + 1:03d}", n + 1
 
 
-def store_snapshot(s: Session, tenant_id: uuid.UUID, problem: Problem, sha: str) -> ProblemSnapshot:
+def store_snapshot(s: Session, tenant_id: uuid.UUID, problem: Problem) -> ProblemSnapshot:
+    """The problem of a plan version, stored once per content hash. The baseline of the previous
+    version is left out (it is rebuilt from the plan chain); one serialisation feeds the hash and
+    the compressed blob."""
+    data = problem.model_copy(update={"baseline": []}).model_dump_json(by_alias=True).encode()
+    sha = hashlib.sha256(data).hexdigest()
     snap = s.scalar(select(ProblemSnapshot).where(ProblemSnapshot.sha256 == sha))
     if snap is None:
-        blob = gzip.compress(problem.model_dump_json(by_alias=True).encode(), compresslevel=6)
+        blob = gzip.compress(data, compresslevel=1 if len(data) > 8_000_000 else 6)
         snap = ProblemSnapshot(tenant_id=tenant_id, sha256=sha, data=blob, size_bytes=len(blob))
         s.add(snap)
         s.flush()
@@ -322,13 +337,15 @@ def persist_solution(
 ) -> Plan:
     md = sol.solver_metadata
     sha = md.input_hash or ""
-    # the snapshot never carries the baseline of a previous version: it is rebuilt from the plan chain
-    data = problem.model_dump(mode="json", by_alias=True)
-    data["baseline"] = []
-    clean = Problem.model_validate(data)
-    from monxuplan_engine.compile import problem_hash
-
-    snap = store_snapshot(s, ctx.tenant_id, clean, problem_hash(clean))
+    snap = store_snapshot(s, ctx.tenant_id, problem)
+    analysis = {
+        "storage": plan_store.STORAGE_VERSION,
+        "bottlenecks": [b.model_dump(mode="json") for b in sol.bottlenecks],
+        "data_issues": (info.issues if info else []),
+        "excluded_orders": (info.excluded_orders if info else []),
+        "change_log": (info.change_log if info else []),
+        "counts": {"operations": len(sol.schedule), "orders": len(sol.orders), "unscheduled": len(sol.unscheduled), "pegging": len(sol.pegging)},
+    }
     for attempt in range(5):
         number, _ = _next_number(s, ctx.tenant_id)
         if attempt:
@@ -349,17 +366,9 @@ def persist_solution(
             horizon_end=problem.horizon.end,
             frozen_until=problem.horizon.frozen_until,
             kpis=sol.kpis,
-            kpi_details=sol.kpi_details,
+            kpi_details=plan_store.slim_kpi_details(sol.kpi_details),
             solver_metadata=md.model_dump(mode="json"),
-            analysis={
-                "orders": [o.model_dump(mode="json") for o in sol.orders],
-                "bottlenecks": [b.model_dump(mode="json") for b in sol.bottlenecks],
-                "unscheduled": [u.model_dump(mode="json") for u in sol.unscheduled],
-                "pegging": [p.model_dump(mode="json") for p in sol.pegging],
-                "data_issues": (info.issues if info else []),
-                "excluded_orders": (info.excluded_orders if info else []),
-                "change_log": (info.change_log if info else []),
-            },
+            analysis=analysis,
             params={"objectives": problem.objectives.model_dump(mode="json"), "constraints": problem.constraints.model_dump(mode="json"), "solver": problem.solver.model_dump(mode="json")},
             snapshot_id=snap.id,
             input_hash=sha,
@@ -376,71 +385,7 @@ def persist_solution(
             continue
     else:  # pragma: no cover
         raise Conflict("Could not allocate a plan number", code="PLAN_NUMBER")
-    order_ids = {o.id: o.number for o in problem.orders}
-    op_rows = info.op_rows if info else {}
-    rows = []
-    for x in sol.schedule:
-        oid, ooid = op_rows.get(x.op_id, (None, None))
-        rows.append(
-            {
-                "id": uuid.uuid4(),
-                "tenant_id": ctx.tenant_id,
-                "plan_id": plan.id,
-                "op_key": x.op_id,
-                "order_id": oid if oid is not None else _uuid_or_none(x.order_id),
-                "order_key": x.order_id,
-                "order_operation_id": ooid,
-                "resource_id": _uuid_or_none(x.resource_id),
-                "resource_key": x.resource_id,
-                "secondary": [a.model_dump() for a in x.secondary],
-                "setup_start": x.setup_start,
-                "start": x.start,
-                "end": x.end,
-                "setup_minutes": x.setup_minutes,
-                "run_minutes": x.run_minutes,
-                "working_minutes": x.working_minutes,
-                "overtime_minutes": x.overtime_minutes,
-                "quantity": x.quantity,
-                "is_fixed": x.fixed,
-                "fixed_reason": x.fixed_reason,
-                "is_locked": x.fixed_reason == "LOCKED",
-                "is_late": x.late,
-                "zone": x.zone,
-                "subcontracted": x.subcontracted,
-                "prev_op_key": x.prev_op_id,
-                "material_ready": x.material_ready,
-                "binding": x.binding.model_dump(mode="json"),
-                "explanation": sol.explanations[x.op_id].model_dump(mode="json") if x.op_id in sol.explanations else None,
-                "cost": x.cost,
-            }
-        )
-    _ = order_ids
-    if rows:
-        s.execute(ScheduledOperation.__table__.insert(), rows)
-    vrows = [
-        {
-            "id": uuid.uuid4(),
-            "tenant_id": ctx.tenant_id,
-            "plan_id": plan.id,
-            "severity": v.severity,
-            "hardness": v.hardness,
-            "type": v.type,
-            "message": v.message[:4000],
-            "order_key": v.order_id,
-            "op_key": v.op_id,
-            "resource_key": v.resource_id,
-            "material_key": v.material_id,
-            "start": v.start,
-            "end": v.end,
-            "details": v.details,
-        }
-        for v in sol.violations
-    ]
-    if vrows:
-        s.execute(ConstraintViolation.__table__.insert(), vrows)
-    krows = [{"id": uuid.uuid4(), "tenant_id": ctx.tenant_id, "plan_id": plan.id, "code": k, "value": float(v) if isinstance(v, int | float) else None, "computed_at": now()} for k, v in sol.kpis.items()]
-    if krows:
-        s.execute(KpiValue.__table__.insert(), krows)
+    plan_store.write_results(s, ctx.tenant_id, plan, sol, info.op_rows if info else None)
     # move the scenario head; a new version invalidates the redo stack
     sc.head_plan_id = plan.id
     sc.redo_stack = []
@@ -449,63 +394,58 @@ def persist_solution(
     return plan
 
 
-def _uuid_or_none(v: str | None) -> uuid.UUID | None:
-    try:
-        return uuid.UUID(v) if v else None
-    except ValueError:
-        return None
-
-
 def solution_from_plan(s: Session, plan: Plan) -> Solution:
-    """Rebuild the engine Solution of a stored plan (for comparisons and baselines)."""
-    rows = list(s.scalars(select(ScheduledOperation).where(ScheduledOperation.plan_id == plan.id)))
-    schedule = []
-    for r in rows:
-        schedule.append(
-            EngScheduled(
-                op_id=r.op_key,
-                order_id=r.order_key,
-                resource_id=r.resource_key,
-                mode_index=0,
-                setup_start=_aware(r.setup_start),
-                start=_aware(r.start),
-                end=_aware(r.end),
-                setup_minutes=r.setup_minutes,
-                run_minutes=r.run_minutes,
-                working_minutes=r.working_minutes,
-                overtime_minutes=r.overtime_minutes,
-                quantity=r.quantity,
-                fixed=r.is_fixed,
-                fixed_reason=r.fixed_reason,
-                late=r.is_late,
-                zone=r.zone,
-                binding=r.binding or {"type": "NONE"},
-            )
+    """Rebuild the engine Solution of a stored plan (for comparisons and baselines). Stored rows
+    were validated when the plan was written: they are read as plain columns and not re-validated."""
+    SO, CV = ScheduledOperation, ConstraintViolation
+    binding = plan_store.binding_from
+    schedule = [
+        EngScheduled.fast(
+            op_id=r.op_key,
+            order_id=r.order_key,
+            resource_id=r.resource_key,
+            mode_index=0,
+            setup_start=_aware(r.setup_start),
+            start=_aware(r.start),
+            end=_aware(r.end),
+            setup_minutes=r.setup_minutes,
+            run_minutes=r.run_minutes,
+            working_minutes=r.working_minutes,
+            overtime_minutes=r.overtime_minutes,
+            quantity=r.quantity,
+            fixed=r.is_fixed,
+            fixed_reason=r.fixed_reason,
+            late=r.is_late,
+            zone=r.zone,
+            binding=binding(r.binding),
         )
-    violations = [
-        Violation(severity=v.severity, hardness=v.hardness, type=v.type, message=v.message, order_id=v.order_key, op_id=v.op_key, resource_id=v.resource_key, material_id=v.material_key, details=v.details or {})
-        for v in s.scalars(select(ConstraintViolation).where(ConstraintViolation.plan_id == plan.id))
+        for r in s.execute(
+            select(SO.op_key, SO.order_key, SO.resource_key, SO.setup_start, SO.start, SO.end, SO.setup_minutes, SO.run_minutes, SO.working_minutes, SO.overtime_minutes, SO.quantity, SO.is_fixed, SO.fixed_reason, SO.is_late, SO.zone, SO.binding).where(SO.plan_id == plan.id)
+        )
     ]
-    orders = [OrderResult.model_validate(o) for o in (plan.analysis or {}).get("orders", [])]
+    violations = [
+        Violation.fast(severity=v.severity, hardness=v.hardness, type=v.type, message=v.message, order_id=v.order_key, op_id=v.op_key, resource_id=v.resource_key, material_id=v.material_key, details=v.details or {})
+        for v in s.execute(select(CV.severity, CV.hardness, CV.type, CV.message, CV.order_key, CV.op_key, CV.resource_key, CV.material_key, CV.details).where(CV.plan_id == plan.id))
+    ]
+    orders = plan_store.order_results_models(s, plan)
     md = SolverMetadata.model_validate(plan.solver_metadata) if plan.solver_metadata else SolverMetadata(provider="?", status="HEURISTIC")
-    return Solution(schedule=schedule, violations=violations, feasible=plan.feasible, orders=orders, kpis=plan.kpis or {}, solver_metadata=md)
+    return Solution.fast(schedule=schedule, violations=violations, feasible=plan.feasible, orders=orders, kpis=plan.kpis or {}, solver_metadata=md)
 
 
 def problem_for_plan(s: Session, plan: Plan) -> Problem:
     """The plan's own problem with the plan itself as baseline (for moves and repairs)."""
     problem = load_problem(s, plan)
-    data = problem.model_dump(mode="json", by_alias=True)
-    data["baseline"] = [
-        {"op_id": r.op_key, "resource_id": r.resource_key, "start": _aware(r.start).isoformat(), "end": _aware(r.end).isoformat(), "setup_start": _aware(r.setup_start).isoformat()}
-        for r in s.scalars(select(ScheduledOperation).where(ScheduledOperation.plan_id == plan.id))
-    ]
+    SO = ScheduledOperation
+    rows = s.execute(select(SO.op_key, SO.resource_key, SO.setup_start, SO.start, SO.end, SO.is_locked, SO.setup_minutes).where(SO.plan_id == plan.id)).all()
+    problem.baseline = [BaselineOpSpec.fast(op_id=r.op_key, resource_id=r.resource_key, start=_aware(r.start), end=_aware(r.end), setup_start=_aware(r.setup_start)) for r in rows]
     # manual/locked positions of the plan remain fixed
-    locked = {r.op_key: r for r in s.scalars(select(ScheduledOperation).where(ScheduledOperation.plan_id == plan.id, ScheduledOperation.is_locked.is_(True)))}
-    for op in data["operations"]:
-        r = locked.get(op["id"])
-        if r is not None and op.get("fixed") is None:
-            op["fixed"] = {"resource_id": r.resource_key, "start": _aware(r.setup_start).isoformat(), "end": _aware(r.end).isoformat(), "reason": "LOCKED", "setup_minutes": r.setup_minutes}
-    return Problem.model_validate(data)
+    locked = {r.op_key: r for r in rows if r.is_locked}
+    if locked:
+        for op in problem.operations:
+            r = locked.get(op.id)
+            if r is not None and op.fixed is None:
+                op.fixed = FixedAssignmentSpec.fast(resource_id=r.resource_key, start=_aware(r.setup_start), end=_aware(r.end), reason="LOCKED", setup_minutes=r.setup_minutes)
+    return problem
 
 
 # =============================================================================================
@@ -608,9 +548,10 @@ def _info_from_plan(s: Session, plan: Plan):
     from .problem_builder import BuildInfo
 
     info = BuildInfo(plant_id=plan.plant_id, scenario_id=plan.scenario_id)
-    for so in s.scalars(select(ScheduledOperation).where(ScheduledOperation.plan_id == plan.id)):
-        if so.order_id is not None and so.order_operation_id is not None:
-            info.op_rows[so.op_key] = (so.order_id, so.order_operation_id)
+    SO = ScheduledOperation
+    for r in s.execute(select(SO.op_key, SO.order_id, SO.order_operation_id).where(SO.plan_id == plan.id, SO.order_operation_id.is_not(None))):
+        if r.order_id is not None:
+            info.op_rows[r.op_key] = (r.order_id, r.order_operation_id)
     info.issues = (plan.analysis or {}).get("data_issues", [])
     return info
 
@@ -620,10 +561,10 @@ def set_locks(s: Session, ctx: Ctx, plan_id: uuid.UUID, op_keys: list[str], lock
     plan, sc = _require_head(s, ctx, plan_id)
     check_edit(ctx, sc)
     n = 0
-    for so in s.scalars(select(ScheduledOperation).where(ScheduledOperation.plan_id == plan.id, ScheduledOperation.op_key.in_(op_keys))):
-        so.is_locked = locked
-        n += 1
-    audit.record(s, ctx, "LOCK" if locked else "UNLOCK", "plan", plan.id, plan.number, after={"operations": op_keys})
+    for part in plan_store.chunks(op_keys):
+        res = s.execute(update(ScheduledOperation).where(ScheduledOperation.plan_id == plan.id, ScheduledOperation.op_key.in_(part)).values(is_locked=locked).execution_options(synchronize_session=False))
+        n += res.rowcount or 0
+    audit.record(s, ctx, "LOCK" if locked else "UNLOCK", "plan", plan.id, plan.number, after={"operations": op_keys[:500], "count": len(op_keys)})
     return n
 
 
@@ -722,17 +663,18 @@ def validate_plan(s: Session, ctx: Ctx, plan_id: uuid.UUID) -> dict[str, Any]:
         raise NotFound("Plan not found")
     sc = get_scenario(s, ctx, plan.scenario_id)
     problem, _info = build_problem(s, sc, as_of=_aware(plan.horizon_start), baseline_plan=plan, frozen_plan=None)
-    data = problem.model_dump(mode="json", by_alias=True)
-    pos = {r.op_key: r for r in s.scalars(select(ScheduledOperation).where(ScheduledOperation.plan_id == plan.id))}
-    for op in data["operations"]:
-        r = pos.get(op["id"])
+    SO = ScheduledOperation
+    pos = {r.op_key: r for r in s.execute(select(SO.op_key, SO.resource_key, SO.setup_start, SO.end, SO.setup_minutes).where(SO.plan_id == plan.id))}
+    for op in problem.operations:
+        r = pos.get(op.id)
         if r is not None:
-            op["fixed"] = {"resource_id": r.resource_key, "start": _aware(r.setup_start).isoformat(), "end": _aware(r.end).isoformat(), "reason": "KEPT", "setup_minutes": r.setup_minutes}
-    data["solver"].update({"provider": "heuristic", "local_search": False, "multi_start": False, "explain": False})
-    sol = solve(Problem.model_validate(data))
+            op.fixed = FixedAssignmentSpec.fast(resource_id=r.resource_key, start=_aware(r.setup_start), end=_aware(r.end), reason="KEPT", setup_minutes=r.setup_minutes)
+    problem.solver = problem.solver.model_copy(update={"provider": "heuristic", "local_search": False, "multi_start": False, "explain": False})
+    sol = solve(problem)
     hard = [v for v in sol.violations if v.hardness == "HARD" and v.severity == "CRITICAL"]
-    new_ops = [op["id"] for op in data["operations"] if op["id"] not in pos]
-    missing = [k for k in pos if k not in {op["id"] for op in data["operations"]}]
+    op_ids = {op.id for op in problem.operations}
+    new_ops = [op.id for op in problem.operations if op.id not in pos]
+    missing = [k for k in pos if k not in op_ids]
     result = {
         "plan_id": str(plan.id),
         "feasible": not hard,
