@@ -109,7 +109,7 @@ def local_search(cp: CompiledProblem, timing: Timing, ev: Evaluator, best, best_
     import time as _time
 
     reproducible = cp.solver.reproducible
-    hard_deadline = ctx.deadline + 0.2 * ctx.time_limit_s
+    hard_deadline = ctx.deadline  # the time limit is a hard cap, also in reproducible mode
     if reproducible:
         # deterministic budget: iterations derived from the problem size and the time limit
         # calibrated on ~0.1 ms of builder time per operation and decode

@@ -14,9 +14,10 @@ import argparse
 import json
 import os
 import random
+import resource
+import subprocess
 import sys
 import time
-import tracemalloc
 from datetime import UTC, datetime, timedelta
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -105,16 +106,23 @@ def generate(key: str, seed: int = 1) -> Problem:
 
 
 def run(key: str, provider: str, time_limit: float) -> dict:
+    """One benchmark in a fresh process: wall time around solve() and the process peak RSS (includes
+    native solver memory, which Python-level tracing would miss)."""
+    cmd = [sys.executable, __file__, "--single", key, provider, str(time_limit)]
+    out = subprocess.run(cmd, capture_output=True, text=True, check=True)
+    return json.loads(out.stdout.strip().splitlines()[-1])
+
+
+def _single(key: str, provider: str, time_limit: float) -> dict:
     p = generate(key)
     p.solver.provider = provider
     p.solver.time_limit_s = time_limit
     p.solver.explain = key in ("S", "M")
-    tracemalloc.start()
+    base_rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     t = time.monotonic()
     sol = solve(p)
     wall = time.monotonic() - t
-    _cur, peak = tracemalloc.get_traced_memory()
-    tracemalloc.stop()
+    peak_rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     md = sol.solver_metadata
     return {
         "instance": key,
@@ -126,12 +134,14 @@ def run(key: str, provider: str, time_limit: float) -> dict:
         "runtime_s": round(wall, 2),
         "status": md.status,
         "feasible": sol.feasible,
+        "hard_violations": sum(1 for v in sol.violations if v.hardness == "HARD" and v.type != "UNSCHEDULED" and not v.type.startswith("DATA_")),
         "unscheduled": len(sol.unscheduled),
         "late_orders": sol.kpis.get("late_orders"),
         "setup_h": sol.kpis.get("setup_h"),
         "objective": md.objective,
         "gap": md.gap,
-        "peak_memory_mb": round(peak / 1e6, 1),
+        "peak_rss_mb": round(peak_rss / 1024, 0),
+        "rss_growth_mb": round((peak_rss - base_rss) / 1024, 0),
     }
 
 
@@ -141,7 +151,11 @@ def main() -> None:
     ap.add_argument("--providers", nargs="*", default=["heuristic", "hybrid"])
     ap.add_argument("--time-limit", type=float, default=30)
     ap.add_argument("--markdown", action="store_true")
+    ap.add_argument("--single", nargs=3, metavar=("KEY", "PROVIDER", "TIME_LIMIT"), help=argparse.SUPPRESS)
     args = ap.parse_args()
+    if args.single:
+        print(json.dumps(_single(args.single[0], args.single[1], float(args.single[2]))))
+        return
     rows = []
     for key in args.only:
         for prov in args.providers:
@@ -152,12 +166,12 @@ def main() -> None:
     with open(os.path.join(os.path.dirname(__file__), "results", "latest.json"), "w") as fh:
         json.dump(rows, fh, indent=2)
     if args.markdown:
-        print("| Instance | Ops | Resources | Provider | Runtime (s) | Status | Feasible | Unscheduled | Late | Setup (h) | Gap | Peak mem (MB) |")
-        print("|---|---:|---:|---|---:|---|---|---:|---:|---:|---:|---:|")
+        print("| Instance | Ops | Resources | Provider | Runtime (s) | Status | Hard violations | Unscheduled | Late | Setup (h) | Gap | Peak RSS (MB) |")
+        print("|---|---:|---:|---|---:|---|---:|---:|---:|---:|---:|---:|")
         for r in rows:
             gap = f"{r['gap']:.1%}" if r["gap"] is not None else "—"
             print(
-                f"| {r['label']} | {r['operations']} | {r['resources']} | {r['provider']} | {r['runtime_s']} | {r['status']} | {'yes' if r['feasible'] else 'no'} | {r['unscheduled']} | {r['late_orders']:.0f} | {r['setup_h']} | {gap} | {r['peak_memory_mb']} |"
+                f"| {r['label']} | {r['operations']} | {r['resources']} | {r['provider']} | {r['runtime_s']} | {r['status']} | {r['hard_violations']} | {r['unscheduled']} | {r['late_orders']:.0f} | {r['setup_h']} | {gap} | {r['peak_rss_mb']:.0f} |"
             )
 
 

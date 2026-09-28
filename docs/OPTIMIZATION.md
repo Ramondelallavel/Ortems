@@ -130,3 +130,39 @@ weighted composite of normalised keys.
 * **Sensitivity**: marginal analysis "what is limiting the system?" — +1 hour / +1 shift on the top
   bottleneck candidates, +1 operator per pool, +10 % material → change in completed quantity and late
   orders.
+
+## Benchmarks
+
+Measured with `python backend/benchmarks/run_benchmarks.py --providers heuristic hybrid cpsat --time-limit 30 --markdown`
+(one process per run; 30 s budget; reproducible mode; seeded instances with two-shift calendars, family setup
+matrices, alternative resources, labour pools, tools and late material receipts; 4-core cloud container).
+"Hard violations" are counted by the independent validator on the returned schedule.
+
+| Instance | Ops | Resources | Provider | Runtime (s) | Status | Hard violations | Unscheduled | Late | Setup (h) | Gap | Peak RSS (MB) |
+|---|---:|---:|---|---:|---|---:|---:|---:|---:|---:|---:|
+| 10 orders / 2 machines | 16 | 4 | heuristic | 0.48 | HEURISTIC | 0 | 0 | 0 | 5.83 | — | 98 |
+| 10 orders / 2 machines | 16 | 4 | hybrid | 28.48 | FEASIBLE | 0 | 0 | 0 | 4.33 | 55.6% | 129 |
+| 10 orders / 2 machines | 16 | 4 | cpsat | 28.49 | FEASIBLE | 0 | 0 | 0 | 4.33 | 55.6% | 129 |
+| 50 orders / 5 machines | 91 | 7 | heuristic | 1.8 | HEURISTIC | 0 | 0 | 0 | 34.08 | — | 101 |
+| 50 orders / 5 machines | 91 | 7 | hybrid | 28.6 | FEASIBLE | 0 | 0 | 0 | 34.58 | 69.4% | 207 |
+| 50 orders / 5 machines | 91 | 7 | cpsat | 28.53 | FEASIBLE | 0 | 0 | 0 | 34.58 | 69.4% | 207 |
+| 500 orders / 20 machines | 1511 | 22 | heuristic | 16.25 | HEURISTIC | 0 | 0 | 0 | 519.42 | — | 126 |
+| 500 orders / 20 machines | 1511 | 22 | hybrid | 18.71 | FEASIBLE | 0 | 0 | 0 | 519.42 | — | 211 |
+| 500 orders / 20 machines | 1511 | 22 | cpsat | 16.35 | FEASIBLE | 0 | 0 | 0 | 519.42 | — | 210 |
+| 5000 operations / 100 resources | 5117 | 100 | heuristic | 21.49 | HEURISTIC | 0 | 0 | 0 | 1883.92 | — | 212 |
+| 5000 operations / 100 resources | 5117 | 100 | hybrid | 15.26 | FEASIBLE | 0 | 0 | 0 | 1883.92 | — | 329 |
+| 5000 operations / 100 resources | 5117 | 100 | cpsat | 15.36 | FEASIBLE | 0 | 0 | 0 | 1883.92 | — | 330 |
+
+Reading the table honestly:
+
+* Every run returns a complete schedule with **no hard violation**, within the time budget (the budget
+  covers the search; model building and explanations are reserved inside it).
+* The **gap** is reported only when it is meaningful: CP-SAT on the whole model (up to `cpsat_max_ops`
+  = 250 operations). On the small instances the bound is weak (calendar gaps and the inventory/flow terms
+  relax poorly), so CP-SAT improves the schedule (setup 5.8 h → 4.3 h on S) but cannot *prove* optimality in
+  30 s; the status stays `FEASIBLE`, never `OPTIMAL`. `OPTIMAL` is reported only when proven and exactly
+  reproduced by the schedule builder (e.g. the known-answer tests).
+* Above 250 operations the hybrid provider runs large-neighbourhood search with a deterministic number of
+  neighbourhoods; LNS reports no global gap. On L and XL it did not find an improvement over the heuristic within
+  its iteration budget (identical KPIs), which is reported as such rather than hidden.
+* Peak RSS is the whole Python process including OR-Tools native memory.

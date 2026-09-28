@@ -1,8 +1,12 @@
+# syntax=docker/dockerfile:1
 # MonxuPlan web image (Next.js standalone output)
+# Behind a TLS-intercepting corporate proxy: docker build --secret id=ca_bundle,src=/path/to/ca.pem .
 FROM node:22-alpine AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
-RUN npm ci --no-audit --no-fund
+RUN --mount=type=secret,id=ca_bundle,required=false \
+    if [ -f /run/secrets/ca_bundle ]; then export NODE_EXTRA_CA_CERTS=/run/secrets/ca_bundle npm_config_cafile=/run/secrets/ca_bundle; fi; \
+    npm ci --no-audit --no-fund
 
 FROM node:22-alpine AS build
 WORKDIR /app

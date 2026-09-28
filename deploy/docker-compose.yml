@@ -54,6 +54,11 @@ services:
       MONXU_REDIS_URL: redis://redis:6379/0
       MONXU_SEED_DEMO: "0"
     command: ["python", "-m", "monxuplan.worker"]
+    healthcheck:
+      # workers expose no HTTP port: healthy while the process can reach the database
+      test: ["CMD", "python", "-c", "from sqlalchemy import text; from monxuplan.core.db import get_engine; get_engine().connect().execute(text('select 1'))"]
+      interval: 30s
+      retries: 3
     depends_on:
       api:
         condition: service_healthy
