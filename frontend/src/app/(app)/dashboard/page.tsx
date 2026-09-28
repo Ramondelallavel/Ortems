@@ -60,7 +60,7 @@ export default function Dashboard() {
             {t("dash.currentPlan")}: <b className="text-graphite-800">{x.head_plan?.number || "—"}</b> {x.head_plan && <Badge tone={statusTone(x.head_plan.status)}>{x.head_plan.status}</Badge>}
           </span>
           <span>
-            {t("dash.published")}: <b className="text-graphite-800">{x.published_plan?.number || "none"}</b>
+            {t("dash.published")}: <b className="text-graphite-800">{x.published_plan?.number || t("dash.none")}</b>
             {x.published_plan?.published_at ? ` · ${dt(x.published_plan.published_at)}` : ""}
           </span>
           {x.last_run && (
@@ -94,7 +94,7 @@ export default function Dashboard() {
                 delta={tl.delta !== null && tl.delta !== undefined && tl.delta !== 0 ? `${tl.delta > 0 ? "+" : ""}${num(tl.delta, 1)} ${t("dash.vsPublished")}` : null}
                 trend={tl.trend}
                 onClick={() => router.push(`/analytics?kpi=${tl.code}`)}
-                hint="Open drill-down"
+                hint={t("dash.drill")}
               />
             ))}
           </div>
@@ -120,7 +120,7 @@ export default function Dashboard() {
                     </button>
                     <span className="text-[11px] text-slate-400 whitespace-nowrap tabular">{a.at ? dt(a.at) : ""}</span>
                     {a.source === "ALERT" && can("alerts:manage") && (
-                      <Button size="sm" variant="ghost" onClick={() => ack(a.id)} title="Acknowledge">
+                      <Button size="sm" variant="ghost" onClick={() => ack(a.id)} title={t("dash.ack")}>
                         <Icon name="check" size={13} />
                       </Button>
                     )}
@@ -134,11 +134,11 @@ export default function Dashboard() {
             {x.health ? (
               <dl className="grid grid-cols-2 gap-px bg-gray-100">
                 {[
-                  ["Hard violations", x.health.critical_issues, "bad"],
-                  ["Soft deviations", x.health.warnings, "warn"],
-                  ["Orders at risk", x.health.orders_at_risk, "bad"],
-                  ["Overloaded resources", x.health.overloaded_resources, "bad"],
-                  ["Material issues", x.health.material_issues, "warn"],
+                  [t("dash.hardViolations"), x.health.critical_issues, "bad"],
+                  [t("dash.softDeviations"), x.health.warnings, "warn"],
+                  [t("dash.ordersAtRisk"), x.health.orders_at_risk, "bad"],
+                  [t("dash.overloaded"), x.health.overloaded_resources, "bad"],
+                  [t("dash.materialIssues"), x.health.material_issues, "warn"],
                 ].map(([l, v, tone]) => (
                   <div key={l as string} className="bg-white px-3 py-2">
                     <dt className="text-[11px] text-slate-600">{l}</dt>
@@ -151,7 +151,7 @@ export default function Dashboard() {
                 <div className="bg-white px-3 py-2">
                   <dt className="text-[11px] text-slate-600">{t("dash.changes")}</dt>
                   <dd className="text-[12px] tabular">
-                    {x.changes.new_orders} new orders · {x.changes.new_alerts} alerts · {x.changes.shop_floor_events} floor events · {x.changes.plan_versions} plan versions
+                    {t("dash.changesLine", { orders: x.changes.new_orders, alerts: x.changes.new_alerts, floor: x.changes.shop_floor_events, versions: x.changes.plan_versions })}
                   </dd>
                 </div>
               </dl>
@@ -162,7 +162,7 @@ export default function Dashboard() {
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-          <Panel title={t("dash.lateOrders")} actions={<Link className="text-[11.5px] text-blue-500 hover:underline" href="/planning/orders?status=LATE">All</Link>} bodyClass="max-h-[300px] overflow-auto mx-scroll" id="late">
+          <Panel title={t("dash.lateOrders")} actions={<Link className="text-[11.5px] text-blue-500 hover:underline" href="/planning/orders?status=LATE">{t("dash.all")}</Link>} bodyClass="max-h-[300px] overflow-auto mx-scroll" id="late">
             <table className="mx-table">
               <tbody>
                 {x.late_orders.map((o: any) => (
@@ -179,13 +179,13 @@ export default function Dashboard() {
                 ))}
                 {!x.late_orders.length && (
                   <tr>
-                    <td className="text-slate-600">✓ No order at risk.</td>
+                    <td className="text-slate-600">✓ {t("dash.noRisk")}</td>
                   </tr>
                 )}
               </tbody>
             </table>
           </Panel>
-          <Panel title={t("dash.bottlenecks")} actions={<Link className="text-[11.5px] text-blue-500 hover:underline" href="/planning/capacity">Capacity</Link>} bodyClass="max-h-[300px] overflow-auto mx-scroll" id="bn">
+          <Panel title={t("dash.bottlenecks")} actions={<Link className="text-[11.5px] text-blue-500 hover:underline" href="/planning/capacity">{t("dash.capacity")}</Link>} bodyClass="max-h-[300px] overflow-auto mx-scroll" id="bn">
             <table className="mx-table">
               <tbody>
                 {x.bottlenecks.map((b: any) => (
@@ -203,7 +203,7 @@ export default function Dashboard() {
                 ))}
                 {!x.bottlenecks.length && (
                   <tr>
-                    <td className="text-slate-600">No bottleneck detected.</td>
+                    <td className="text-slate-600">{t("dash.noBottleneck")}</td>
                   </tr>
                 )}
               </tbody>
@@ -213,9 +213,9 @@ export default function Dashboard() {
             {x.today?.plan ? (
               <>
                 <div>
-                  <b className="tabular">{x.today.operations_starting_24h}</b> operations start on <b className="tabular">{x.today.resources_busy_24h}</b> resources ({x.today.plan}).
+                  {t("dash.opsStart", { ops: x.today.operations_starting_24h, res: x.today.resources_busy_24h, plan: x.today.plan })}
                 </div>
-                {x.today.resources_down?.length > 0 && <div className="text-red-600">▲ Down: {x.today.resources_down.join(", ")}</div>}
+                {x.today.resources_down?.length > 0 && <div className="text-red-600">▲ {t("dash.down")}: {x.today.resources_down.join(", ")}</div>}
                 {x.today.maintenance_24h?.map((m: any, i: number) => (
                   <div key={i}>
                     ✕ <span className="code">{m.resource}</span> {m.kind.toLowerCase()} {dt(m.start)}–{dt(m.end, { hour: "2-digit", minute: "2-digit" })} {m.description ? `· ${m.description}` : ""}
@@ -236,7 +236,7 @@ export default function Dashboard() {
                 </div>
               </>
             ) : (
-              <div className="text-slate-600">No plan yet.</div>
+              <div className="text-slate-600">{t("dash.noPlanYet")}</div>
             )}
           </Panel>
         </div>

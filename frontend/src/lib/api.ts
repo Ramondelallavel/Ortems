@@ -1,3 +1,5 @@
+import { saveBlob } from "./save";
+
 // Thin API client. Browser sessions use the httpOnly session cookie + double-submit CSRF header.
 
 export class ApiError extends Error {
@@ -75,11 +77,5 @@ export async function download(path: string, query?: Query): Promise<void> {
   const blob = await res.blob();
   const cd = res.headers.get("content-disposition") || "";
   const m = cd.match(/filename="?([^";]+)"?/);
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = m ? m[1] : "export";
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  await saveBlob(blob, m ? m[1] : "export");
 }

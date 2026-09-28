@@ -30,6 +30,13 @@ hand and reactive to the shop floor.
   capacity, Monte Carlo robustness and sensitivity, plan vs actual, dispatch/supervisor/operator views,
   grounded planning assistant.
 
+
+## Browser edition
+
+`browser/` builds the complete application as a single static page that runs the real Python API and
+planning engine in the browser (Pyodide/WebAssembly), with the demo factory and data saved locally.
+Heuristic solver only; see [browser/README.md](browser/README.md).
+
 ## Quick start (development, no infrastructure)
 
 ```bash

@@ -1,6 +1,7 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ApiError } from "./api";
+import { loc } from "./loc";
 
 export type Loadable<T> = { data: T | undefined; error: ApiError | undefined; loading: boolean; reload: () => void; setData: (d: T) => void };
 
@@ -91,7 +92,7 @@ export function useLocalState<T>(key: string, initial: T): [T, (v: T) => void] {
 export function useQueryParam(name: string): string | null {
   const [v, setV] = useState<string | null>(null);
   useEffect(() => {
-    const read = () => setV(new URLSearchParams(window.location.search).get(name));
+    const read = () => setV(new URLSearchParams(loc.search()).get(name));
     read();
     window.addEventListener("popstate", read);
     return () => window.removeEventListener("popstate", read);

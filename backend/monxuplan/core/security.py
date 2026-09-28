@@ -1,9 +1,10 @@
 """Authentication primitives.
 
-* Passwords: scrypt (N=2^15, r=8, p=1) with per-user salt, constant-time comparison.
+* Passwords: scrypt (N=2^15, r=8, p=1) with per-user salt, constant-time comparison. Runtimes without
+  OpenSSL (the in-browser WebAssembly build) use PBKDF2-HMAC-SHA256 instead; both formats verify.
 * Sessions: HS256 JWT signed with ``MONXU_SECRET_KEY`` — in an httpOnly ``SameSite=Lax`` cookie for
   browsers (plus double-submit CSRF token) or as a bearer token for API clients.
-* API keys: ``mxk_<prefix>_<secret>``; only a scrypt hash is stored.
+* API keys: ``mxk_<prefix>_<secret>``; only a keyed SHA-256 hash is stored.
 * OIDC: bearer tokens from the configured issuer are verified against its JWKS.
 * Secrets at rest (connector credentials, webhook secrets): AES-GCM with a key derived from the secret.
 """
@@ -20,12 +21,13 @@ from datetime import timedelta
 from typing import Any
 
 import jwt
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from .clock import now
 from .config import get_settings
 
 SCRYPT_N, SCRYPT_R, SCRYPT_P = 2**15, 8, 1
+PBKDF2_ITERATIONS = 60_000
+HAS_SCRYPT = hasattr(hashlib, "scrypt")
 PERMISSIONS: dict[str, str] = {
     "masterdata:read": "Read master data",
     "masterdata:write": "Create/update master data",
@@ -69,21 +71,56 @@ ROLES: dict[str, tuple[str, list[str]]] = {
 # ------------------------------------------------------------------ passwords
 def hash_password(password: str) -> str:
     salt = os.urandom(16)
+    if not HAS_SCRYPT:
+        dk = _pbkdf2_sha256(password.encode(), salt, PBKDF2_ITERATIONS)
+        return f"pbkdf2_sha256${PBKDF2_ITERATIONS}${base64.b64encode(salt).decode()}${base64.b64encode(dk).decode()}"
     dk = hashlib.scrypt(password.encode(), salt=salt, n=SCRYPT_N, r=SCRYPT_R, p=SCRYPT_P, maxmem=128 * 1024 * 1024)
     return f"scrypt${SCRYPT_N}${SCRYPT_R}${SCRYPT_P}${base64.b64encode(salt).decode()}${base64.b64encode(dk).decode()}"
 
 
 def verify_password(password: str, stored: str | None) -> bool:
-    if not stored or not stored.startswith("scrypt$"):
+    if not stored:
         return False
     try:
-        _, n, r, p, salt_b64, dk_b64 = stored.split("$")
-        salt = base64.b64decode(salt_b64)
-        expected = base64.b64decode(dk_b64)
-        dk = hashlib.scrypt(password.encode(), salt=salt, n=int(n), r=int(r), p=int(p), maxmem=128 * 1024 * 1024)
+        if stored.startswith("scrypt$") and HAS_SCRYPT:
+            _, n, r, p, salt_b64, dk_b64 = stored.split("$")
+            salt = base64.b64decode(salt_b64)
+            expected = base64.b64decode(dk_b64)
+            dk = hashlib.scrypt(password.encode(), salt=salt, n=int(n), r=int(r), p=int(p), maxmem=128 * 1024 * 1024)
+        elif stored.startswith("pbkdf2_sha256$"):
+            _, it, salt_b64, dk_b64 = stored.split("$")
+            salt = base64.b64decode(salt_b64)
+            expected = base64.b64decode(dk_b64)
+            dk = _pbkdf2_sha256(password.encode(), salt, int(it))
+        else:
+            return False
     except (ValueError, TypeError):
         return False
     return hmac.compare_digest(dk, expected)
+
+
+def _pbkdf2_sha256(password: bytes, salt: bytes, iterations: int) -> bytes:
+    """PBKDF2-HMAC-SHA256 (RFC 8018), one 32-byte block; OpenSSL's implementation when present."""
+    if hasattr(hashlib, "pbkdf2_hmac"):
+        return hashlib.pbkdf2_hmac("sha256", password, salt, iterations)
+    inner, outer = hashlib.sha256(), hashlib.sha256()
+    key = password if len(password) <= 64 else hashlib.sha256(password).digest()
+    key = key.ljust(64, b"\0")
+    inner.update(bytes(k ^ 0x36 for k in key))
+    outer.update(bytes(k ^ 0x5C for k in key))
+
+    def prf(msg: bytes) -> bytes:
+        i, o = inner.copy(), outer.copy()
+        i.update(msg)
+        o.update(i.digest())
+        return o.digest()
+
+    u = prf(salt + b"\x00\x00\x00\x01")
+    acc = int.from_bytes(u, "big")
+    for _ in range(iterations - 1):
+        u = prf(u)
+        acc ^= int.from_bytes(u, "big")
+    return acc.to_bytes(32, "big")
 
 
 def password_problems(password: str) -> list[str]:
@@ -169,9 +206,19 @@ def _aes_key() -> bytes:
     return hashlib.sha256(("monxuplan-secrets|" + get_settings().secret_key).encode()).digest()
 
 
+def _aesgcm():
+    try:
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    except ImportError as exc:  # the in-browser build has no OpenSSL
+        from .errors import DomainError
+
+        raise DomainError("Storing credentials needs the server edition of MonxuPlan (encryption is not available in this runtime).", code="SECRETS_UNAVAILABLE") from exc
+    return AESGCM(_aes_key())
+
+
 def encrypt_secret(plain: str) -> str:
     nonce = os.urandom(12)
-    ct = AESGCM(_aes_key()).encrypt(nonce, plain.encode(), b"monxuplan")
+    ct = _aesgcm().encrypt(nonce, plain.encode(), b"monxuplan")
     return "v1:" + base64.urlsafe_b64encode(nonce + ct).decode()
 
 
@@ -179,7 +226,7 @@ def decrypt_secret(token: str) -> str:
     if not token.startswith("v1:"):
         raise ValueError("unknown secret format")
     raw = base64.urlsafe_b64decode(token[3:])
-    return AESGCM(_aes_key()).decrypt(raw[:12], raw[12:], b"monxuplan").decode()
+    return _aesgcm().decrypt(raw[:12], raw[12:], b"monxuplan").decode()
 
 
 def sign_payload(secret: str, body: bytes, timestamp: str) -> str:

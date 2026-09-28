@@ -227,6 +227,9 @@ def aggregate_plan(s: Session, ctx: Ctx, plant_id: uuid.UUID, weeks: int = 12, i
     if not families:
         raise ValidationFailed("No finished-goods demand to plan", code="NO_DEMAND")
     pb = AggregateProblem(periods=mps["periods"], families=families, groups=groups, integer=integer)
-    out = MipProvider().solve_aggregate(pb)
+    try:
+        out = MipProvider().solve_aggregate(pb)
+    except ImportError as exc:  # OR-Tools is not part of the in-browser edition
+        raise ValidationFailed("The aggregate plan needs the OR-Tools linear solver, which is not installed in this runtime (server edition only).", code="PROVIDER_NOT_INSTALLED") from exc
     out["provider"] = "mip"
     return out

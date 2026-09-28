@@ -34,7 +34,8 @@ export function RunProgress({ runId, onDone, onClose }: { runId: string; onDone:
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runId]);
   useEvents((type, data) => {
-    if (type === "planning.run.progress" && data?.run_id === runId) setRun((r: any) => (r ? { ...r, progress: data.progress, current_step: data.current_step } : r));
+    if (type === "planning.run.progress" && data?.run_id === runId)
+      setRun((r: any) => (r ? { ...r, status: r.status === "QUEUED" ? "RUNNING" : r.status, progress: data.progress, current_step: data.current_step } : r));
   });
   const steps: any[] = run?.progress || [];
   const done = steps.filter((s) => s.status === "DONE").length;

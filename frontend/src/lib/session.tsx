@@ -3,6 +3,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState, t
 import { api, setUnauthorizedHandler } from "./api";
 import { setFormatContext } from "./format";
 import { translate, type Locale } from "./i18n";
+import { loc } from "./loc";
 
 export type Plant = { id: string; code: string; name: string; timezone: string; live_scenario_id: string | null; published_plan_id: string | null };
 export type Me = {
@@ -63,11 +64,11 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     setUnauthorizedHandler(() => {
-      if (typeof window !== "undefined" && !window.location.pathname.startsWith("/login")) {
-        window.location.href = `/login?next=${encodeURIComponent(window.location.pathname + window.location.search)}`;
+      if (typeof window !== "undefined" && !loc.path().startsWith("/login")) {
+        loc.go(`/login?next=${encodeURIComponent(loc.path() + loc.search())}`);
       }
     });
-    if (window.location.pathname.startsWith("/login")) setLoading(false);
+    if (loc.path().startsWith("/login")) setLoading(false);
     else refresh();
   }, [refresh]);
 
@@ -106,7 +107,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       try {
         await api("/auth/logout", { method: "POST" });
       } finally {
-        window.location.href = "/login";
+        loc.go("/login");
       }
     },
   };

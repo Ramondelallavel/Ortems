@@ -2,6 +2,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useApi, useLocalState } from "./hooks";
 import { useSession } from "./session";
+import { loc } from "./loc";
 
 export type ScenarioRow = {
   id: string;
@@ -29,7 +30,7 @@ export function useScenarioSelection() {
   const [stored, setStored] = useLocalState<Record<string, string>>("mx.scenario", {});
   const [explicit, setExplicit] = useState<string | null>(null);
   useEffect(() => {
-    const q = new URLSearchParams(window.location.search).get("scenario");
+    const q = new URLSearchParams(loc.search()).get("scenario");
     if (q) setExplicit(q);
   }, []);
   const list = scenarios.data || [];

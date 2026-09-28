@@ -41,6 +41,10 @@ export function RunDialog({ open, onClose, scenarioId, onStarted }: { open: bool
     }
   };
   const detailed = (providers.data || []).filter((p) => p.detailed_scheduling);
+  // only offer providers installed in this runtime (the browser edition has the heuristic only)
+  useEffect(() => {
+    if (detailed.length && !detailed.some((p) => p.name === provider)) setProvider(detailed.some((p) => p.name === "hybrid") ? "hybrid" : detailed[0].name);
+  }, [detailed, provider]);
   return (
     <Dialog
       open={open}

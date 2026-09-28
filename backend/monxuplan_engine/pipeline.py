@@ -21,6 +21,7 @@ from contextlib import contextmanager
 from .assemble import assemble
 from .compile import ENGINE_VERSION, compile_problem
 from .contract import PhaseLog, Problem, Solution, SolverMetadata
+from .providers import available as available_providers
 from .providers import get_provider
 from .providers.base import SolveContext
 from .timing import compute_timing
@@ -106,7 +107,13 @@ def solve(problem: Problem, progress: Progress | None = None, cancelled: Callabl
         rec.detail = f"{impossible} orders cannot meet their due date even at infinite capacity"
 
     limit = time_limit_for(problem)
-    provider = get_provider(problem.solver.provider)
+    runtime_notes: list[str] = []
+    requested = problem.solver.provider
+    if requested not in available_providers():
+        # e.g. the in-browser edition has no OR-Tools: say so instead of failing the run
+        runtime_notes.append(f"Provider {requested!r} is not installed in this runtime; the heuristic provider was used instead.")
+        requested = "heuristic"
+    provider = get_provider(requested)
     if not provider.capabilities().detailed_scheduling:
         from .providers.mip import NotSupported
 
@@ -144,7 +151,7 @@ def solve(problem: Problem, progress: Progress | None = None, cancelled: Callabl
         seed=problem.solver.seed,
         engine_version=ENGINE_VERSION,
         phases=phases,
-        messages=ctx.messages,
+        messages=runtime_notes + ctx.messages,
         details=pres.details,
     )
     sol = assemble(pres.result, meta, validation, explain=problem.solver.explain)

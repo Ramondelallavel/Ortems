@@ -31,6 +31,7 @@ from monxuplan_engine.objectives import PRESETS
 
 from ..core.clock import now
 from ..core.db import new_session
+from ..core.errors import DomainError
 from ..core.security import encrypt_secret
 from ..models import (
     ActualProduction,
@@ -694,7 +695,7 @@ def _build(b: Builder) -> dict[str, Any]:
     b.add(ScenarioChange(scenario_id=buy.id, seq=1, type="ADD_RESOURCE", payload={"clone_of": str(res["CNC-03"].id), "id": str(uuid.uuid5(uuid.NAMESPACE_URL, "monxu-cnc-08")), "code": "CNC-08", "name": "CNC machining centre #8 (5-axis, new)", "available_from": _local(next_monday, time(6)).isoformat()}, description="+ CNC-08 (clone of CNC-03)"))
 
     # integration connectors (framework; credentials encrypted)
-    b.add(Integration(code="ERP-SAP", name="SAP S/4HANA (orders, BOM, routings)", system="SAP", direction="BOTH", settings={"base_url": "https://erp.example.invalid/sap/opu/odata", "entities": ["orders", "boms", "routings", "inventory"], "mode": "REST"}, secret_encrypted=encrypt_secret("demo-not-a-real-secret"), is_active=False))
+    b.add(Integration(code="ERP-SAP", name="SAP S/4HANA (orders, BOM, routings)", system="SAP", direction="BOTH", settings={"base_url": "https://erp.example.invalid/sap/opu/odata", "entities": ["orders", "boms", "routings", "inventory"], "mode": "REST"}, secret_encrypted=_demo_secret(), is_active=False))
     b.add(Integration(code="MES-SHOP", name="Shop-floor MES (operations, downtime)", system="MES", direction="IN", settings={"events": ["OperationStarted", "OperationFinished", "MachineDown", "MachineAvailable"], "mode": "WEBHOOK"}, is_active=True))
 
     # ------------------------------------------------------------------ users
@@ -747,3 +748,10 @@ def main() -> None:  # pragma: no cover
 
 if __name__ == "__main__":  # pragma: no cover
     main()
+
+
+def _demo_secret() -> str | None:
+    try:
+        return encrypt_secret("demo-not-a-real-secret")
+    except DomainError:  # runtime without encryption (browser build): connector stays without credentials
+        return None

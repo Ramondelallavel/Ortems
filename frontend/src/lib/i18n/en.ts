@@ -171,6 +171,22 @@ const en = {
   "dash.currentPlan": "Current plan",
   "dash.published": "Published",
   "dash.lastRun": "Last run",
+  "dash.all": "All",
+  "dash.capacity": "Capacity",
+  "dash.noRisk": "No order at risk.",
+  "dash.noBottleneck": "No bottleneck detected.",
+  "dash.noPlanYet": "No plan yet.",
+  "dash.hardViolations": "Hard violations",
+  "dash.softDeviations": "Soft deviations",
+  "dash.ordersAtRisk": "Orders at risk",
+  "dash.overloaded": "Overloaded resources",
+  "dash.materialIssues": "Material issues",
+  "dash.changesLine": "{orders} new orders · {alerts} alerts · {floor} floor events · {versions} plan versions",
+  "dash.opsStart": "{ops} operations start on {res} resources ({plan}).",
+  "dash.down": "Down",
+  "dash.none": "none",
+  "dash.drill": "Open drill-down",
+  "dash.ack": "Acknowledge",
 };
 export default en;
 export type Dict = Record<keyof typeof en, string>;

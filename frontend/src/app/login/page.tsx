@@ -4,6 +4,7 @@ import { Logo } from "@/components/shell/Logo";
 import { Button, Icon } from "@/components/ui";
 import { api, ApiError } from "@/lib/api";
 import { LOCALES, translate, type Locale } from "@/lib/i18n";
+import { loc } from "@/lib/loc";
 
 export default function LoginPage() {
   const [username, setUsername] = useState("");
@@ -27,8 +28,8 @@ export default function LoginPage() {
     setError(null);
     try {
       await api("/auth/login", { body: { username, password, tenant: tenant || null } });
-      const next = new URLSearchParams(window.location.search).get("next");
-      window.location.href = next && next.startsWith("/") && !next.startsWith("//") ? next : "/dashboard";
+      const next = new URLSearchParams(loc.search()).get("next");
+      loc.go(next && next.startsWith("/") && !next.startsWith("//") ? next : "/dashboard");
     } catch (err) {
       setError(err instanceof ApiError ? err.message : String(err));
       setBusy(false);

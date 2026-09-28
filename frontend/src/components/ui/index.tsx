@@ -4,6 +4,7 @@ import { createContext, useCallback, useContext, useEffect, useId, useMemo, useR
 import { ApiError } from "@/lib/api";
 import { useSession } from "@/lib/session";
 import { Icon } from "./Icon";
+import { saveBlob } from "@/lib/save";
 
 export { Icon };
 
@@ -426,10 +427,7 @@ export function DataTable<T extends Record<string, any>>({ rows, columns, rowKey
     const esc = (v: unknown) => `"${String(v ?? "").replaceAll('"', '""')}"`;
     const lines = [columns.map((c) => esc(c.label)).join(","), ...filtered.map((r) => columns.map((c) => esc(val(r, c))).join(","))];
     const blob = new Blob(["﻿" + lines.join("\n")], { type: "text/csv" });
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = `${exportName || "export"}.csv`;
-    a.click();
+    saveBlob(blob, `${exportName || "export"}.csv`);
   };
 
   return (
