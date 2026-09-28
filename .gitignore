@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+backend/data/
+backend/*.db
+
+# Node / Next.js
+node_modules/
+frontend/.next/
+frontend/out/
+frontend/next-env.d.ts
+*.tsbuildinfo
+
+# Environment
+.env
+.env.local
+
+# OS / editors
+.DS_Store
+.idea/
+.vscode/
+
+# Test / benchmark artefacts
+backend/benchmarks/results/*.json
+frontend/test-results/
+frontend/playwright-report/
