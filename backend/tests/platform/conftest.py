@@ -13,6 +13,7 @@ os.environ.setdefault("MONXU_LOG_JSON", "0")
 os.environ.setdefault("MONXU_LOG_LEVEL", "WARNING")
 os.environ["MONXU_RATE_LIMIT_PER_MINUTE"] = "100000"
 os.environ["MONXU_LOGIN_RATE_LIMIT_PER_MINUTE"] = "1000"
+os.environ["MONXU_WEBHOOK_DELIVERY"] = "0"  # tests drive deliveries explicitly (no background sender)
 
 PASSWORD = "Monxu-Demo-2026"
 

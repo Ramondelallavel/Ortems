@@ -9,8 +9,10 @@ Two lower bounds, both cheap and both honest about what they are:
    checkpoint, the work that must be done before it (EDD cumulative requirement) versus the capacity
    available until then → capacity shortages, the critical resource and the additional hours needed.
 
-Result: ``YES`` (no bound is violated — the detailed schedule may still find lateness through
-sequence interactions), ``PARTIALLY`` or ``NO`` with the primary and secondary reasons.
+Result (``check: LOWER_BOUND``): ``NO_BOUND_VIOLATED`` (no bound rules the orders out — this is *not*
+a statement that the detailed schedule is feasible or on time; ``detailed_schedule_feasible`` is
+always null here), ``PARTIALLY`` or ``NO`` (proofs: those orders cannot be on time) with the primary
+and secondary reasons.
 """
 
 from __future__ import annotations
@@ -104,14 +106,19 @@ def check(cp: CompiledProblem, timing: Timing | None = None) -> dict[str, Any]:
     ranked = sorted(reasons.items(), key=lambda kv: -kv[1])
     n_orders = sum(1 for o in cp.orders if o.ops)
     if not impossible and not shortages:
-        status = "YES"
+        # not "yes, feasible": only that no lower bound rules the orders out
+        status = "NO_BOUND_VIOLATED"
     elif len(impossible_ids) >= n_orders and n_orders:
         status = "NO"
     else:
         status = "PARTIALLY"
     crit_issues = [i for i in cp.issues if i.severity == "CRITICAL"]
     return {
+        "check": "LOWER_BOUND",
         "status": status,
+        # a lower-bound check never proves that a finite-capacity schedule meets every due date: only
+        # a detailed schedule (a planning run) and its validation can say that
+        "detailed_schedule_feasible": None,
         "orders": n_orders,
         "orders_impossible": len(impossible_ids),
         "primary_reason": ranked[0][0] if ranked else None,
@@ -120,7 +127,7 @@ def check(cp: CompiledProblem, timing: Timing | None = None) -> dict[str, Any]:
         "capacity_shortages": shortages[:20],
         "impossible_orders": sorted(impossible, key=lambda x: -(x.get("delay_minutes") or 10**9))[:200],
         "critical_data_issues": len(crit_issues),
-        "note": "Lower bounds only: YES means no bound is violated; the detailed schedule may still show lateness caused by sequencing.",
+        "note": "Lower bounds only (infinite-capacity lead times and rough-cut capacity per group). NO_BOUND_VIOLATED is not a guarantee: the detailed finite-capacity schedule may still be late because of sequencing, setups, labour, tools or materials. NO / PARTIALLY are proofs: those orders cannot be on time.",
     }
 
 

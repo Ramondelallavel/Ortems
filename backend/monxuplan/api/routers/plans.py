@@ -125,7 +125,7 @@ def order_chain(plan_id: uuid.UUID, order_key: str, ctx: Ctx = Depends(get_ctx),
 class MoveIn(BaseModel):
     op_id: str
     resource_id: str
-    start: datetime
+    start: datetime = Field(description="Requested setup start (the left edge of the bar, changeover included), any time zone; snapped to the next working time")
     replan: str = Field(default="DOWNSTREAM", pattern="^(NO_REPLAN|THIS_ORDER|DOWNSTREAM|RESOURCE|AREA|SCENARIO)$")
     allow_frozen: bool = False
     reason: str | None = Field(default=None, max_length=1000)

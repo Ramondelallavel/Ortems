@@ -30,6 +30,7 @@ serious production risk · **P2** maintainability, performance, relevant UX · *
 | P1-6 | Auto-reschedule on event | `events_in._maybe_auto_reschedule` | Exceptions swallowed without a savepoint: a failed reschedule could leave half-written rows committed with the event. | Partial plan versions. | Savepoint around the reschedule; failure rolled back and recorded. | `test_security_scope.py` (event path) | Fixed |
 | P1-7 | Material quantities | `monxuplan_engine/materials.py`, `validator.py` | Ledger levels summed in floats compared with an absolute `EPS = 1e-9` (5 copies). At large magnitudes accumulated error exceeds EPS. | False shortages / false availability. | Ledger in exact integer micro-units (`quantities.py`, one policy); no EPS in material feasibility. | `test_quantities.py`, property tests | Fixed |
 | P1-8 | Locks lost on replan | `repair._baseline_overrides` | Locked operations placed as `KEPT` (override wins over the lock). | Locks silently dropped by any move/repair. | Fixed operations placed by their own fixing. | `test_plan_store.py::test_move_session_matches_a_fresh_load` | Fixed (previous commit) |
+| P1-11 | Validator independence (materials) | `validator._validate_materials` | Re-used the builder's ledger class (a ledger bug would be invisible). | Own exact balance and FIFO coverage. | `test_properties.py`, `test_industrial_cases.py` | Fixed |
 | P1-9 | Feasibility semantics | `monxuplan_engine/feasibility.py` | Returned `YES` for "no lower bound violated". | Read as "the detailed schedule is feasible". | Explicit `check: LOWER_BOUND`, `detailed_schedule_feasible: null`, status `NO_BOUND_VIOLATED` instead of `YES`. | `test_optimization.py` | Fixed (breaking) |
 | P1-10 | Readiness leak | `api/app.readiness` | Database exception text returned to anonymous callers. | Host / user names disclosed. | Generic body; detail logged. | `test_api.py` | Fixed |
 
@@ -43,6 +44,35 @@ serious production risk · **P2** maintainability, performance, relevant UX · *
 | P2-4 | Metrics | `/metrics` | Public. Labels are route templates (no tenant data). | Optional bearer token `MONXU_METRICS_TOKEN`. | Fixed |
 | P2-5 | CP-SAT `OPTIMAL` | `providers/cpsat.py` | `OPTIMAL` requires model optimality, exact decode and exact overtime — sound. Coefficients are rounded (×100 000): optimality is with respect to that model. | Documented. | Doc |
 
-## Remaining risks
+## Found during the fix phases
 
-See the end of this file after the fix phases (kept current).
+| # | Sev. | Location | Problem · root cause | Fix | Test | Status |
+|---|---|---|---|---|---|---|
+| F-1 | P1 | `frontend/components/gantt/Gantt.tsx` (drop) | A drag sent *operation start* (left edge + setup) while the API reads the *setup start*: every move landed one setup duration later than dropped. | Send the bar's left edge; API field documented. | manual + preview shows "earliest valid position" only when snapped | Fixed |
+| F-2 | P1 | `frontend/app/(app)/planning/page.tsx` (publish) | The UI set `force: true` automatically whenever there were violations or unscheduled operations: overriding was the normal path. | Publish without force; on `PUBLISH_BLOCKED` show the server's blockers and ask for an explicit override with reason. | typecheck; gate tests server-side | Fixed |
+| F-3 | P1 | `routers/planning.get_run/list_runs`, `planning.cancel_run` | No plant check: runs of another plant could be read or cancelled by id. | `get_scenario` (plant + private scenario) on each. | `test_security_scope.py::test_runs_of_another_plant_are_not_visible` | Fixed |
+| F-4 | P1 | `frontend/components/planning/MovePreview.tsx` | Older preview responses could overwrite newer ones (no abort). | AbortController per request. | typecheck | Fixed |
+| F-5 | P2 | webhooks | All threads of a process shared one lease identity. | One identity per delivery round. | `test_webhooks.py` | Fixed |
+| F-6 | P2 | `mrp.py`, `providers/mip.py` | Bucketed plans not labelled as such. | `planning_level`, `capacity_model`, note. | — | Fixed |
+| F-7 | P1 | `builder._commit` | The cost/overtime of a placement was not recomputed when a later insertion changed its setup (previous commit). | `_set_cost`. | `test_plan_store.py::test_incremental_storage_matches_a_full_write` | Fixed |
+
+## Remaining risks (not fixed in this pass, stated plainly)
+
+* **Manual moves on very large plans** take tens of seconds (OPTIMIZATION.md): the whole version is
+  re-validated and stored. Incremental validation and versions stored as differences are not implemented.
+* **Input revision counts ORM writes.** Bulk Core writes to input tables (today only the scale seeder)
+  do not bump it; any future bulk import path must call `models.revision.bump`.
+* **Connector SQL guard is lexical** (defence in depth on top of read-only transactions where the
+  database supports them — PostgreSQL, MySQL, Oracle). SQL Server has no read-only transaction here:
+  connectors must use a read-only database account (documented).
+* **DNS pinning for connectors** replaces the host by the checked address except for PostgreSQL
+  (`hostaddr`); drivers verifying TLS certificates by host name against an IP may need an allow-listed
+  host name.
+* **Validator independence** is at the placement level: builder and validator share the compiled
+  problem (calendars, modes). The property-test oracle covers the output level, not compilation.
+* **CP-SAT `OPTIMAL`** is optimality of the model with objective coefficients rounded to 10⁻⁵ of the
+  normalised weights, exactly re-timed; it is not a proof for the unrounded weighted objective.
+* **Accessibility** of the new override dialog follows the existing dialog component; no screen-reader
+  audit was run in this pass.
+* **Frontend e2e** (`tests/e2e/ui_walkthrough.py`) was not re-run in this pass (needs the full stack and a
+  browser session).

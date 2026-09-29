@@ -154,11 +154,18 @@ def deliver(delivery_id: uuid.UUID, worker: str = WORKER_ID) -> str:
     return status
 
 
+def auto_delivery_enabled() -> bool:
+    """Background delivery (API thread, worker loop); ``MONXU_WEBHOOK_DELIVERY=0`` turns it off."""
+    return os.environ.get("MONXU_WEBHOOK_DELIVERY", "1") != "0"
+
+
 def deliver_pending(limit: int = 20) -> int:
-    """Claim and send due deliveries (worker loop / API thread). Returns the number delivered."""
+    """Claim and send due deliveries (worker loop / API thread). Returns the number delivered.
+    Each round has its own lease identity, so two threads of one process never share a lease."""
     sent = 0
-    for did in claim(limit):
-        if deliver(did) == "DELIVERED":
+    me = f"{WORKER_ID}:{uuid.uuid4().hex[:12]}"
+    for did in claim(limit, worker=me):
+        if deliver(did, worker=me) == "DELIVERED":
             sent += 1
     return sent
 
@@ -175,7 +182,8 @@ def start_delivery_thread(interval_s: float = 10.0) -> None:
     def loop() -> None:  # pragma: no cover - background thread
         while True:
             try:
-                deliver_pending()
+                if auto_delivery_enabled():
+                    deliver_pending()
             except Exception:  # noqa: BLE001
                 log.exception("webhook delivery loop error")
             threading.Event().wait(interval_s)

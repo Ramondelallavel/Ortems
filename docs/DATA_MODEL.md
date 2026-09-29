@@ -93,9 +93,10 @@ Tenant ─┬─ Company ─┬─ Site ── Plant ─┬─ PlanningArea ─�
 | `transfer_lane` | from plant/location, to plant/location, lead time |
 | `scenario` | plant, name, parent, is_live, status, owner, config (horizon, frozen, objectives, strategies), head plan, baseline plan, lock |
 | `scenario_change` | scenario, seq, type (ADD_RESOURCE, DOWNTIME, ADD_SHIFT, RUSH_ORDER, MATERIAL_DELAY, …), payload |
-| `planning_run` | scenario, status, mode, params, progress steps, solver, status, objective, bound, gap, input hash, duration, error, log |
-| `plan` | scenario, run, number (`PLAN-YYYY-MM-DD-Vnnn`), version, parent, kind, status DRAFT/VALIDATED/PUBLISHED/SUPERSEDED, KPIs, problem snapshot (gzip) + hash, solver metadata, published by/at; `analysis` (bottlenecks, data issues, change log, counts) and `kpi_details` are loaded only when read |
+| `planning_run` | scenario, status (QUEUED/RUNNING/SUCCEEDED/FAILED/CANCELLED/STALE), mode, params, progress steps, solver, status, objective, bound, gap, input hash, input revision, baseline plan, duration, error, log. At most one QUEUED/RUNNING per scenario (partial unique index) |
+| `plan` | scenario, run, number (`PLAN-YYYY-MM-DD-Vnnn`), version, parent, kind, status DRAFT/VALIDATED/PUBLISHED/SUPERSEDED, KPIs, problem snapshot (gzip) + hash, solver metadata, published by/at, publish reason and overrides; status also `STALE` (result of a run whose inputs changed); `analysis` (bottlenecks, data issues, change log, counts) and `kpi_details` are loaded only when read |
 | `scheduled_operation` | plan, order, order operation, op key, resource, secondary allocations, setup start, start, end, setup/run minutes, qty, flags (frozen, locked, late), binding constraint. Order, operation and resource ids are plain references (a version is an immutable snapshot: no foreign keys to check on 200 000-row inserts or to cascade) |
+| `data_revision` | tenant, revision: incremented with every change to planning inputs (stale-result detection) |
 | `plan_order` | plan, order key + id, result status, planned start/end, due, lateness, weight, earliest possible end, limiting constraint, material status, rules applied, first cause of lateness |
 | `plan_peg` | plan, material, supply (id, kind, reference, supplying order, time), consuming operation and order, need time, quantity |
 | `plan_unscheduled` | plan, operation, order, reason, message, details |
@@ -106,7 +107,7 @@ Tenant ─┬─ Company ─┬─ Site ── Plant ─┬─ PlanningArea ─�
 | `event` | type, payload, occurred at, source, correlation id, processed |
 | `alert` | type, severity, title, message, context refs, plan, status, acknowledged by |
 | `integration` / `import_job` / `export_job` | connector config (secrets encrypted) / file, mapping, status, stats, errors |
-| `webhook_subscription` / `webhook_delivery` | url, events, encrypted secret / attempts, status |
+| `webhook_subscription` / `webhook_delivery` | url, events, encrypted secret / outbox row: status, attempts, next attempt, lease (`locked_until`, `locked_by`), response |
 | `api_key` | name, prefix, hash, role, last used |
 | `audit_log` | who, when, entity, action, before, after, reason, request id, IP |
 | `saved_view` | user, page, name, filters, columns, shared flag |

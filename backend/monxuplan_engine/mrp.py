@@ -281,6 +281,10 @@ def run_mrp(pb: MrpProblem) -> dict[str, Any]:
             "planned_releases": porl,
         }
     return {
+        # a material plan in time buckets at infinite capacity, not a finite-capacity schedule
+        "planning_level": "MRP_BUCKETED",
+        "capacity_model": "INFINITE",
+        "note": f"Time-phased material plan in {pb.bucket_days}-day buckets with lead-time offsets and lot sizing, at infinite capacity. Planned orders become schedulable only when firmed; the detailed schedule (finite capacity) is produced by a planning run.",
         "periods": [s.isoformat() for s in starts],
         "bucket_days": pb.bucket_days,
         "items": list(rows.values()),

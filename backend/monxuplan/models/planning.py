@@ -135,7 +135,7 @@ class Plan(IdMixin, TenantMixin, TimestampMixin, VersionMixin, Base):
     published_by: Mapped[str | None] = mapped_column(String(120))
     publish_reason: Mapped[str | None] = mapped_column(Text)
     # publication checks overridden with ``force`` (code, message), empty for a clean publication
-    publish_overrides: Mapped[list[Any]] = mapped_column(JSONType, default=list)
+    publish_overrides: Mapped[list[Any] | None] = mapped_column(JSONType, default=list)
 
 
 class ScheduledOperation(IdMixin, PlanRowTenantMixin, Base):

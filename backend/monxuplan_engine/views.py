@@ -95,8 +95,9 @@ def material_projection(result: BuildResult, mi: int) -> dict[str, Any]:
             }
         )
     alerts = []
-    min_level, t = acc.min_level()
-    if min_level < -1e-9:
+    min_units, t = acc.min_level_units()
+    min_level = min_units / 1_000_000
+    if min_units < 0:
         alerts.append({"type": "STOCKOUT", "at": cp.dt(t).isoformat() if t is not None else None, "level": min_level})
     elif m.safety_stock and min_level < m.safety_stock:
         alerts.append({"type": "SAFETY_STOCK_BREACH", "at": cp.dt(t).isoformat() if t is not None else None, "level": min_level, "safety_stock": m.safety_stock})

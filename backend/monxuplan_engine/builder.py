@@ -896,13 +896,18 @@ class ScheduleBuilder:
                 if ns != nb.setup and not nb.fixed:
                     old_ss = nb.setup_start
                     new_ss = nb.start if ns == 0 else (nb.cal.sub_work(nb.start, ns) or nb.start)
-                    if new_ss < old_ss and npl is not None:
-                        # longer changeover pulled into idle time: hold labour/tools and material earlier
+                    if new_ss != old_ss and npl is not None:
                         nop = cp.ops[nb.op]
                         nm = nop.modes[npl.mode]
                         for r_i, units in nm.sec:
-                            for a, b in nm.cal.pieces(new_ss, old_ss):
-                                self.cumulative[r_i].reserve(a, b, units)
+                            if new_ss < old_ss:
+                                # longer changeover pulled into idle time: hold labour/tools earlier
+                                for a, b in nm.cal.pieces(new_ss, old_ss):
+                                    self.cumulative[r_i].reserve(a, b, units)
+                            else:
+                                # shorter changeover: the labour/tools of the removed setup time are free
+                                for a, b in nm.cal.pieces(old_ss, new_ss):
+                                    self.cumulative[r_i].release(a, b, units)
                     nb.setup = ns
                     nb.setup_start = new_ss
                     tl.starts[k + 1] = nb.setup_start

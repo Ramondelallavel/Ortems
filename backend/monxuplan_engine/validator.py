@@ -9,14 +9,15 @@ imported plans. The frontend never decides feasibility — this module does.
 
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from typing import Any
 
 from .compile import CompiledProblem, Issue
-from .materials import EPS, MaterialLedger
 from .setups import matches
 from .timelines import CumulativeTimeline
+
+EPS = 1e-9  # lot-size checks on order quantities (floats from the input); material balances are exact
 
 HARD = "HARD"
 SOFT = "SOFT"
@@ -332,47 +333,64 @@ def _sk(op):
 
 
 def _validate_materials(cp: CompiledProblem, placements) -> list[V]:
-    vs: list[V] = []
-    ledger = MaterialLedger(len(cp.materials))
+    """Material balance of a schedule, computed here independently of the builder's ledger: every
+    supply (stock, receipts, production of the placed operations) and every consumption as an exact
+    integer movement (micro-units, ``quantities.py``), sorted by time with supplies first at equal
+    time. A negative running level is a shortage; the consumptions that cannot be served from the
+    supplies available at their own time (FIFO) are the operations reported."""
+    from .quantities import from_units, to_units
+
+    moves: dict[int, list[tuple[int, int, int, str]]] = defaultdict(list)  # material -> (time, 0 supply | 1 consumption, units, ref)
     for m in cp.materials:
         for t, q, sid, *_ in m.supplies:
-            ledger.supply(m.idx, t, q, sid)
+            moves[m.idx].append((t, 0, to_units(q), sid))
     touched: set[int] = set()
     for p in placements:
         if p is None:
             continue
         op = cp.ops[p.op]
         for mi, q in op.materials:
-            ledger.consume(mi, p.start, q, op.id)
+            moves[mi].append((p.start, 1, -to_units(q), op.id))
             touched.add(mi)
         if op.produces is not None:
             mat, qty = op.produces
-            ledger.supply(mat, p.end + op.move + op.wait, qty, f"PROD:{cp.orders[op.order].id}")
+            moves[mat].append((p.end + op.move + op.wait, 0, to_units(qty), f"PROD:{cp.orders[op.order].id}"))
+    vs: list[V] = []
     for mi in sorted(touched):
-        acc = ledger.accounts[mi]
-        lvl, t = acc.min_level()
-        if lvl < -EPS:
-            mat = cp.materials[mi]
-            # operations whose consumption is not covered FIFO
-            from .materials import fifo_pegging
-
-            covered: dict[str, float] = defaultdict(float)
-            for s, c, q in fifo_pegging(acc):
-                if s.time <= c.time:
-                    covered[c.ref] += q
-            short_ops = []
-            for e in acc.events:
-                if e.delta < 0 and covered.get(e.ref, 0.0) + EPS < -e.delta:
-                    short_ops.append(e.ref)
-            vs.append(
-                V(
-                    "CRITICAL",
-                    HARD,
-                    "MATERIAL_SHORTAGE",
-                    f"{mat.code}: projected stock goes negative ({lvl:g} {mat.uom}); {len(short_ops)} operation(s) not covered",
-                    mat=mi,
-                    start=t,
-                    details={"shortfall": -lvl, "uom": mat.uom, "operations": short_ops[:50]},
-                )
+        evs = sorted(moves[mi], key=lambda e: (e[0], e[1]))
+        level, low, low_t = 0, 0, None
+        for t, _k, u, _ref in evs:
+            level += u
+            if level < low:
+                low, low_t = level, t
+        if low >= 0:
+            continue
+        pool: deque[list[int]] = deque()  # FIFO of [units left] of supplies already available
+        short_ops = []
+        for _t, kind, u, ref in evs:
+            if kind == 0:
+                pool.append([u])
+                continue
+            need = -u
+            while need > 0 and pool:
+                take = min(pool[0][0], need)
+                need -= take
+                pool[0][0] -= take
+                if pool[0][0] == 0:
+                    pool.popleft()
+            if need > 0:
+                short_ops.append(ref)
+        mat = cp.materials[mi]
+        shortfall = from_units(-low)
+        vs.append(
+            V(
+                "CRITICAL",
+                HARD,
+                "MATERIAL_SHORTAGE",
+                f"{mat.code}: projected stock goes negative ({-shortfall:g} {mat.uom}); {len(short_ops)} operation(s) not covered",
+                mat=mi,
+                start=low_t,
+                details={"shortfall": shortfall, "uom": mat.uom, "operations": short_ops[:50]},
             )
+        )
     return vs

@@ -114,7 +114,15 @@ class MipProvider(OptimizationProvider):
         status = solver.Solve()
         names = {pywraplp.Solver.OPTIMAL: "OPTIMAL", pywraplp.Solver.FEASIBLE: "FEASIBLE", pywraplp.Solver.INFEASIBLE: "INFEASIBLE"}
         st = names.get(status, "NO_SOLUTION")
-        out: dict[str, Any] = {"status": st, "objective": None, "families": [], "groups": [], "periods": pb.periods}
+        out: dict[str, Any] = {
+            "status": st,
+            "planning_level": "AGGREGATE_BUCKETED",  # family × period volumes, not a detailed schedule
+            "capacity_model": "AGGREGATE_HOURS",
+            "objective": None,
+            "families": [],
+            "groups": [],
+            "periods": pb.periods,
+        }
         if st not in ("OPTIMAL", "FEASIBLE"):
             return out
         out["objective"] = round(obj.Value(), 4)

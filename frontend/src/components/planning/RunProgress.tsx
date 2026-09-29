@@ -4,6 +4,10 @@ import { Badge, Button, Icon, ProgressBar, statusTone } from "@/components/ui";
 import { api } from "@/lib/api";
 import { useEvents } from "@/lib/hooks";
 
+/** Terminal run states. STALE: computed, but the data or the current plan changed meanwhile — the
+ * result is kept as a separate version and was not applied. */
+export const FINAL = ["SUCCEEDED", "FAILED", "CANCELLED", "STALE"];
+
 /** Live progress of a planning run: the 17 pipeline steps with their real status and details. */
 export function RunProgress({ runId, onDone, onClose }: { runId: string; onDone: (run: any) => void; onClose: () => void }) {
   const [run, setRun] = useState<any>(null);
@@ -16,7 +20,7 @@ export function RunProgress({ runId, onDone, onClose }: { runId: string; onDone:
         const r = await api(`/planning/runs/${runId}`);
         if (stop) return;
         setRun(r);
-        if (["SUCCEEDED", "FAILED", "CANCELLED"].includes(r.status)) {
+        if (FINAL.includes(r.status)) {
           onDone(r);
           return;
         }
@@ -39,7 +43,7 @@ export function RunProgress({ runId, onDone, onClose }: { runId: string; onDone:
   });
   const steps: any[] = run?.progress || [];
   const done = steps.filter((s) => s.status === "DONE").length;
-  const finished = run && ["SUCCEEDED", "FAILED", "CANCELLED"].includes(run.status);
+  const finished = run && FINAL.includes(run.status);
   return (
     <div className="absolute right-3 top-3 z-30 w-[380px] mx-panel shadow-xl" role="status" aria-live="polite">
       <div className="mx-panel-head">
@@ -70,6 +74,11 @@ export function RunProgress({ runId, onDone, onClose }: { runId: string; onDone:
           ))}
         </ol>
         {run?.error_message && <div className="text-red-600 text-[12px]">▲ {run.error_message}</div>}
+        {run?.status === "STALE" && run.result && (
+          <div className="text-amber-600 text-[12px]" role="alert">
+            ▲ {run.result.stale} ({run.result.plan_number})
+          </div>
+        )}
         {run?.status === "SUCCEEDED" && run.result && (
           <div className="text-[12px]">
             ✓ {run.result.plan_number} · solver {run.solver_status}

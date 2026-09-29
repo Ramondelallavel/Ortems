@@ -4,6 +4,8 @@ on:
   push:
     branches: ["**"]
   pull_request:
+  schedule:
+    - cron: "17 3 * * *"  # nightly: long fuzzing and dependency audit against new advisories
 
 jobs:
   backend:
@@ -26,10 +28,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install -e ".[dev,postgres]"
+      # the versions the code was tested with (constraints.txt); ranges in pyproject stay open for library use
+      - run: pip install -c constraints.txt -e ".[dev,postgres]"
       - run: ruff check .
-      - name: Engine + platform tests (SQLite)
-        run: pytest -q
+      - name: Engine + platform tests (SQLite), with coverage
+        env:
+          MONXU_FUZZ_SEEDS: ${{ github.event_name == 'schedule' && '3000' || '150' }}
+        run: pytest -q --cov=monxuplan --cov=monxuplan_engine --cov-report=term-missing:skip-covered --cov-report=xml
       - name: Migrations and platform tests (PostgreSQL)
         env:
           MONXU_DATABASE_URL: postgresql+psycopg://monxu:monxu@localhost:5432/monxu_test
@@ -38,6 +43,23 @@ jobs:
           alembic -c monxuplan/alembic.ini upgrade head
           alembic -c monxuplan/alembic.ini check
           pytest -q tests/platform
+      - name: Migration downgrade / upgrade round trip (PostgreSQL)
+        env:
+          MONXU_DATABASE_URL: postgresql+psycopg://monxu:monxu@localhost:5432/monxu_test
+        run: |
+          alembic -c monxuplan/alembic.ini downgrade 0003
+          alembic -c monxuplan/alembic.ini upgrade head
+      - name: Dependency audit (known vulnerabilities) and SBOM
+        run: |
+          pip install pip-audit
+          pip-audit -r <(grep -v '^#' constraints.txt) --strict
+          pip-audit -r <(grep -v '^#' constraints.txt) --format cyclonedx-json --output sbom-backend.json || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: backend-reports
+          path: |
+            backend/coverage.xml
+            backend/sbom-backend.json
 
   frontend:
     runs-on: ubuntu-latest
@@ -54,3 +76,11 @@ jobs:
       - run: npm ci --no-audit --no-fund
       - run: npm run typecheck
       - run: npm run build
+      - name: Dependency audit (production dependencies) and SBOM
+        run: |
+          npm audit --omit=dev --audit-level=high
+          npm sbom --sbom-format cyclonedx --omit dev > sbom-frontend.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: frontend-sbom
+          path: frontend/sbom-frontend.json

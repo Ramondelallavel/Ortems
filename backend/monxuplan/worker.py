@@ -68,9 +68,10 @@ def loop(poll_s: float = 1.0) -> None:
             if time.monotonic() - last_hooks > 10:
                 last_hooks = time.monotonic()
                 try:
-                    from .services.webhooks import deliver_pending
+                    from .services.webhooks import auto_delivery_enabled, deliver_pending
 
-                    deliver_pending()  # claimed with a lease: safe with any number of workers and API replicas
+                    if auto_delivery_enabled():
+                        deliver_pending()  # claimed with a lease: safe with any number of workers and API replicas
                 except Exception:  # noqa: BLE001 - deliveries never stop planning
                     log.exception("webhook delivery failed")
             if time.monotonic() - last_stale > 60:

@@ -8,7 +8,7 @@ import { OperationPanel } from "@/components/planning/OperationPanel";
 import { RunDialog } from "@/components/planning/RunDialog";
 import { RunProgress } from "@/components/planning/RunProgress";
 import { Badge, Button, Empty, ErrorState, Icon, Loading, Select, StatusPill, statusTone, useConfirm, useToast } from "@/components/ui";
-import { api, download } from "@/lib/api";
+import { api, ApiError, download } from "@/lib/api";
 import { dt, num, pct } from "@/lib/format";
 import { useApi, useEvents, useHotkeys, useLocalState } from "@/lib/hooks";
 import { useScenarioSelection } from "@/lib/plan";
@@ -113,13 +113,46 @@ export default function PlanningBoard() {
         <div className="space-y-1 text-[12.5px]">
           <p>The shop floor (dispatch lists, operator screens) and subscribed systems will receive this plan.</p>
           {header.data.unscheduled_count > 0 && <p className="text-amber-600">◆ {header.data.unscheduled_count} operations are not scheduled.</p>}
-          {hard > 0 && <p className="text-red-600">▲ {hard} hard violations — publishing requires a reason.</p>}
+          {hard > 0 && <p className="text-red-600">▲ {hard} hard violations recorded with the plan.</p>}
+          <p className="text-slate-600">The schedule is validated again before publication.</p>
         </div>
       ),
-      reason: hard > 0 || header.data.unscheduled_count > 0,
     });
     if (!r.ok) return;
-    act("publish", () => api(`/plans/${planId}/publish`, { body: { reason: r.reason, force: hard > 0 || header.data.unscheduled_count > 0 } }), (p) => `${p.number} published`);
+    // publish normally: the server's publication gate decides. Overriding is a separate, explicit
+    // decision taken on the server's own list of blockers, with a reason (recorded and audited).
+    setBusy("publish");
+    try {
+      const p = await api(`/plans/${planId}/publish`, { body: { reason: r.reason } });
+      toast.ok(`${p.number} published`);
+      refreshAll();
+      return;
+    } catch (e) {
+      if (!(e instanceof ApiError) || e.code !== "PUBLISH_BLOCKED" || !can("plan:publish")) {
+        toast.error(e);
+        return;
+      }
+      const blockers = ((e.context as any)?.blockers || []) as { code: string; message: string }[];
+      const o = await confirm(`Override the publication checks for ${header.data.number}?`, {
+        danger: true,
+        reason: true,
+        body: (
+          <div className="space-y-1 text-[12.5px]">
+            <p>The publication gate refused this plan:</p>
+            {blockers.map((b) => (
+              <p key={b.code} className="text-red-600">
+                ▲ {b.message}
+              </p>
+            ))}
+            <p>Publishing anyway records every override and your reason on the plan and in the audit log.</p>
+          </div>
+        ),
+      });
+      if (!o.ok) return;
+      await act("publish", () => api(`/plans/${planId}/publish`, { body: { reason: o.reason, force: true } }), (p) => `${p.number} published with ${blockers.length} override(s)`);
+    } finally {
+      setBusy(null);
+    }
   };
   const reschedule = () => selected && act("reschedule", () => api(`/scenarios/${selected.id}/reschedule`, { body: { scope: "LOCAL" } }), (r) => `${r.plan_number}: ${r.affected_operations?.length ?? 0} operations affected, ${r.comparison?.operations_moved ?? 0} moved`);
   const validate = () =>
@@ -272,6 +305,7 @@ export default function PlanningBoard() {
                   if (r.status === "SUCCEEDED") setTimeout(() => setRunId(null), 5000);
                   if (r.status === "SUCCEEDED") toast.ok(`Plan ${r.result?.plan_number} ready`);
                   else if (r.status === "FAILED") toast.error(new Error(r.error_message || "Planning failed"));
+                  else if (r.status === "STALE") toast.error(new Error(r.result?.stale || "The data changed while planning: the result was not applied."));
                 }}
               />
             )}

@@ -131,8 +131,11 @@ MES/ERP/UI event (MachineDown CNC-03 8h) → event store → scenario change (do
 * Every planning run produces an immutable **plan version** (`PLAN-2026-09-28-V003`) storing the
   parameters, solver, status, KPIs, violations, the exact problem snapshot (gzip JSON, hash) and the
   schedule rows. Plans are never overwritten.
-* Lifecycle: `DRAFT → VALIDATED → PUBLISHED`; publishing supersedes the previous published plan of the
-  plant (kept for history) and feeds dispatch lists and exports to ERP/MES.
+* Lifecycle: `DRAFT → VALIDATED → PUBLISHED → SUPERSEDED`; publishing supersedes the previous published
+  plan of the plant (kept for history) and feeds dispatch lists and exports to ERP/MES. A run whose
+  inputs changed while it computed leaves a `STALE` version. Publication goes through the gate described
+  in PLANNING_ENGINE.md §10. Undo/redo/restore move the scenario's head pointer; version contents are
+  never modified (the only in-place change is the lock flag of operations, which invalidates caches).
 
 ## 5. Concurrency
 
@@ -140,13 +143,33 @@ MES/ERP/UI event (MachineDown CNC-03 8h) → event store → scenario change (do
 * Plan edits reference the plan version they were computed on; editing a non-head version returns 409
   (`PLAN_VERSION_CONFLICT`) — nothing is ever silently overwritten.
 * Scenario edit lease (`locked_by`, `lock_expires_at`) for collaborative work; viewers are unaffected.
+* **Planning runs**: at most one QUEUED/RUNNING run per scenario, enforced by a partial unique index
+  (no count-then-insert race); workers claim with `FOR UPDATE SKIP LOCKED`; a run re-queued after a
+  missed heartbeat is only promoted by the worker that owns it now.
+* **Stale results**: `data_revision` (per tenant) is incremented in the transaction of every ORM change
+  to a planning input; runs compare it (and the scenario head) under a row lock before promotion.
+* **Publication**: the plant row is locked (`SELECT … FOR UPDATE`) and plant/plan/scenario rows carry
+  optimistic versions.
+* **Webhooks**: transactional outbox; deliveries are claimed with a lease (`locked_until`, `locked_by`)
+  by any API replica or worker, sent outside transactions, and only the lease holder records the result
+  (at-least-once; receivers deduplicate on `X-Monxu-Delivery`).
 
 ## 6. Security
 
 * Local users (scrypt password hashes) and OIDC bearer tokens (JWKS validation) — `AuthProvider`
   abstraction. Browser sessions use an httpOnly `SameSite=Lax` cookie plus double-submit CSRF token;
   integrations use API keys (hashed at rest) or bearer tokens.
-* RBAC: roles → permissions (`plan:run`, `plan:publish`, `masterdata:write`, …), scoped per tenant.
+* RBAC: roles → permissions (`plan:run`, `plan:publish`, `masterdata:write`, …), scoped per tenant and
+  optionally per plant. Delegation rule: a grant (roles, plants) must be within the grantor's rights; users
+  with more rights cannot be modified; API keys (tenant-wide) only by unscoped administrators.
+* Plant isolation: every service resolving a plan, scenario, run, resource, order, purchase order or
+  plant checks it against the caller's plants (`ctx.require_plant`), inbound events included; lookups by
+  business code are limited to the caller's plants.
+* OIDC: issuer and audience verified; accounts matched by subject; e-mail linking only when verified and
+  enabled.
+* Outbound network policy (`core/netpolicy.py`): webhook and connector destinations are resolved and
+  every address checked (loopback, link-local, metadata always refused; private networks by setting);
+  the connection is pinned to the checked address.
 * Tenant isolation enforced in the repository layer (every query filtered by `tenant_id`).
 * Secrets for connectors/webhooks encrypted at rest (Fernet-compatible AES via `MONXU_SECRET_KEY`).
 * Security headers, rate limiting, input validation (Pydantic), SQLAlchemy parameter binding only.
@@ -154,8 +177,8 @@ MES/ERP/UI event (MachineDown CNC-03 8h) → event store → scenario change (do
 ## 7. Observability
 
 Structured JSON logs with request id and tenant; Prometheus metrics at `/metrics`
-(HTTP latency, planning runs, solver duration, queue depth); `/health` (liveness), `/readiness`
-(DB + migrations); every planning run logs planning id, scenario, input hash, algorithm, parameters,
+(HTTP latency, planning runs, solver duration, queue depth; optional bearer token); `/health`
+(liveness), `/readiness` (database; failure details go to the log, not to the anonymous caller); every planning run logs planning id, scenario, input hash, algorithm, parameters,
 solver status, duration, objective, gap, violations and KPIs.
 
 ## 8. Scaling path

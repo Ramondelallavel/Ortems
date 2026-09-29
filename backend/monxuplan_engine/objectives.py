@@ -10,6 +10,22 @@ from collections.abc import Sequence
 
 from .contract import ObjectiveSpec
 
+# What each component measures exactly (minutes are real elapsed minutes unless stated):
+#   unscheduled         number of operations not placed
+#   late_orders         Σ weight of orders finishing after (due − safety time)
+#   tardiness           Σ weight × minutes late (vs due − safety time)
+#   critical_tardiness  same, critical orders only
+#   setup               Σ setup minutes (working time)
+#   wip                 Σ order flow time, minutes from the first operation's setup start to the order's
+#                       completion — a proxy of work in process (time-weighted, not a count of units)
+#   inventory           Σ quantity × hours the order is finished before (due − safety time): finished-goods
+#                       holding caused by early completion (unit-hours). Raw-material and in-process stock
+#                       are not included; the name is kept for compatibility
+#   makespan            minutes from as-of to the last completion
+#   overtime            Σ overtime minutes used
+#   stability           Σ |start shift| vs the baseline plan + a penalty per resource change
+#   preference          Σ minutes on less-preferred alternative resources × preference rank
+#   cost                Σ resource, overtime, setup and subcontracting cost of the placements
 COMPONENTS = (
     "unscheduled",
     "late_orders",

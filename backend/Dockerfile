@@ -6,12 +6,13 @@ FROM python:3.12-slim AS base
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1
 WORKDIR /app
 RUN useradd --create-home --uid 10001 monxu
-COPY pyproject.toml ./
+COPY pyproject.toml constraints.txt ./
 COPY monxuplan ./monxuplan
 COPY monxuplan_engine ./monxuplan_engine
+# tested versions from constraints.txt; packages not listed there (optional drivers) stay within pyproject ranges
 RUN --mount=type=secret,id=ca_bundle,required=false \
     if [ -f /run/secrets/ca_bundle ]; then export PIP_CERT=/run/secrets/ca_bundle; fi; \
-    pip install ".[postgres,redis,connectors]" && pip install anthropic
+    pip install -c constraints.txt ".[postgres,redis,connectors]" && pip install -c constraints.txt anthropic
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh && mkdir -p /app/data && chown -R monxu /app
 USER monxu

@@ -39,7 +39,11 @@ The API container applies migrations on start (`MONXU_MIGRATE=1`), then loads th
 | `MONXU_SESSION_HOURS` | `12` | Session lifetime |
 | `MONXU_RATE_LIMIT_PER_MINUTE` / `MONXU_LOGIN_RATE_LIMIT_PER_MINUTE` | `600` / `20` | Per client IP |
 | `MONXU_MAX_UPLOAD_MB` | `25` | Import file size limit |
-| `MONXU_OIDC_ISSUER`, `MONXU_OIDC_AUDIENCE`, `MONXU_OIDC_JWKS_URL` | — | Single sign-on (OAuth2/OIDC bearer tokens) |
+| `MONXU_OIDC_ISSUER`, `MONXU_OIDC_AUDIENCE`, `MONXU_OIDC_JWKS_URL` | — | Single sign-on (OAuth2/OIDC bearer tokens). The audience is required: without it OIDC tokens are refused. Users are matched by token subject only |
+| `MONXU_OIDC_LINK_BY_EMAIL` | `0` | `1`: on first sign-in, a provisioned account without a subject is bound to the token when the IdP marks the e-mail as verified and exactly one account has it |
+| `MONXU_EGRESS_PRIVATE` | `deny` in production, `allow` otherwise | Whether webhooks and database connectors may reach private networks (10/8, 172.16/12, 192.168/16, fc00::/7, 100.64/10). Loopback, link-local and cloud metadata are always refused |
+| `MONXU_EGRESS_ALLOW` | — | Comma-separated host names, addresses or CIDR ranges always allowed as outbound destinations (e.g. `erp.internal,10.20.0.0/16`) |
+| `MONXU_METRICS_TOKEN` | — | Bearer token required by `/metrics`; unset: metrics are public (labels are route templates, no tenant data) |
 | `MONXU_LOG_JSON`, `MONXU_LOG_LEVEL` | `1`, `INFO` | Structured logs |
 | `MONXU_WEBHOOK_TIMEOUT_S` | `5` | Outbound webhook timeout |
 | `MONXU_ASSISTANT_LLM`, `ANTHROPIC_API_KEY`, `MONXU_ASSISTANT_MODEL` | off | Optional language-model mode of the assistant (read-only tools over plan data) |
@@ -99,5 +103,20 @@ database (gzip, content-addressed), so any published plan can be reproduced from
 The API and worker images install the drivers for PostgreSQL, MySQL/MariaDB (PyMySQL), SQL Server
 (pymssql) and Oracle (python-oracledb, thin mode) via the `connectors` extra. For a manual install:
 `pip install ".[postgres,connectors]"`. The API/worker containers need network access to the source
-databases; give each connector a database user with read-only grants. Scheduled syncs run in the
+databases; give each connector a database user with read-only grants — this is the primary control.
+MonxuPlan adds defence in depth: only a single `SELECT`/`WITH` statement, no `INTO`, no file, sleep,
+network or shell functions, a read-only transaction on PostgreSQL/MySQL/Oracle (SQL Server has none: the
+read-only account is essential there), and the outbound network policy on the host. Scheduled syncs run in the
 worker loop (at most once per `sync_every_minutes` per connector, claimed atomically across workers).
+
+## Dependency policy
+
+* `backend/pyproject.toml` declares compatible ranges; `backend/constraints.txt` pins the exact versions
+  the code is tested with (CI and images install with `pip install -c constraints.txt …`). The file is
+  regenerated only together with a full green test run; it lists the tested transitive closure. The
+  optional connector drivers (PyMySQL, pymssql, oracledb), Redis and the assistant SDK are not in the
+  tested set and stay within their pyproject ranges.
+* The frontend is pinned by `frontend/package-lock.json` (`npm ci`).
+* CI audits both sides for known vulnerabilities on every push and nightly (`pip-audit --strict`,
+  `npm audit --omit=dev --audit-level=high`) and publishes CycloneDX SBOMs as build artefacts.
+* Upgrades: one dependency family per change, full suite (SQLite + PostgreSQL + fuzzing) before merging.

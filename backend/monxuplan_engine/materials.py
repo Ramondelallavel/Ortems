@@ -4,6 +4,9 @@ The ledger never creates stock. A consumption of ``q`` at ``t`` is accepted only
 level stays non-negative at every instant >= t, i.e. ``min_{t' >= t} level(t') >= q`` (earlier
 allocations at later instants are protected). The earliest material availability for a requirement
 is the smallest such ``t``.
+
+Quantities are kept in exact integer micro-units (``quantities.py``): every decision (available or
+not, shortage or not) is an integer comparison, never a floating-point one with a tolerance.
 """
 
 from __future__ import annotations
@@ -11,28 +14,34 @@ from __future__ import annotations
 from bisect import bisect_right, insort
 from dataclasses import dataclass, field
 
-EPS = 1e-9
+from .quantities import from_units, to_units
+
+EPS = 1e-9  # kept for callers that compare reported float quantities; the ledger itself is exact
 
 
 @dataclass(slots=True)
 class LedgerEvent:
     time: int
-    delta: float
+    units: int  # signed quantity in micro-units: > 0 supply, < 0 consumption
     kind: str  # SUPPLY | CONSUMPTION
     ref: str  # supply id or op id
     meta: dict = field(default_factory=dict)
 
+    @property
+    def delta(self) -> float:
+        return from_units(self.units)
+
     def __lt__(self, other: LedgerEvent) -> bool:  # supplies first at equal time
-        return (self.time, self.delta < 0) < (other.time, other.delta < 0)
+        return (self.time, self.units < 0) < (other.time, other.units < 0)
 
 
 class MaterialAccount:
     """Time-ordered events of one material, kept in chunks of ~``CHUNK`` events.
 
-    Each chunk stores its total delta and the minimum of its local running level, so the level at an
-    instant and the minimum level after it are answered in O(sqrt n) and an insertion costs
-    O(chunk size) — a material with 100 000 movements stays fast (a flat prefix array would be
-    recomputed on every allocation: quadratic)."""
+    Each chunk stores its total and the minimum of its local running level, so the level at an instant
+    and the minimum level after it are answered in O(sqrt n) and an insertion costs O(chunk size) — a
+    material with 100 000 movements stays fast (a flat prefix array would be recomputed on every
+    allocation: quadratic). All sums are integers (micro-units)."""
 
     __slots__ = ("material", "_chunks", "_keys", "_sum", "_min", "_flat")
 
@@ -42,24 +51,24 @@ class MaterialAccount:
         self.material = material
         self._chunks: list[list[LedgerEvent]] = []
         self._keys: list[tuple[int, bool]] = []  # first event key of each chunk
-        self._sum: list[float] = []
-        self._min: list[float] = []  # min running level inside the chunk, relative to its start
+        self._sum: list[int] = []
+        self._min: list[int] = []  # min running level inside the chunk, relative to its start
         self._flat: list[LedgerEvent] | None = []
 
     # ---------------------------------------------------------------- maintenance
     @staticmethod
     def _key(e: LedgerEvent) -> tuple[int, bool]:
-        return (e.time, e.delta < 0)
+        return (e.time, e.units < 0)
 
     def _stats(self, c: int) -> None:
-        lvl = 0.0
-        m = float("inf")
+        lvl = 0
+        m = None
         for e in self._chunks[c]:
-            lvl += e.delta
-            if lvl < m:
+            lvl += e.units
+            if m is None or lvl < m:
                 m = lvl
         self._sum[c] = lvl
-        self._min[c] = m
+        self._min[c] = 0 if m is None else m
         self._keys[c] = self._key(self._chunks[c][0])
 
     def add(self, ev: LedgerEvent) -> None:
@@ -67,8 +76,8 @@ class MaterialAccount:
         if not self._chunks:
             self._chunks.append([ev])
             self._keys.append(self._key(ev))
-            self._sum.append(0.0)
-            self._min.append(0.0)
+            self._sum.append(0)
+            self._min.append(0)
             self._stats(0)
             return
         c = max(bisect_right(self._keys, self._key(ev)) - 1, 0)
@@ -78,8 +87,8 @@ class MaterialAccount:
             half = len(ch) // 2
             self._chunks[c : c + 1] = [ch[:half], ch[half:]]
             self._keys[c : c + 1] = [(0, False), (0, False)]
-            self._sum[c : c + 1] = [0.0, 0.0]
-            self._min[c : c + 1] = [0.0, 0.0]
+            self._sum[c : c + 1] = [0, 0]
+            self._min[c : c + 1] = [0, 0]
             self._stats(c)
             self._stats(c + 1)
         else:
@@ -95,8 +104,8 @@ class MaterialAccount:
         for i in range(0, len(evs), self.CHUNK):
             self._chunks.append(evs[i : i + self.CHUNK])
             self._keys.append((0, False))
-            self._sum.append(0.0)
-            self._min.append(0.0)
+            self._sum.append(0)
+            self._min.append(0)
             self._stats(len(self._chunks) - 1)
         self._flat = list(evs)
 
@@ -110,42 +119,33 @@ class MaterialAccount:
     def events(self, evs: list[LedgerEvent]) -> None:
         self._rebuild(sorted(evs))
 
-    # ---------------------------------------------------------------- queries
-    def _position(self, t: int) -> tuple[int, int, float]:
+    # ---------------------------------------------------------------- queries (micro-units)
+    def _position(self, t: int) -> tuple[int, int, int]:
         """(chunk, index in chunk, level) of the last event at or before t; chunk -1 if none."""
-        keys = self._keys
-        c = bisect_right(keys, (t, True)) - 1
+        c = bisect_right(self._keys, (t, True)) - 1
         if c < 0:
-            return -1, -1, 0.0
-        base = 0.0
-        for k in range(c):
-            base += self._sum[k]
-        ch = self._chunks[c]
-        lvl = base
+            return -1, -1, 0
+        lvl = sum(self._sum[:c])
         idx = -1
-        for i, e in enumerate(ch):
+        for i, e in enumerate(self._chunks[c]):
             if e.time > t:
                 break
-            lvl += e.delta
+            lvl += e.units
             idx = i
         return c, idx, lvl
 
-    def level_at(self, t: int) -> float:
-        return self._position(t)[2]
-
-    def available_from(self, t: int) -> float:
+    def available_units(self, t: int) -> int:
         """min over t' >= t of the level — what can be consumed at t without hurting anyone."""
         if not self._chunks:
-            return 0.0
+            return 0
         c, idx, cur = self._position(t)
         best = cur
         if c < 0:
-            c, idx, lvl = 0, -1, 0.0
+            c, idx, lvl = 0, -1, 0
         else:
             lvl = cur
-        ch = self._chunks[c]
-        for e in ch[idx + 1 :]:
-            lvl += e.delta
+        for e in self._chunks[c][idx + 1 :]:
+            lvl += e.units
             if lvl < best:
                 best = lvl
         for k in range(c + 1, len(self._chunks)):
@@ -155,44 +155,54 @@ class MaterialAccount:
             lvl += self._sum[k]
         return best
 
-    def earliest(self, qty: float, t0: int) -> int | None:
-        """Smallest t >= t0 with available_from(t) >= qty, or None if never within the ledger.
+    # ---------------------------------------------------------------- queries (quantities)
+    def level_at(self, t: int) -> float:
+        return from_units(self._position(t)[2])
 
-        available_from is non-decreasing in t, so the candidates (t0 and later event times) are
-        searched with a binary search."""
-        if self.available_from(t0) + EPS >= qty:
+    def available_from(self, t: int) -> float:
+        return from_units(self.available_units(t))
+
+    def earliest(self, qty: float, t0: int) -> int | None:
+        """Smallest t >= t0 with available(t) >= qty, or None if never within the ledger.
+
+        Availability is non-decreasing in t, so the candidates (t0 and later event times) are
+        searched with a binary search. Exact integer comparison."""
+        need = to_units(qty)
+        if self.available_units(t0) >= need:
             return t0
         times = [e.time for e in self.events]
         lo = bisect_right(times, t0)
-        if lo >= len(times) or self.available_from(times[-1]) + EPS < qty:
+        if lo >= len(times) or self.available_units(times[-1]) < need:
             return None
         hi = len(times) - 1
         while lo < hi:
             mid = (lo + hi) // 2
-            if self.available_from(times[mid]) + EPS >= qty:
+            if self.available_units(times[mid]) >= need:
                 hi = mid
             else:
                 lo = mid + 1
         return times[lo]
 
     def max_available_after(self, t0: int) -> float:
-        """Best achievable availability at or after t0 (for shortage reporting): available_from
-        is non-decreasing, so it is its value at the last event (or at t0)."""
+        """Best achievable availability at or after t0 (for shortage reporting): availability is
+        non-decreasing, so it is its value at the last event (or at t0)."""
         evs = self.events
         if not evs:
             return 0.0
-        return max(self.available_from(t0), self.available_from(max(evs[-1].time, t0)))
+        return from_units(max(self.available_units(t0), self.available_units(max(evs[-1].time, t0))))
+
+    def min_level_units(self) -> tuple[int, int | None]:
+        lvl = 0
+        best, at = None, None
+        for e in self.events:
+            lvl += e.units
+            if best is None or lvl < best:
+                best, at = lvl, e.time
+        return (0, None) if best is None else (best, at)
 
     def min_level(self) -> tuple[float, int | None]:
-        lvl = 0.0
-        best, at = float("inf"), None
-        for e in self.events:
-            lvl += e.delta
-            if lvl < best:
-                best, at = lvl, e.time
-        if at is None:
-            return 0.0, None
-        return best, at
+        best, at = self.min_level_units()
+        return from_units(best), at
 
 
 class MaterialLedger:
@@ -207,10 +217,10 @@ class MaterialLedger:
             self.accounts[mat].add(ev)
 
     def supply(self, mat: int, t: int, qty: float, key: str, **meta) -> None:
-        self._add(mat, LedgerEvent(t, qty, "SUPPLY", key, meta))
+        self._add(mat, LedgerEvent(t, to_units(qty), "SUPPLY", key, meta))
 
     def consume(self, mat: int, t: int, qty: float, key: str, **meta) -> None:
-        self._add(mat, LedgerEvent(t, -qty, "CONSUMPTION", key, meta))
+        self._add(mat, LedgerEvent(t, -to_units(qty), "CONSUMPTION", key, meta))
 
     def begin_bulk(self) -> None:
         """Collect movements without querying the ledger (placing 200 000 fixed operations): they
@@ -244,20 +254,20 @@ def fifo_pegging(account: MaterialAccount) -> list[tuple[LedgerEvent, LedgerEven
     """Match consumptions to supplies FIFO by time → (supply, consumption, qty).
 
     Consistent with the ledger's feasibility rule: if cumulative supply covers cumulative demand at
-    every instant, FIFO matching always succeeds; any remainder is an uncovered shortage.
-    """
-    supplies = [[e, e.delta] for e in account.events if e.delta > 0]
+    every instant, FIFO matching always succeeds; any remainder is an uncovered shortage. Exact
+    (micro-units); quantities are returned as floats for reporting."""
+    supplies = [[e, e.units] for e in account.events if e.units > 0]
     out: list[tuple[LedgerEvent, LedgerEvent, float]] = []
     si = 0
-    for c in (e for e in account.events if e.delta < 0):
-        need = -c.delta
-        while need > EPS and si < len(supplies):
+    for c in (e for e in account.events if e.units < 0):
+        need = -c.units
+        while need > 0 and si < len(supplies):
             s, left = supplies[si]
             take = min(left, need)
-            if take > EPS:
-                out.append((s, c, take))
+            if take > 0:
+                out.append((s, c, from_units(take)))
                 need -= take
                 supplies[si][1] -= take
-            if supplies[si][1] <= EPS:
+            if supplies[si][1] <= 0:
                 si += 1
     return out

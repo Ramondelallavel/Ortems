@@ -23,13 +23,17 @@ export function MovePreview({ planId, planVersion, move, resCodes, onClose, onAp
 
   useEffect(() => {
     if (!move) return;
+    // a newer request (other replan mode, other drop) cancels the previous one: an old answer never
+    // replaces the preview of what is on screen
+    const ctl = new AbortController();
     setLoading(true);
     setError(undefined);
     setPreview(null);
-    api(`/plans/${planId}/moves/preview`, { body: { op_id: move.opId, resource_id: move.resourceId, start: move.start, replan: mode, allow_frozen: allowFrozen } })
-      .then(setPreview)
-      .catch(setError)
-      .finally(() => setLoading(false));
+    api(`/plans/${planId}/moves/preview`, { body: { op_id: move.opId, resource_id: move.resourceId, start: move.start, replan: mode, allow_frozen: allowFrozen }, signal: ctl.signal })
+      .then((p) => !ctl.signal.aborted && setPreview(p))
+      .catch((e) => !ctl.signal.aborted && e?.name !== "AbortError" && setError(e))
+      .finally(() => !ctl.signal.aborted && setLoading(false));
+    return () => ctl.abort();
   }, [move, mode, planId, allowFrozen]);
 
   const apply = async () => {
@@ -88,7 +92,7 @@ export function MovePreview({ planId, planVersion, move, resCodes, onClose, onAp
                   <span className="tabular">
                     {" "}
                     — planned {dt(preview.planned.setup_start)} → {dt(preview.planned.end)} on <span className="code">{resCodes[preview.planned.resource_id] || preview.planned.resource_id}</span>
-                    {preview.planned.start !== move.start && Math.abs(new Date(preview.planned.start).getTime() - new Date(move.start).getTime()) > 60000 && <span className="text-slate-600"> (earliest valid position after the requested time)</span>}
+                    {Math.abs(new Date(preview.planned.setup_start).getTime() - new Date(move.start).getTime()) > 60000 && <span className="text-slate-600"> (earliest valid position after the requested time)</span>}
                   </span>
                 )}
                 {preview.hard_violations?.slice(0, 6).map((v: any, i: number) => (

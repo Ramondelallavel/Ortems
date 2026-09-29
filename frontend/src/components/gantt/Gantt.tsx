@@ -699,9 +699,10 @@ export const Gantt = forwardRef<GanttHandle, {
       if (!d || !d.moved) return;
       const { y } = local(ev);
       const target = rowAt(y) || data.resources.find((r) => r.id === d.op.resource_id)!;
+      // the bar's left edge is the setup start, and a move asks for the setup start: the job lands
+      // where it was dropped (its setup may then change on the new resource / neighbour)
       const newSetupStart = new Date(d.op.setup_start).getTime() + d.dx / pxPerMs;
-      const offset = new Date(d.op.start).getTime() - new Date(d.op.setup_start).getTime();
-      onMove?.(d.op, target.id, new Date(newSetupStart + offset).toISOString());
+      onMove?.(d.op, target.id, new Date(newSetupStart).toISOString());
     };
     const key = (ev: KeyboardEvent) => ev.key === "Escape" && setDrag(null);
     window.addEventListener("mousemove", mm);
