@@ -708,11 +708,20 @@ def _reuse_for(s: Session, parent: Plan, sol: Solution, replaced: set[str]) -> p
         if before.pop(x.op_id, None) != (x.resource_id, x.setup_start, x.start, x.end, x.setup_minutes, x.fixed, x.fixed_reason, x.fixed_reason == "LOCKED", x.late, x.zone, x.prev_op_id):
             ops.add(x.op_id)
     ops |= set(before)  # no longer scheduled
+    def when(t):
+        return _aware(t) if t else None
+
     old_orders = {
-        r.order_key: (r.status, _aware(r.start) if r.start else None, _aware(r.end) if r.end else None, r.lateness_minutes, r.material_status)
-        for r in s.execute(select(PO.order_key, PO.status, PO.start, PO.end, PO.lateness_minutes, PO.material_status).where(PO.plan_id == parent.id))
+        r.order_key: (r.status, when(r.start), when(r.end), when(r.due), r.lateness_minutes, r.material_status, when(r.earliest_possible_end), r.weight, list(r.rules_applied or []))
+        for r in s.execute(
+            select(PO.order_key, PO.status, PO.start, PO.end, PO.due, PO.lateness_minutes, PO.material_status, PO.earliest_possible_end, PO.weight, PO.rules_applied).where(PO.plan_id == parent.id)
+        )
     }
-    orders = {o.order_id for o in sol.orders if old_orders.get(o.order_id) != (o.status, o.start, o.end, o.lateness_minutes, o.material_status)}
+    orders = {
+        o.order_id
+        for o in sol.orders
+        if old_orders.get(o.order_id) != (o.status, o.start, o.end, o.due, o.lateness_minutes, o.material_status, o.earliest_possible_end, o.weight, list(o.rules_applied))
+    }
     orders |= set(old_orders) - {o.order_id for o in sol.orders}
     state = getattr(sol, "_state", None)
     if state is None or len(ops) > plan_store.REUSE_MAX_KEYS or len(orders) > plan_store.REUSE_MAX_KEYS:
