@@ -305,6 +305,17 @@ class ScheduleBuilder:
                 mi, s, e, reason, su = op.fixed
                 fixed.append((s, op.idx, mi, e, reason, su))
         fixed.sort()
+        if self.use_materials and len(fixed) > 1000:
+            self.ledger.begin_bulk()
+            try:
+                self._commit_fixed(fixed)
+            finally:
+                self.ledger.end_bulk()
+        else:
+            self._commit_fixed(fixed)
+
+    def _commit_fixed(self, fixed: list[tuple[int, int, int, int | None, str, int | None]]) -> None:
+        cp = self.cp
         for s, i, mi, e, reason, su in fixed:
             op = cp.ops[i]
             if mi >= len(op.modes):
@@ -898,6 +909,7 @@ class ScheduleBuilder:
                     if npl is not None:
                         npl.setup = ns
                         npl.setup_start = nb.setup_start
+                        self._set_cost(npl, cp.ops[nb.op].modes[npl.mode], cp.resources[npl.res])
             last = self.last_state.get(m.res)
             if last is None or end >= last[0]:
                 self.last_state[m.res] = (end, block.state_key, op.family)
@@ -929,15 +941,20 @@ class ScheduleBuilder:
         pl.fixed = fixed_reason is not None
         pl.fixed_reason = fixed_reason
         pl.binding = BindingRec("NONE")
-        pl.overtime = m.cal.overtime_between(setup_start, end) if not m.sub else 0
-        minutes = max(end - setup_start, 0) if m.sub else m.cal.working_between(setup_start, end)
+        self._set_cost(pl, m, res)
+        self.placements[op.idx] = pl
+
+    @staticmethod
+    def _set_cost(pl: Placement, m: CMode, res) -> None:
+        """Overtime and cost of a placement (again when a later insertion changes its setup)."""
+        pl.overtime = m.cal.overtime_between(pl.setup_start, pl.end) if not m.sub else 0
+        minutes = max(pl.end - pl.setup_start, 0) if m.sub else m.cal.working_between(pl.setup_start, pl.end)
         pl.cost = (
             minutes * m.cost_per_min
             + pl.overtime * (res.ot_cost_per_min - res.cost_per_min if res.ot_cost_per_min > res.cost_per_min else 0)
-            + setup * res.setup_cost_per_min
+            + pl.setup * res.setup_cost_per_min
             + m.sub_cost
         )
-        self.placements[op.idx] = pl
 
     def _propagate_unscheduled(self, i: int) -> None:
         cp = self.cp

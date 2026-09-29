@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Collection
+
 from .builder import BuildResult
 from .capacity import bottlenecks as compute_bottlenecks
 from .contract import (
@@ -32,7 +34,10 @@ def zone_of(cp, t: int) -> str:
     return "PLANNING"
 
 
-def assemble(result: BuildResult, meta: SolverMetadata, validation: ValidationResult | None = None, explain: bool = True) -> Solution:
+def assemble(result: BuildResult, meta: SolverMetadata, validation: ValidationResult | None = None, explain: bool = True, explain_ops: Collection[int] | None = None, light: bool = False) -> Solution:
+    """``explain_ops`` limits the explanations to those operations (the others are left out).
+    ``light`` leaves out what an impact preview does not show — bottlenecks, root-cause chains and
+    material pegging — the schedule, orders, KPIs and violations are complete."""
     cp = result.cp
     validation = validation or validate(cp, result.placements, result.unscheduled)
     orders = order_status(result)
@@ -43,7 +48,7 @@ def assemble(result: BuildResult, meta: SolverMetadata, validation: ValidationRe
     from .explain import root_cause
 
     chains: dict[str, list] = {}
-    for row in orders:
+    for row in () if light else orders:
         if row["status"] in ("LATE", "UNSCHEDULED", "PARTIAL") and len(chains) < 400:
             o = cp.orders[row["order"]]
             chains[o.id] = root_cause(result, o.idx)
@@ -82,8 +87,9 @@ def assemble(result: BuildResult, meta: SolverMetadata, validation: ValidationRe
                 working_minutes=(p.end - p.setup_start) if m.sub else m.cal.working_between(p.setup_start, p.end),
                 overtime_minutes=p.overtime,
                 quantity=op.qty,
-                fixed=p.fixed,
-                fixed_reason=p.fixed_reason,
+                # "KEPT" only means "left where the previous plan had it" during a repair or move
+                fixed=p.fixed and p.fixed_reason != "KEPT",
+                fixed_reason=None if p.fixed_reason == "KEPT" else p.fixed_reason,
                 late=c is not None and c > o.due,
                 zone=zone_of(cp, p.setup_start),
                 prev_op_id=cp.ops[p.prev_op].id if p.prev_op is not None else None,
@@ -160,11 +166,15 @@ def assemble(result: BuildResult, meta: SolverMetadata, validation: ValidationRe
             causes=[BottleneckCause(**c) for c in b.get("causes", [])],
             ref=b.get("ref"),
         )
-        for b in compute_bottlenecks(cp, result.placements, result.timing, result.unscheduled, order_late)
+        for b in ([] if light else compute_bottlenecks(cp, result.placements, result.timing, result.unscheduled, order_late))
     ]
 
     explanations = {}
-    if explain:
+    if explain_ops is not None:
+        for i in sorted(explain_ops):
+            if result.placements[i] is not None or i in result.unscheduled:
+                explanations[cp.ops[i].id] = explain_operation(result, i)
+    elif explain:
         for p in result.placements:
             if p is not None:
                 explanations[cp.ops[p.op].id] = explain_operation(result, p.op)
@@ -172,7 +182,7 @@ def assemble(result: BuildResult, meta: SolverMetadata, validation: ValidationRe
             explanations[cp.ops[i].id] = explain_operation(result, i)
 
     pegging: list[PegLink] = []
-    for acc in result.ledger.accounts:
+    for acc in () if light else result.ledger.accounts:
         if not acc.events:
             continue
         mat = cp.materials[acc.material]

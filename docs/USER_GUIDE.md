@@ -34,6 +34,12 @@ language selector in the top bar. Press **?** anywhere for keyboard shortcuts.
   scroll with the wheel / `Shift`+wheel or by dragging the background, **Now** jumps to today.
 * Keyboard: click the chart, then arrows move between operations, `Enter` opens the detail, `Esc`
   clears. `Ctrl+F` finds an order, operation or item.
+* **Large plans** (more than 30 000 operations, e.g. a plant with 100 000 orders a day): the rows are
+  loaded once and the operations of the visible rows and time span are fetched as you scroll or zoom.
+  When a view would hold too many bars to read (a machine running hundreds of jobs in the visible
+  span), each machine shows its **busy blocks** instead, labelled with their number of operations, a
+  red top edge and "▲" count when some are late, 🔒 when some are locked; click a block to zoom into it. The search box looks the operation up on the server
+  and jumps to it.
 
 ## 3. Understanding a decision
 
@@ -60,7 +66,8 @@ or scenario), validates every hard constraint and shows the impact — KPI befor
 or advanced, setup change, sequence changes and any violation. If the requested time is impossible
 the preview shows the earliest valid position. **Apply** creates a new plan version (undoable); the
 moved operation is locked. Changes inside the frozen zone need the *frozen zone* permission and a
-reason.
+reason. On a very large plan the preview and the apply take tens of seconds rather than being
+instant (the whole version is re-validated and stored; see OPTIMIZATION.md for measured times).
 
 ## 5. Scenarios and what-ifs
 

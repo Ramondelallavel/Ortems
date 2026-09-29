@@ -135,10 +135,7 @@ class MoveIn(BaseModel):
 
 @router.post("/plans/{plan_id}/moves/preview")
 def preview(plan_id: uuid.UUID, body: MoveIn, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
-    out = planning_svc.preview_move(s, ctx, plan_id, body.op_id, body.resource_id, body.start, body.replan, body.allow_frozen)
-    out.pop("_solution", None)
-    out.pop("_problem", None)
-    return out
+    return planning_svc.preview_move(s, ctx, plan_id, body.op_id, body.resource_id, body.start, body.replan, body.allow_frozen)
 
 
 @router.post("/plans/{plan_id}/moves")

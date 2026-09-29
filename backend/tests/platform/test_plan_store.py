@@ -6,7 +6,7 @@ them must return consistent slices."""
 
 import json
 import uuid
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 
 def _session(planner):
@@ -131,3 +131,121 @@ def test_order_book_sorted_and_filtered_by_plan_result(planner, sevilla, base_pl
     numbers = planner.ok(planner.get("/orders", params={**q, "sort": "number"}))
     nums = [o["number"] for o in numbers["items"]]
     assert nums == sorted(nums)
+
+
+def test_move_session_matches_a_fresh_load(planner, sevilla, base_plan):
+    """Applying a move derives the next version's move base (problem, compiled problem, baseline)
+    from the new schedule instead of reading and compiling the stored version: it must be the same
+    as a fresh load, and a following move must give the same plan either way. The re-placed
+    operations get new explanations, the others keep the ones of the previous version."""
+    from monxuplan.models import Plan, Scenario
+    from monxuplan.services import plan_store, planning
+    from monxuplan_engine.repair import move as engine_move
+
+    sid = sevilla["live_scenario_id"]
+    with _session(planner) as s:
+        head = s.get(Scenario, uuid.UUID(sid)).head_plan_id
+    g = planner.ok(planner.get(f"/plans/{head}/gantt"))
+    movable = [o for o in g["operations"] if not o["fixed"] and not o["locked"] and o["zone"] != "FROZEN"]
+    op = movable[len(movable) // 3]
+    start = (datetime.fromisoformat(op["start"]) + timedelta(hours=1)).isoformat()
+    body = {"op_id": op["id"], "resource_id": op["resource_id"], "start": start, "replan": "DOWNSTREAM", "reason": "test", "accept_violations": True}
+    new = planner.ok(planner.post(f"/plans/{head}/moves", json=body))
+    try:
+        with _session(planner) as s:
+            plan = s.get(Plan, uuid.UUID(new["id"]))
+            derived = planning._MOVE_BASES.get(planning._base_key(plan))
+            assert derived is not None
+            planning.forget_move_base(plan.id)
+            fresh = planning.move_base(s, plan)
+            assert derived.cp.baseline == fresh.cp.baseline
+            assert [o.fixed for o in derived.cp.ops] == [o.fixed for o in fresh.cp.ops]
+            assert derived.cp.lo == fresh.cp.lo
+            fixed = {o.id: o.fixed for o in fresh.problem.operations if o.fixed is not None}
+            assert {o.id: o.fixed for o in derived.problem.operations if o.fixed is not None} == fixed
+            # a second move from either base
+            other = next(o for o in movable if o["id"] != op["id"] and o["resource_id"] != op["resource_id"])
+            t2 = datetime.fromisoformat(other["start"]) + timedelta(minutes=30)
+
+            def planned(base):
+                out = engine_move(base.problem, other["id"], other["resource_id"], t2, cp=base.cp, baseline_solution=base.baseline, explain="NONE")
+                return sorted((x.op_id, x.resource_id, x.setup_start, x.end) for x in out.solution.schedule), out.comparison
+
+            assert planned(derived) == planned(fresh)
+            # explanations: every scheduled operation has one; kept operations keep the parent's
+            parent = s.get(Plan, head)
+            docs = plan_store.documents(s, plan, plan_store.DOC_EXPLANATIONS)
+            before = plan_store.documents(s, parent, plan_store.DOC_EXPLANATIONS)
+            SO = plan_store.ScheduledOperation
+            from sqlalchemy import select
+
+            rows = s.execute(select(SO.op_key, SO.resource_key, SO.fixed_reason, SO.is_locked).where(SO.plan_id == plan.id)).all()
+            assert all(r.op_key in docs.get(r.resource_key, {}) for r in rows)
+            prev = {k: v for d in before.values() for k, v in d.items()}
+            assert not any(r.fixed_reason == "KEPT" for r in rows)  # left in place is not "fixed"
+            inherited = sum(1 for r in rows if docs[r.resource_key][r.op_key] == prev.get(r.op_key))
+            assert inherited > len(rows) // 2
+            moved = docs[op["resource_id"]][op["id"]]
+            assert moved["op_id"] == op["id"]
+            assert [r.op_key for r in rows if r.is_locked] == [op["id"]] or op["id"] in {r.op_key for r in rows if r.is_locked}
+            assert plan.snapshot_id == parent.snapshot_id
+    finally:
+        back = planner.ok(planner.post(f"/scenarios/{sid}/undo"))
+        assert back["id"] == str(head)
+
+
+def test_incremental_storage_matches_a_full_write(planner, sevilla, base_plan):
+    """A moved plan stored by copying the parent's unchanged rows holds the same rows and read models
+    as the same solution written in full (except the binding constraint and material-ready time of
+    unchanged operations and the limiting constraint and cause of unchanged orders, kept from the
+    version where they were decided)."""
+    from sqlalchemy import func, select
+
+    from monxuplan.models import Plan, PlanDocument, PlanOrder, PlanPeg, Scenario, ScheduledOperation
+    from monxuplan.services import planning
+    from monxuplan.services.context import system_ctx
+
+    with _session(planner) as s:
+        sc = s.get(Scenario, uuid.UUID(sevilla["live_scenario_id"]))
+        plan = s.get(Plan, sc.head_plan_id)
+        ctx = system_ctx(plan.tenant_id, "planner")
+        rows = s.execute(select(ScheduledOperation.op_key, ScheduledOperation.resource_key, ScheduledOperation.start).where(ScheduledOperation.plan_id == plan.id, ScheduledOperation.is_locked.is_(False)).order_by(ScheduledOperation.setup_start)).all()
+        op = rows[len(rows) // 2]
+        start = (op.start if op.start.tzinfo else op.start.replace(tzinfo=UTC)) + timedelta(hours=2)
+        out = planning._move(s, ctx, plan, op.op_key, op.resource_key, start, "DOWNSTREAM", False, explain="CHANGED")
+        sol, base = out["_solution"], out["_base"]
+        info = planning._info_from_plan(s, plan)
+        reuse = planning._reuse_for(s, plan, sol, out["_replaced"] | {op.op_key})
+        assert reuse is not None and op.op_key in reuse.ops and len(reuse.ops) < len(sol.schedule)
+        kw = {"kind": "MANUAL_EDIT", "parent": plan, "explanations_from": plan, "snapshot_id": base.snapshot_id}
+        a = planning.persist_solution(s, ctx, sc, base.problem, sol, info, reuse=reuse, **kw)
+        b = planning.persist_solution(s, ctx, sc, base.problem, sol, info, **kw)
+        s.flush()
+
+        def table(model, key, skip):
+            cols = [c for c in model.__table__.columns if c.name not in {"id", "plan_id", *skip}]
+            out = {}
+            for pid in (a.id, b.id):
+                out[pid] = {tuple(getattr(r, k) for k in key): tuple(json.dumps(v, default=str, sort_keys=True) for v in r) for r in s.execute(select(*cols).where(model.plan_id == pid))}
+            return out[a.id], out[b.id]
+
+        x, y = table(ScheduledOperation, ("op_key",), ("binding", "material_ready"))
+        assert x == y
+        x, y = table(PlanOrder, ("order_key",), ("limiting", "cause"))
+        assert x == y
+
+        def pegged(pid):
+            tot = {}
+            for r in s.execute(select(PlanPeg.material_id, PlanPeg.consumer_op_id, PlanPeg.quantity).where(PlanPeg.plan_id == pid)):
+                tot[(r.material_id, r.consumer_op_id)] = round(tot.get((r.material_id, r.consumer_op_id), 0) + float(r.quantity), 6)
+            return tot
+
+        assert pegged(a.id) == pegged(b.id)
+        from monxuplan.services import plan_store
+
+        for kind in (plan_store.DOC_CAPACITY, plan_store.DOC_CALENDAR, plan_store.DOC_MATERIAL, plan_store.DOC_CHAINS, plan_store.DOC_EXPLANATIONS):
+            da, db = plan_store.documents(s, a, kind), plan_store.documents(s, b, kind)
+            assert da.keys() == db.keys(), kind
+            assert json.dumps(da, sort_keys=True, default=str) == json.dumps(db, sort_keys=True, default=str), kind
+        assert s.scalar(select(func.count()).select_from(PlanDocument).where(PlanDocument.plan_id == a.id)) == s.scalar(select(func.count()).select_from(PlanDocument).where(PlanDocument.plan_id == b.id))
+        s.rollback()

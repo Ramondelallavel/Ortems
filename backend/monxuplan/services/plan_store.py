@@ -14,12 +14,13 @@ import uuid
 from collections import defaultdict
 from collections.abc import Iterable, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
 from pydantic import TypeAdapter
 from pydantic_core import to_jsonable_python
-from sqlalchemy import JSON, Table, func, select
+from sqlalchemy import JSON, Table, and_, func, literal, or_, select, true
 from sqlalchemy.orm import Session
 
 from monxuplan_engine.contract import Binding, Explanation, OrderResult, Solution
@@ -151,9 +152,46 @@ SO_COLUMNS = (
 )
 
 
-def write_results(s: Session, tenant_id: uuid.UUID, plan: Plan, sol: Solution, op_rows: dict[str, tuple] | None = None) -> dict[str, int]:
+@dataclass
+class Reuse:
+    """A version derived from ``parent_id`` by re-placing a few operations (a manual move): only the
+    rows listed here are written from the solution, every other row is copied from the parent inside
+    the database (a 200 000-operation version is not sent over the wire again)."""
+
+    parent_id: uuid.UUID
+    ops: set[str]  # operations whose stored row changes (or that are no longer scheduled)
+    orders: set[str]  # orders whose result changes
+    materials: set[str]  # materials whose movements change: pegging and projection recomputed
+
+
+REUSE_MAX_KEYS = 20_000  # above this a full write is as fast (and the key lists stay small)
+
+
+def _new_uuid_sql(s: Session):
+    if s.get_bind().dialect.name == "postgresql":
+        return func.gen_random_uuid()
+    return func.lower(func.hex(func.randomblob(16)))  # 32 hex digits: how UUIDs are stored elsewhere
+
+
+def copy_from_parent(s: Session, table: Table, parent_id: uuid.UUID, plan_id: uuid.UUID, where=None) -> int:
+    """Copy a parent version's rows of a per-plan table to a new version, server-side."""
+    cols = list(table.columns)
+    new_id = _new_uuid_sql(s)
+    sel = [new_id.label("id") if c.name == "id" else literal(plan_id, type_=c.type).label("plan_id") if c.name == "plan_id" else c for c in cols]
+    stmt = select(*sel).where(table.c.plan_id == parent_id)
+    if where is not None:
+        stmt = stmt.where(where)
+    return s.execute(table.insert().from_select([c.name for c in cols], stmt)).rowcount or 0
+
+
+def write_results(
+    s: Session, tenant_id: uuid.UUID, plan: Plan, sol: Solution, op_rows: dict[str, tuple] | None = None, explanations_from: Plan | None = None, reuse: Reuse | None = None
+) -> dict[str, int]:
     """Every per-plan table of a new plan version, in bulk. ``op_rows`` maps engine operation ids to
-    ``(order_id, order_operation_id)`` database ids (from the problem builder)."""
+    ``(order_id, order_operation_id)`` database ids (from the problem builder). With
+    ``explanations_from``, ``sol.explanations`` only holds the re-placed operations and the others keep
+    their explanation from that plan (see :func:`inherit_explanations`). With ``reuse``, unchanged rows
+    and read models are copied from the parent version (see :class:`Reuse`)."""
     pid = plan.id
     op_rows = op_rows or {}
     new_id = uuid.uuid4
@@ -161,7 +199,7 @@ def write_results(s: Session, tenant_id: uuid.UUID, plan: Plan, sol: Solution, o
     counts: dict[str, int] = {}
 
     rows = []
-    for x in sol.schedule:
+    for x in sol.schedule if reuse is None else (x for x in sol.schedule if x.op_id in reuse.ops):
         oid, ooid = op_rows.get(x.op_id, (None, None))
         rows.append(
             (
@@ -197,6 +235,11 @@ def write_results(s: Session, tenant_id: uuid.UUID, plan: Plan, sol: Solution, o
         )
     counts["operations"] = bulk_insert(s, ScheduledOperation.__table__, SO_COLUMNS, rows)
     del rows
+    if reuse is not None:
+        SO, PO, PP = ScheduledOperation, PlanOrder, PlanPeg
+        counts["operations"] += copy_from_parent(s, SO.__table__, reuse.parent_id, pid, SO.op_key.notin_(reuse.ops) if reuse.ops else None)
+        counts["orders_copied"] = copy_from_parent(s, PO.__table__, reuse.parent_id, pid, PO.order_key.notin_(reuse.orders) if reuse.orders else None)
+        counts["pegging_copied"] = copy_from_parent(s, PP.__table__, reuse.parent_id, pid, PP.material_id.notin_(reuse.materials) if reuse.materials else None)
 
     causes = {x["order_id"]: x.get("cause") for x in (sol.kpi_details or {}).get("late_orders", [])}
     counts["orders"] = bulk_insert(
@@ -224,13 +267,14 @@ def write_results(s: Session, tenant_id: uuid.UUID, plan: Plan, sol: Solution, o
                 causes.get(o.order_id),
             )
             for o in sol.orders
+            if reuse is None or o.order_id in reuse.orders
         ],
     )
     counts["pegging"] = bulk_insert(
         s,
         PlanPeg.__table__,
         ("id", "tenant_id", "plan_id", "material_id", "supply_id", "supply_kind", "supply_ref", "supply_order_id", "supply_time", "consumer_op_id", "consumer_order_id", "need_time", "quantity"),
-        [(new_id(), tenant_id, pid, p.material_id, p.supply_id, p.supply_kind, p.supply_ref, p.supply_order_id, p.supply_time, p.consumer_op_id, p.consumer_order_id, p.need_time, p.quantity) for p in sol.pegging],
+        [(new_id(), tenant_id, pid, p.material_id, p.supply_id, p.supply_kind, p.supply_ref, p.supply_order_id, p.supply_time, p.consumer_op_id, p.consumer_order_id, p.need_time, p.quantity) for p in sol.pegging if reuse is None or p.material_id in reuse.materials],
     )
     counts["unscheduled"] = bulk_insert(
         s,
@@ -251,7 +295,13 @@ def write_results(s: Session, tenant_id: uuid.UUID, plan: Plan, sol: Solution, o
         ("id", "tenant_id", "plan_id", "code", "value", "computed_at"),
         [(new_id(), tenant_id, pid, k, float(v) if isinstance(v, int | float) else None, computed) for k, v in sol.kpis.items()],
     )
-    counts["documents"] = write_documents(s, tenant_id, pid, build_documents(sol))
+    counts["documents"] = write_documents(s, tenant_id, pid, build_documents(sol, explanations=explanations_from is None, reuse=reuse))
+    if reuse is not None:
+        PD = PlanDocument
+        same = or_(PD.kind.in_((DOC_CALENDAR, DOC_CHAINS)), and_(PD.kind == DOC_MATERIAL, PD.key.notin_(reuse.materials) if reuse.materials else true()))
+        counts["documents"] += copy_from_parent(s, PD.__table__, reuse.parent_id, pid, same)
+    if explanations_from is not None:
+        counts["documents"] += inherit_explanations(s, tenant_id, pid, explanations_from, sol)
     return counts
 
 
@@ -260,14 +310,14 @@ def write_results(s: Session, tenant_id: uuid.UUID, plan: Plan, sol: Solution, o
 DOC_EXPLANATIONS, DOC_CAPACITY, DOC_CALENDAR, DOC_MATERIAL, DOC_CHAINS = "EXPLANATIONS", "CAPACITY", "CALENDAR", "MATERIAL", "CHAINS"
 
 
-def build_documents(sol: Solution) -> list[tuple[str, str, int, bytes]]:
+def build_documents(sol: Solution, explanations: bool = True, reuse: Reuse | None = None) -> list[tuple[str, str, int, bytes]]:
     """``(kind, key, item_count, json_bytes)`` of every read model of a solution: explanations per
     resource and, when the engine state is at hand, capacity profiles, resource calendars and
     material projections."""
     from monxuplan_engine.views import plan_views
 
     out: list[tuple[str, str, int, bytes]] = []
-    if sol.explanations:
+    if explanations and sol.explanations:
         res_of = {x.op_id: x.resource_id for x in sol.schedule}
         by_res: dict[str, dict[str, Explanation]] = defaultdict(dict)
         for op_id, ex in sol.explanations.items():
@@ -276,7 +326,18 @@ def build_documents(sol: Solution) -> list[tuple[str, str, int, bytes]]:
                 by_res[rk][op_id] = ex
         out.extend((DOC_EXPLANATIONS, rk, len(ops), _EXPLANATIONS.dump_json(ops)) for rk, ops in by_res.items())
     state = getattr(sol, "_state", None)
-    if state is not None:
+    if state is not None and reuse is not None:
+        # calendars and order chains do not depend on the schedule; untouched materials did not move
+        from monxuplan_engine.views import capacity_views, material_projection
+
+        dumps = json.dumps
+        out.extend((DOC_CAPACITY, size, len(v["rows"]), dumps(v, separators=(",", ":")).encode()) for size, v in capacity_views(state).items())
+        for mid in sorted(reuse.materials):
+            mi = state.cp.mat_index.get(mid)
+            if mi is not None:
+                v = material_projection(state, mi)
+                out.append((DOC_MATERIAL, mid, len(v["points"]), dumps(v, separators=(",", ":")).encode()))
+    elif state is not None:
         views = plan_views(state)
         dumps = json.dumps
         out.extend((DOC_CAPACITY, size, len(v["rows"]), dumps(v, separators=(",", ":")).encode()) for size, v in views["CAPACITY"].items())
@@ -284,6 +345,47 @@ def build_documents(sol: Solution) -> list[tuple[str, str, int, bytes]]:
         out.extend((DOC_MATERIAL, mid, len(v["points"]), dumps(v, separators=(",", ":")).encode()) for mid, v in views["MATERIAL"].items())
         out.extend((DOC_CHAINS, shard, len(v), dumps(v, separators=(",", ":")).encode()) for shard, v in views["CHAINS"].items())
     return out
+
+
+def inherit_explanations(s: Session, tenant_id: uuid.UUID, plan_id: uuid.UUID, parent: Plan, sol: Solution) -> int:
+    """Explanation documents of a version derived from ``parent`` by re-placing a few operations
+    (a manual move): ``sol.explanations`` holds the re-placed ones; every other operation kept its
+    resource and position, and keeps the explanation it had in ``parent``. Documents of resources
+    whose operations are all unchanged are copied as they are (still compressed)."""
+    SO, PD = ScheduledOperation, PlanDocument
+    before: dict[str, set[str]] = defaultdict(set)
+    where_before: dict[str, str] = {}
+    for op, rk in s.execute(select(SO.op_key, SO.resource_key).where(SO.plan_id == parent.id)):
+        before[rk].add(op)
+        where_before[op] = rk
+    now: dict[str, set[str]] = defaultdict(set)
+    for x in sol.schedule:
+        now[x.resource_id].add(x.op_id)
+    fresh = sol.explanations or {}
+    same = {rk for rk, ops in now.items() if ops == before.get(rk) and not any(op in fresh for op in ops)}
+    copies = []
+    base = select(PD.key, PD.item_count, PD.data).where(PD.plan_id == parent.id, PD.kind == DOC_EXPLANATIONS)
+    for part in chunks(same):
+        copies.extend(s.execute(base.where(PD.key.in_(part))).all())
+    n = bulk_insert(
+        s, PD.__table__, ("id", "tenant_id", "plan_id", "kind", "key", "item_count", "data"), [(uuid.uuid4(), tenant_id, plan_id, DOC_EXPLANATIONS, k, c, d) for k, c, d in copies]
+    )
+    changed = [rk for rk in now if rk not in same]
+    needed = {where_before[op] for rk in changed for op in now[rk] if op not in fresh and op in where_before}
+    old = documents(s, parent, DOC_EXPLANATIONS, needed) if needed else {}
+    docs = []
+    for rk in changed:
+        doc: dict[str, Any] = {}
+        for op in sorted(now[rk]):
+            if op in fresh:
+                doc[op] = to_jsonable_python(fresh[op])
+            else:
+                ex = old.get(where_before.get(op, ""), {}).get(op)
+                if ex is not None:
+                    doc[op] = ex
+        if doc:
+            docs.append((DOC_EXPLANATIONS, rk, len(doc), json.dumps(doc, separators=(",", ":")).encode()))
+    return n + write_documents(s, tenant_id, plan_id, docs)
 
 
 def _gz(raw: bytes) -> bytes:

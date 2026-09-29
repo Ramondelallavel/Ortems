@@ -69,9 +69,15 @@ def run_plan(time_limit: float) -> str:
 
 
 def views() -> None:
+    """The calls the screens make, timed as the API serves them: service call, then JSON encoding
+    (``pydantic_core.to_json``, as the API's fast responses do)."""
+    from datetime import timedelta
+
+    from pydantic_core import to_json
+
     from monxuplan import models as M
     from monxuplan.core.db import new_session
-    from monxuplan.services import analytics, materials, orders, overview
+    from monxuplan.services import analytics, materials, orders, overview, plan_store
     from monxuplan.services import views as V
     from monxuplan.services.context import system_ctx
 
@@ -80,18 +86,29 @@ def views() -> None:
         tid, pid = plant.tenant_id, plant.id
         sc = s.get(M.Scenario, plant.live_scenario_id)
         plan_id = sc.head_plan_id
+        plan = s.get(M.Plan, plan_id)
+        hs, he = V._aware(plan.horizon_start), V._aware(plan.horizon_end)
         some = s.execute(select(M.ScheduledOperation.op_key, M.ScheduledOperation.order_key, M.ScheduledOperation.resource_key).where(M.ScheduledOperation.plan_id == plan_id).limit(1)).one()
-        lanes = [r for (r,) in s.execute(select(M.ScheduledOperation.resource_key).where(M.ScheduledOperation.plan_id == plan_id).distinct().limit(40))]
+        lanes = [r for (r,) in s.execute(select(M.ScheduledOperation.resource_key).where(M.ScheduledOperation.plan_id == plan_id).distinct().order_by(M.ScheduledOperation.resource_key).limit(50))]
         material = s.scalar(select(M.PlanPeg.material_id).where(M.PlanPeg.plan_id == plan_id).limit(1))
+        number = s.scalar(select(M.ProductionOrder.number).where(M.ProductionOrder.plant_id == pid).order_by(M.ProductionOrder.number).offset(12_345).limit(1))
     ctx = system_ctx(tid, "planner")
+    t0 = hs + timedelta(hours=8)
     calls = [
         ("dashboard", lambda s: overview.command_center(s, ctx, pid)),
         ("plan_header", lambda s: V.plan_header(s, ctx, plan_id)),
         ("orders_page_1", lambda s: orders.list_orders(s, ctx, pid, None, {}, 0, 200)),
         ("orders_page_last", lambda s: orders.list_orders(s, ctx, pid, None, {}, 99_800, 200)),
-        ("orders_search", lambda s: orders.list_orders(s, ctx, pid, "SCL-00123", {}, 0, 200)),
+        ("orders_search", lambda s: orders.list_orders(s, ctx, pid, number, {}, 0, 200)),
+        ("orders_late_by_lateness", lambda s: orders.list_orders(s, ctx, pid, None, {"plan_status": "LATE", "sort": "lateness_minutes", "dir": "desc"}, 0, 200)),
+        ("plan_orders_late_page", lambda s: plan_store.order_page(s, s.get(M.Plan, plan_id), ["LATE"], 0, 200)),
+        ("unscheduled_page", lambda s: plan_store.unscheduled(s, s.get(M.Plan, plan_id), offset=0, limit=200)),
+        # Gantt as the planning board loads it: rows once, then the visible rows and time span
+        ("gantt_rows", lambda s: V.gantt(s, ctx, plan_id, hs - timedelta(days=1), he + timedelta(days=2), include_operations=False)),
+        ("gantt_viewport_ops_50_rows_8h", lambda s: V.gantt(s, ctx, plan_id, t0 - timedelta(hours=4), t0 + timedelta(hours=12), lanes, include_resources=False)),
+        ("gantt_viewport_blocks_50_rows_week", lambda s: V.gantt_blocks(s, ctx, plan_id, t0 - timedelta(days=3.5), t0 + timedelta(days=10.5), lanes, 29)),
+        ("gantt_find", lambda s: V.find_operations(s, ctx, plan_id, number, 20)),
         ("gantt_default_window", lambda s: V.gantt(s, ctx, plan_id)),
-        ("gantt_40_rows_day", lambda s: V.gantt(s, ctx, plan_id, resource_ids=lanes)),
         ("operation_detail", lambda s: V.operation_detail(s, ctx, plan_id, some.op_key)),
         ("order_detail", lambda s: V.order_detail(s, ctx, plan_id, some.order_key)),
         ("order_chain", lambda s: V.order_chain(s, ctx, plan_id, some.order_key)),
@@ -107,9 +124,11 @@ def views() -> None:
             t = time.monotonic()
             try:
                 out = fn(s)
-                size = len(json.dumps(out, default=str)) if out is not None else 0
+                t1 = time.monotonic()
+                body = to_json(out, fallback=str) if out is not None else b""
                 TIMES[name] = round(time.monotonic() - t, 2)
-                TIMES[name + "_kb"] = round(size / 1024)
+                TIMES[name + "_json_s"] = round(time.monotonic() - t1, 2)
+                TIMES[name + "_kb"] = round(len(body) / 1024)
             except Exception as exc:  # noqa: BLE001
                 TIMES[name] = f"ERROR {exc.__class__.__name__}: {str(exc)[:120]}"
 

@@ -198,12 +198,31 @@ class MaterialAccount:
 class MaterialLedger:
     def __init__(self, n_materials: int) -> None:
         self.accounts = [MaterialAccount(i) for i in range(n_materials)]
+        self._pending: dict[int, list[LedgerEvent]] | None = None
+
+    def _add(self, mat: int, ev: LedgerEvent) -> None:
+        if self._pending is not None:
+            self._pending.setdefault(mat, []).append(ev)
+        else:
+            self.accounts[mat].add(ev)
 
     def supply(self, mat: int, t: int, qty: float, key: str, **meta) -> None:
-        self.accounts[mat].add(LedgerEvent(t, qty, "SUPPLY", key, meta))
+        self._add(mat, LedgerEvent(t, qty, "SUPPLY", key, meta))
 
     def consume(self, mat: int, t: int, qty: float, key: str, **meta) -> None:
-        self.accounts[mat].add(LedgerEvent(t, -qty, "CONSUMPTION", key, meta))
+        self._add(mat, LedgerEvent(t, -qty, "CONSUMPTION", key, meta))
+
+    def begin_bulk(self) -> None:
+        """Collect movements without querying the ledger (placing 200 000 fixed operations): they
+        are sorted into the accounts once by :meth:`end_bulk`. A stable sort of the existing events
+        followed by the new ones in arrival order gives the order one-by-one insertion gives."""
+        self._pending = {}
+
+    def end_bulk(self) -> None:
+        pending, self._pending = self._pending, None
+        for mat, evs in (pending or {}).items():
+            acc = self.accounts[mat]
+            acc.events = acc.events + evs
 
     def earliest(self, mat: int, qty: float, t0: int) -> int | None:
         return self.accounts[mat].earliest(qty, t0)

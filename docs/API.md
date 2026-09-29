@@ -233,6 +233,8 @@ Not provided in this version (REST + OpenAPI cover every use case of the UI). *C
 |---|---|
 | GET | `/api/v1/plans/{plan_id}` |
 | GET | `/api/v1/plans/{plan_id}/gantt` |
+| GET | `/api/v1/plans/{plan_id}/operations/find` |
+| GET | `/api/v1/plans/{plan_id}/gantt/blocks` |
 | GET | `/api/v1/plans/{plan_id}/schedule` |
 | GET | `/api/v1/plans/{plan_id}/violations` |
 | GET | `/api/v1/plans/{plan_id}/unscheduled` |

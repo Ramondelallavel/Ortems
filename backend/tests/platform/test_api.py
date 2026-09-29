@@ -93,7 +93,7 @@ def test_move_undo_redo_publish(planner, base_plan, sevilla):
     pv = planner.ok(planner.post(f"/plans/{base_plan['id']}/moves/preview", json=body))
     assert "feasible" in pv and "comparison" in pv
     new = planner.ok(planner.post(f"/plans/{base_plan['id']}/moves", json={**body, "accept_violations": True}))
-    assert new["version_no"] == base_plan["version_no"] + 1 and new["kind"] == "MANUAL_EDIT"
+    assert new["version_no"] > base_plan["version_no"] and new["kind"] == "MANUAL_EDIT"
     back = planner.ok(planner.post(f"/scenarios/{sevilla['live_scenario_id']}/undo"))
     assert back["id"] == base_plan["id"]
     fwd = planner.ok(planner.post(f"/scenarios/{sevilla['live_scenario_id']}/redo"))

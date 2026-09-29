@@ -28,7 +28,7 @@ from .builder import BuildConfig, BuildResult, ScheduleBuilder
 from .compile import CompiledProblem, compile_problem
 from .contract import Problem, Solution, SolverMetadata
 from .diff import compare_solutions
-from .timing import compute_timing
+from .timing import Timing, compute_timing
 from .validator import validate
 
 HARD_CONFLICTS = {
@@ -60,6 +60,8 @@ def _baseline_overrides(cp: CompiledProblem) -> dict[int, tuple[int, int, int | 
     out = {}
     for i, (res, ss, _s, e) in cp.baseline.items():
         op = cp.ops[i]
+        if op.fixed is not None:
+            continue  # placed by its own fixing (lock, frozen, in progress), which keeps its reason
         mi = next((m.idx for m in op.modes if m.res == res), None)
         if mi is None:
             continue
@@ -164,7 +166,7 @@ def freed_set(cp: CompiledProblem, seeds: set[int], scope: str, since: int | Non
 INSERTION_STRATEGIES = ("LATEST_START", "BEFORE_LATEST_START", "FRONT")
 
 
-def rebuild(cp: CompiledProblem, freed: set[int], extra_overrides: dict | None = None, explain: bool = True, messages: list[str] | None = None) -> BuildResult:
+def rebuild(cp: CompiledProblem, freed: set[int], extra_overrides: dict | None = None, explain: bool = True, messages: list[str] | None = None, timing: Timing | None = None) -> BuildResult:
     """Keep every non-freed baseline operation, re-place the freed ones in their previous order.
 
     Operations without a baseline position (rush orders, new operations) are inserted by urgency.
@@ -174,7 +176,7 @@ def rebuild(cp: CompiledProblem, freed: set[int], extra_overrides: dict | None =
     """
     from .objectives import components, scales, vector
 
-    tm = compute_timing(cp)
+    tm = timing or compute_timing(cp)
     overrides = {i: ov for i, ov in _baseline_overrides(cp).items() if i not in freed}
     if extra_overrides:
         overrides.update(extra_overrides)
@@ -190,7 +192,15 @@ def rebuild(cp: CompiledProblem, freed: set[int], extra_overrides: dict | None =
         return float(v if v < (1 << 49) else cp.hi)
 
     strategies = INSERTION_STRATEGIES if new_ops else INSERTION_STRATEGIES[:1]
+    if len(strategies) == 1:
+        # nothing to compare: one construction, explained if asked (explaining changes no decision)
+        prio = dict(base_prio)
+        for i in (op.idx for op in cp.ops if op.idx not in base_prio):
+            prio[i] = lst_of(i)
+        cfg = BuildConfig(priority=prio, overrides=overrides, explain=explain, mode_selection=cp.solver.mode_selection)
+        return ScheduleBuilder(cp, cfg, tm).build()
     best = None
+    best_res = None
     best_vec = None
     scale = None
     chosen = strategies[0]
@@ -210,13 +220,21 @@ def rebuild(cp: CompiledProblem, freed: set[int], extra_overrides: dict | None =
             scale = scales(comp)
         vec = vector(cp.objectives, comp, scale)
         if best_vec is None or vec < best_vec:
-            best, best_vec, chosen = (prio, cfg), vec, strat
+            best, best_vec, chosen, best_res = (prio, cfg), vec, strat, res
     assert best is not None
     if new_ops and messages is not None:
         messages.append(f"new operations inserted with strategy {chosen} (best of {', '.join(strategies)} by the scenario objective)")
     prio, cfg = best
+    if not explain:
+        return best_res  # the explaining flag changes no placement decision: this is the same schedule
     cfg = BuildConfig(priority=prio, overrides=overrides, explain=explain, mode_selection=cp.solver.mode_selection)
     return ScheduleBuilder(cp, cfg, tm).build()
+
+
+def replaced_ops(res: BuildResult) -> set[int]:
+    """Operations a repair or move did not leave where the baseline had them: every placement not
+    "KEPT" (freed, moved, fixed, or without a baseline position) and every unscheduled one."""
+    return {p.op for p in res.placements if p is not None and p.fixed_reason != "KEPT"} | set(res.unscheduled)
 
 
 def _meta(provider: str, cp: CompiledProblem, t0: float, messages: list[str]) -> SolverMetadata:
@@ -259,10 +277,27 @@ def repair(problem: Problem, scope: str = "LOCAL", allow_frozen: bool = False, b
     return outcome
 
 
-def move(problem: Problem, op_id: str, resource_id: str, start: datetime, replan: str = "DOWNSTREAM", allow_frozen: bool = False, baseline_solution: Solution | None = None) -> RepairOutcome:
-    """Manual move of one operation with the chosen replan mode (impact preview or apply)."""
+def move(
+    problem: Problem,
+    op_id: str,
+    resource_id: str,
+    start: datetime,
+    replan: str = "DOWNSTREAM",
+    allow_frozen: bool = False,
+    baseline_solution: Solution | None = None,
+    cp: CompiledProblem | None = None,
+    explain: str = "ALL",
+    timing: Timing | None = None,
+) -> RepairOutcome:
+    """Manual move of one operation with the chosen replan mode (impact preview or apply).
+
+    ``cp`` is the compiled ``problem`` when the caller already holds it (it is only read here), and
+    ``timing`` its :func:`compute_timing`.
+    ``explain``: ``ALL`` explains every operation, ``CHANGED`` only the moved and re-placed ones and
+    the unscheduled (the others keep their position and their previous explanation), ``NONE`` is the
+    impact preview: no explanations, bottlenecks, root causes or pegging in the solution."""
     t0 = time.monotonic()
-    cp = compile_problem(problem)
+    cp = cp if cp is not None else compile_problem(problem)
     i = cp.op_index.get(op_id)
     if i is None:
         raise ValueError(f"unknown operation {op_id}")
@@ -296,11 +331,15 @@ def move(problem: Problem, op_id: str, resource_id: str, start: datetime, replan
         freed = freed_set(cp, {i}, "GLOBAL", allow_frozen=allow_frozen) - {i}
     else:
         raise ValueError(f"unknown replan mode {replan}")
-    res = rebuild(cp, freed, extra_overrides={i: (mode.idx, snapped, None, "MANUAL")}, messages=messages)
+    explain = explain.upper()
+    res = rebuild(cp, freed, extra_overrides={i: (mode.idx, snapped, None, "MANUAL")}, explain=explain != "NONE", messages=messages, timing=timing)
     if replan in ("SCENARIO", "GLOBAL") and len(freed) > 0:
         messages.append("scenario-wide replan re-places every non-frozen operation around the moved one in its previous order")
     meta = _meta(f"move-{replan.lower()}", cp, t0, messages)
-    sol = assemble(res, meta)
+    if explain == "CHANGED":
+        sol = assemble(res, meta, explain_ops=replaced_ops(res))
+    else:
+        sol = assemble(res, meta, explain=explain == "ALL", light=explain == "NONE")
     outcome = RepairOutcome(sol, [op_id], [cp.orders[op.order].id], [cp.ops[k].id for k in sorted(freed)], replan, messages=messages)
     if baseline_solution is not None:
         outcome.comparison = compare_solutions(baseline_solution, sol)

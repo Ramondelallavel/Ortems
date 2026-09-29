@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import copy
+import gc
 import gzip
 import hashlib
 import logging
@@ -9,6 +11,8 @@ import threading
 import time
 import traceback
 import uuid
+from collections import OrderedDict
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
@@ -16,6 +20,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from monxuplan_engine.compile import DAY, CompiledProblem, compile_problem
 from monxuplan_engine.contract import (
     BaselineOpSpec,
     FixedAssignmentSpec,
@@ -33,6 +38,7 @@ from monxuplan_engine.pipeline import PIPELINE_STEPS, solve
 from monxuplan_engine.providers.mip import NotSupported
 from monxuplan_engine.repair import move as engine_move
 from monxuplan_engine.repair import repair as engine_repair
+from monxuplan_engine.timing import Timing, compute_timing
 
 from ..core.clock import now
 from ..core.db import new_session
@@ -334,10 +340,13 @@ def persist_solution(
     parent: Plan | None = None,
     note: str | None = None,
     change_summary: dict | None = None,
+    explanations_from: Plan | None = None,
+    snapshot_id: uuid.UUID | None = None,
+    reuse: plan_store.Reuse | None = None,
 ) -> Plan:
     md = sol.solver_metadata
     sha = md.input_hash or ""
-    snap = store_snapshot(s, ctx.tenant_id, problem)
+    snap_id = snapshot_id or store_snapshot(s, ctx.tenant_id, problem).id
     analysis = {
         "storage": plan_store.STORAGE_VERSION,
         "bottlenecks": [b.model_dump(mode="json") for b in sol.bottlenecks],
@@ -370,7 +379,7 @@ def persist_solution(
             solver_metadata=md.model_dump(mode="json"),
             analysis=analysis,
             params={"objectives": problem.objectives.model_dump(mode="json"), "constraints": problem.constraints.model_dump(mode="json"), "solver": problem.solver.model_dump(mode="json")},
-            snapshot_id=snap.id,
+            snapshot_id=snap_id,
             input_hash=sha,
             note=note,
             change_summary=change_summary or {},
@@ -385,7 +394,7 @@ def persist_solution(
             continue
     else:  # pragma: no cover
         raise Conflict("Could not allocate a plan number", code="PLAN_NUMBER")
-    plan_store.write_results(s, ctx.tenant_id, plan, sol, info.op_rows if info else None)
+    plan_store.write_results(s, ctx.tenant_id, plan, sol, info.op_rows if info else None, explanations_from, reuse)
     # move the scenario head; a new version invalidates the redo stack
     sc.head_plan_id = plan.id
     sc.redo_stack = []
@@ -437,14 +446,17 @@ def problem_for_plan(s: Session, plan: Plan) -> Problem:
     problem = load_problem(s, plan)
     SO = ScheduledOperation
     rows = s.execute(select(SO.op_key, SO.resource_key, SO.setup_start, SO.start, SO.end, SO.is_locked, SO.setup_minutes).where(SO.plan_id == plan.id)).all()
+    placed = {r.op_key for r in rows}
     problem.baseline = [BaselineOpSpec.fast(op_id=r.op_key, resource_id=r.resource_key, start=_aware(r.start), end=_aware(r.end), setup_start=_aware(r.setup_start)) for r in rows]
-    # manual/locked positions of the plan remain fixed
+    # the plan's locks are its rows' locks: locked positions are fixed, an operation unlocked since the
+    # problem was stored is free again
     locked = {r.op_key: r for r in rows if r.is_locked}
-    if locked:
-        for op in problem.operations:
-            r = locked.get(op.id)
-            if r is not None and op.fixed is None:
-                op.fixed = FixedAssignmentSpec.fast(resource_id=r.resource_key, start=_aware(r.setup_start), end=_aware(r.end), reason="LOCKED", setup_minutes=r.setup_minutes)
+    for op in problem.operations:
+        r = locked.get(op.id)
+        if r is not None and op.fixed is None:
+            op.fixed = FixedAssignmentSpec.fast(resource_id=r.resource_key, start=_aware(r.setup_start), end=_aware(r.end), reason="LOCKED", setup_minutes=r.setup_minutes)
+        elif r is None and op.fixed is not None and op.fixed.reason == "LOCKED" and op.id in placed:
+            op.fixed = None
     return problem
 
 
@@ -469,19 +481,113 @@ def _require_head(s: Session, ctx: Ctx, plan_id: uuid.UUID, expected_version: in
     return plan, sc
 
 
-def preview_move(s: Session, ctx: Ctx, plan_id: uuid.UUID, op_key: str, resource_id: str, start: datetime, replan: str = "DOWNSTREAM", allow_frozen: bool = False) -> dict[str, Any]:
-    ctx.require("plan:read")
-    plan = s.get(Plan, plan_id)
-    if plan is None:
-        raise NotFound("Plan not found", code="PLAN_NOT_FOUND")
-    get_scenario(s, ctx, plan.scenario_id)
+# A manual move on a 100 000-order plan must not reload, re-validate and recompile the whole plan
+# each time (that alone takes over a minute). The problem, its compiled form and the plan's solution
+# are kept per head plan version; applying a move derives the next version's entry from the new
+# schedule, so consecutive moves only pay for the re-placement, the checks and the storage.
+@dataclass
+class MoveBase:
+    problem: Problem
+    cp: CompiledProblem
+    baseline: Solution
+    snapshot_id: uuid.UUID | None = None  # stored problem of the plan (locks come from its rows)
+    timing: Timing | None = None  # computed on first use
+    op_rows: dict[str, tuple] | None = None  # op key -> (order id, order operation id), on first apply
+
+
+_MOVE_BASES: OrderedDict[tuple, MoveBase] = OrderedDict()
+_MOVE_LOCK = threading.Lock()
+MOVE_BASE_MAX_OPERATIONS = 300_000  # one 100 000-order day plan (or several small ones)
+MOVE_BASE_MAX_ENTRIES = 4
+
+
+def _base_key(plan: Plan) -> tuple:
+    # a version's schedule and problem never change (publishing only changes its status); the one
+    # in-place change, locks, drops the entry (forget_move_base)
+    return (plan.id, plan.snapshot_id)
+
+
+def _remember_base(key: tuple, base: MoveBase) -> None:
+    with _MOVE_LOCK:
+        _MOVE_BASES[key] = base
+        _MOVE_BASES.move_to_end(key)
+        total = sum(len(b.cp.ops) for b in _MOVE_BASES.values())
+        evicted = False
+        while len(_MOVE_BASES) > 1 and (len(_MOVE_BASES) > MOVE_BASE_MAX_ENTRIES or total > MOVE_BASE_MAX_OPERATIONS):
+            _k, old = _MOVE_BASES.popitem(last=False)
+            total -= len(old.cp.ops)
+            evicted = True
+    if evicted:
+        gc.unfreeze()  # let the collector see what was frozen with the evicted base again
+
+
+def forget_move_base(plan_id: uuid.UUID) -> None:
+    """Drop the cached move base of a plan whose rows changed in place (locks)."""
+    with _MOVE_LOCK:
+        for k in [k for k in _MOVE_BASES if k[0] == plan_id]:
+            _MOVE_BASES.pop(k, None)
+
+
+def move_base(s: Session, plan: Plan) -> MoveBase:
+    key = _base_key(plan)
+    with _MOVE_LOCK:
+        hit = _MOVE_BASES.get(key)
+        if hit is not None:
+            _MOVE_BASES.move_to_end(key)
+            return hit
+    with paused_gc():  # one full collection when done …
+        problem = problem_for_plan(s, plan)
+        base = MoveBase(problem, compile_problem(problem), solution_from_plan(s, plan), plan.snapshot_id)
+    _remember_base(key, base)
+    # … then the millions of long-lived objects of the base are moved out of the collector's sight:
+    # later collections do not rescan a 100 000-order plan (seconds each time)
+    gc.freeze()
+    return base
+
+
+def _next_move_base(base: MoveBase, sol: Solution, op_key: str) -> MoveBase | None:
+    """The move base of the version created by applying a move: same problem, the new schedule as
+    baseline and the moved operation locked where the planner put it — what ``problem_for_plan``
+    and ``compile_problem`` return for that version, without reading and compiling it again."""
+    result = getattr(sol, "_state", None)
+    cp = base.cp
+    i = cp.op_index.get(op_key)
+    if result is None or i is None or result.placements[i] is None:
+        return None
+    p = result.placements[i]
+    if p.setup_start - DAY < cp.lo:  # the compiled horizon start depends on fixed operations
+        return None
+    x = next((x for x in sol.schedule if x.op_id == op_key), None)
+    if x is None:
+        return None
+    op = copy.copy(cp.ops[i])
+    op.fixed = (next(m.idx for m in op.modes if m.res == p.res), p.setup_start, p.end, "LOCKED", p.setup)
+    ops = list(cp.ops)
+    ops[i] = op
+    specs = list(base.problem.operations)
+    k = next(k for k, o in enumerate(specs) if o.id == op_key)
+    specs[k] = specs[k].model_copy(update={"fixed": FixedAssignmentSpec.fast(resource_id=x.resource_id, start=x.setup_start, end=x.end, reason="LOCKED", setup_minutes=x.setup_minutes)})
+    baseline = [BaselineOpSpec.fast(op_id=y.op_id, resource_id=y.resource_id, start=y.start, end=y.end, setup_start=y.setup_start) for y in sol.schedule]
+    problem = base.problem.model_copy(update={"operations": specs, "baseline": baseline})
+    ncp = copy.copy(cp)
+    ncp.problem = problem
+    ncp.ops = ops
+    ncp.baseline = {q.op: (q.res, q.setup_start, q.start, q.end) for q in result.placements if q is not None}
+    ncp.input_hash = None  # not recomputed for a derived version (it hashes the whole problem)
+    return MoveBase(problem, ncp, sol, base.snapshot_id, None, base.op_rows)
+
+
+def _move(s: Session, ctx: Ctx, plan: Plan, op_key: str, resource_id: str, start: datetime, replan: str, allow_frozen: bool, explain: str) -> dict[str, Any]:
     if replan not in REPLAN_MODES:
         raise ValidationFailed(f"Unknown replan mode {replan}")
     if allow_frozen:
         ctx.require("plan:frozen")
-    problem = problem_for_plan(s, plan)
+    base = move_base(s, plan)
     try:
-        out = engine_move(problem, op_key, resource_id, start, replan=replan, allow_frozen=allow_frozen, baseline_solution=solution_from_plan(s, plan))
+        with paused_gc(collect=False):
+            if base.timing is None:
+                base.timing = compute_timing(base.cp)
+            out = engine_move(base.problem, op_key, resource_id, start, replan=replan, allow_frozen=allow_frozen, baseline_solution=base.baseline, cp=base.cp, explain=explain, timing=base.timing)
     except PermissionError as exc:
         raise Forbidden(str(exc), code="FROZEN_OPERATION") from exc
     except ValueError as exc:
@@ -499,15 +605,34 @@ def preview_move(s: Session, ctx: Ctx, plan_id: uuid.UUID, op_key: str, resource
         "freed_operations": len(out.freed_ops),
         "messages": out.messages,
         "_solution": out.solution,
-        "_problem": problem,
+        "_problem": base.problem,
+        "_base": base,
+        "_replaced": _replaced_keys(out.solution),
     }
 
 
+def preview_move(s: Session, ctx: Ctx, plan_id: uuid.UUID, op_key: str, resource_id: str, start: datetime, replan: str = "DOWNSTREAM", allow_frozen: bool = False) -> dict[str, Any]:
+    ctx.require("plan:read")
+    plan = s.get(Plan, plan_id)
+    if plan is None:
+        raise NotFound("Plan not found", code="PLAN_NOT_FOUND")
+    get_scenario(s, ctx, plan.scenario_id)
+    out = _move(s, ctx, plan, op_key, resource_id, start, replan, allow_frozen, explain="NONE")
+    return {k: v for k, v in out.items() if not k.startswith("_")}
+
+
 def apply_move(s: Session, ctx: Ctx, plan_id: uuid.UUID, op_key: str, resource_id: str, start: datetime, replan: str, reason: str | None, allow_frozen: bool = False, expected_version: int | None = None, accept_violations: bool = False) -> Plan:
+    # the collector would rescan the new 200 000-operation solution again and again while it is stored
+    with paused_gc(collect=False):
+        return _apply_move(s, ctx, plan_id, op_key, resource_id, start, replan, reason, allow_frozen, expected_version, accept_violations)
+
+
+def _apply_move(s: Session, ctx: Ctx, plan_id: uuid.UUID, op_key: str, resource_id: str, start: datetime, replan: str, reason: str | None, allow_frozen: bool, expected_version: int | None, accept_violations: bool) -> Plan:
     ctx.require("plan:edit")
     plan, sc = _require_head(s, ctx, plan_id, expected_version)
     check_edit(ctx, sc)
-    prev = preview_move(s, ctx, plan_id, op_key, resource_id, start, replan, allow_frozen)
+    # one computation: the re-placed operations are explained, the others keep their explanation
+    prev = _move(s, ctx, plan, op_key, resource_id, start, replan, allow_frozen, explain="CHANGED")
     sol: Solution = prev["_solution"]
     if not sol.feasible and prev["comparison"]["new_hard_violation_count"] and not accept_violations:
         raise ValidationFailed(
@@ -516,7 +641,26 @@ def apply_move(s: Session, ctx: Ctx, plan_id: uuid.UUID, op_key: str, resource_i
             context={"violations": prev["hard_violations"][:10]},
         )
     problem: Problem = prev["_problem"]
-    new_plan = persist_solution(s, ctx, sc, problem, sol, _info_from_plan(s, plan), kind="MANUAL_EDIT", parent=plan, note=reason, change_summary=_summary(prev["comparison"]))
+    base: MoveBase = prev["_base"]
+    if base.op_rows is None:
+        base.op_rows = _info_from_plan(s, plan).op_rows
+    info = _info_from_plan(s, plan, base.op_rows)
+    # same input problem as the parent version: its snapshot is reused (the locks are in the rows)
+    new_plan = persist_solution(
+        s,
+        ctx,
+        sc,
+        problem,
+        sol,
+        info,
+        kind="MANUAL_EDIT",
+        parent=plan,
+        note=reason,
+        change_summary=_summary(prev["comparison"]),
+        explanations_from=plan,
+        snapshot_id=base.snapshot_id,
+        reuse=_reuse_for(s, plan, sol, prev["_replaced"] | {op_key}),
+    )
     # the moved operation is kept where the planner put it in later replans
     so = s.scalar(select(ScheduledOperation).where(ScheduledOperation.plan_id == new_plan.id, ScheduledOperation.op_key == op_key))
     if so is not None:
@@ -534,7 +678,56 @@ def apply_move(s: Session, ctx: Ctx, plan_id: uuid.UUID, op_key: str, resource_i
         reason=reason,
         compact=False,
     )
+    nxt = _next_move_base(base, sol, op_key) if so is not None else None
+    sol._state = None
+    if nxt is not None:
+        _remember_base(_base_key(new_plan), nxt)
     return new_plan
+
+
+def _replaced_keys(sol: Solution) -> set[str]:
+    state = getattr(sol, "_state", None)
+    if state is None:
+        return set()
+    from monxuplan_engine.repair import replaced_ops
+
+    return {state.cp.ops[i].id for i in replaced_ops(state)}
+
+
+def _reuse_for(s: Session, parent: Plan, sol: Solution, replaced: set[str]) -> plan_store.Reuse | None:
+    """Rows of a moved plan that differ from the parent version's stored rows (the others are copied
+    from the parent). Operations whose position, setup, sequence and flags are unchanged keep their
+    stored row — including its binding constraint, as their explanation is kept."""
+    SO, PO = ScheduledOperation, plan_store.PlanOrder
+    before = {
+        r.op_key: (r.resource_key, _aware(r.setup_start), _aware(r.start), _aware(r.end), r.setup_minutes, r.is_fixed, r.fixed_reason, r.is_locked, r.is_late, r.zone, r.prev_op_key)
+        for r in s.execute(select(SO.op_key, SO.resource_key, SO.setup_start, SO.start, SO.end, SO.setup_minutes, SO.is_fixed, SO.fixed_reason, SO.is_locked, SO.is_late, SO.zone, SO.prev_op_key).where(SO.plan_id == parent.id))
+    }
+    ops = set(replaced)
+    for x in sol.schedule:
+        if before.pop(x.op_id, None) != (x.resource_id, x.setup_start, x.start, x.end, x.setup_minutes, x.fixed, x.fixed_reason, x.fixed_reason == "LOCKED", x.late, x.zone, x.prev_op_id):
+            ops.add(x.op_id)
+    ops |= set(before)  # no longer scheduled
+    old_orders = {
+        r.order_key: (r.status, _aware(r.start) if r.start else None, _aware(r.end) if r.end else None, r.lateness_minutes, r.material_status)
+        for r in s.execute(select(PO.order_key, PO.status, PO.start, PO.end, PO.lateness_minutes, PO.material_status).where(PO.plan_id == parent.id))
+    }
+    orders = {o.order_id for o in sol.orders if old_orders.get(o.order_id) != (o.status, o.start, o.end, o.lateness_minutes, o.material_status)}
+    orders |= set(old_orders) - {o.order_id for o in sol.orders}
+    state = getattr(sol, "_state", None)
+    if state is None or len(ops) > plan_store.REUSE_MAX_KEYS or len(orders) > plan_store.REUSE_MAX_KEYS:
+        return None
+    cp = state.cp
+    materials: set[str] = set()
+    for k in ops:
+        i = cp.op_index.get(k)
+        if i is None:
+            continue
+        op = cp.ops[i]
+        materials.update(cp.materials[mi].id for mi, _q in op.materials)
+        if op.produces is not None:
+            materials.add(cp.materials[op.produces[0]].id)
+    return plan_store.Reuse(parent.id, ops, orders, materials)
 
 
 def _pos(s: Session, plan_id: uuid.UUID, op_key: str) -> dict[str, Any]:
@@ -544,14 +737,17 @@ def _pos(s: Session, plan_id: uuid.UUID, op_key: str) -> dict[str, Any]:
     return {"resource": so.resource_key, "start": _aware(so.setup_start).isoformat()}
 
 
-def _info_from_plan(s: Session, plan: Plan):
+def _info_from_plan(s: Session, plan: Plan, op_rows: dict[str, tuple] | None = None):
     from .problem_builder import BuildInfo
 
     info = BuildInfo(plant_id=plan.plant_id, scenario_id=plan.scenario_id)
     SO = ScheduledOperation
-    for r in s.execute(select(SO.op_key, SO.order_id, SO.order_operation_id).where(SO.plan_id == plan.id, SO.order_operation_id.is_not(None))):
-        if r.order_id is not None:
-            info.op_rows[r.op_key] = (r.order_id, r.order_operation_id)
+    if op_rows is not None:
+        info.op_rows = op_rows
+    else:
+        for r in s.execute(select(SO.op_key, SO.order_id, SO.order_operation_id).where(SO.plan_id == plan.id, SO.order_operation_id.is_not(None))):
+            if r.order_id is not None:
+                info.op_rows[r.op_key] = (r.order_id, r.order_operation_id)
     info.issues = (plan.analysis or {}).get("data_issues", [])
     return info
 
@@ -564,6 +760,7 @@ def set_locks(s: Session, ctx: Ctx, plan_id: uuid.UUID, op_keys: list[str], lock
     for part in plan_store.chunks(op_keys):
         res = s.execute(update(ScheduledOperation).where(ScheduledOperation.plan_id == plan.id, ScheduledOperation.op_key.in_(part)).values(is_locked=locked).execution_options(synchronize_session=False))
         n += res.rowcount or 0
+    forget_move_base(plan.id)  # locked operations are fixed in the plan's problem
     audit.record(s, ctx, "LOCK" if locked else "UNLOCK", "plan", plan.id, plan.number, after={"operations": op_keys[:500], "count": len(op_keys)})
     return n
 

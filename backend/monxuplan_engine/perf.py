@@ -19,9 +19,11 @@ _depth = 0
 
 
 @contextmanager
-def paused_gc() -> Iterator[None]:
+def paused_gc(collect: bool = True) -> Iterator[None]:
     """Pause cyclic garbage collection (nesting- and thread-safe); collect once when the outermost
-    block ends."""
+    block ends. ``collect=False`` skips that collection — for request-sized work in a process that
+    holds large cached plans, where a full collection rescans all of them (seconds) to free what is
+    already freed by reference counting."""
     global _depth
     with _lock:
         _depth += 1
@@ -37,6 +39,7 @@ def paused_gc() -> Iterator[None]:
             _depth -= 1
             last = _depth == 0
         if last:
-            gc.collect()
+            if collect:
+                gc.collect()
             if was_enabled is not False:
                 gc.enable()

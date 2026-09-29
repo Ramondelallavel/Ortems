@@ -166,3 +166,63 @@ Reading the table honestly:
   neighbourhoods; LNS reports no global gap. On L and XL it did not find an improvement over the heuristic within
   its iteration budget (identical KPIs), which is reported as such rather than hidden.
 * Peak RSS is the whole Python process including OR-Tools native memory.
+
+## Large plants: 100 000 orders a day
+
+Measured on the Scale Plant (`python -m monxuplan.seed.scale --orders 100000`: 100 000 open orders due
+over one day, 198 753 operations, 1 000 machines in cells of 8, 600 products with 2–3 alternative
+machines per operation, family changeovers, raw materials with stock) on PostgreSQL 16, 4-core cloud
+container (Xeon 2.8 GHz), one Python process. Commands: `benchmarks/platform_scale.py --run --views`
+(planning run through the worker path, then the screens' service calls with JSON encoding) and the move
+timings from the same database.
+
+**Planning run** (heuristic, 120 s budget):
+
+| Phase | Time |
+|---|---:|
+| Build the problem from the database | 11.4 s |
+| Solve (one construction ≈ 49 s; explanations recorded during the first one) | 133 s |
+| Store the version (COPY of 200 000 operations, 100 000 order results, pegging, read models) | 42.9 s |
+| Load previous version + compare | 10.1 s |
+| **Total** | **203 s** (was 401 s) · peak memory 6.9 GB (was 10.8 GB) |
+
+The time budget only allows the first construction: the run says so in its messages ("alternative
+dispatching strategies skipped", "local search skipped … raise the time limit"). It is not an optimised
+plan in the sense of the small instances above.
+
+**Screens** (service call + JSON encoding; response size):
+
+| Call | Time | Size |
+|---|---:|---:|
+| Dashboard | 0.75 s | 14 kB |
+| Order book page (first / last of 100 000, search, late by lateness) | 0.23–0.36 s | ≤ 174 kB |
+| Gantt rows (1 000 resources, calendars) | 0.22 s | 420 kB |
+| Gantt viewport: 50 rows × 16 h of operations | 1.42 s | 5.6 MB |
+| Gantt viewport: 50 rows × 2 weeks as busy blocks | 0.52 s | 8 kB |
+| Operation search | 0.24 s | < 1 kB |
+| Operation / order detail, order chain | 0.00–0.40 s | ≤ 10 kB |
+| Capacity heat-map (day buckets / hour buckets, 100 rows) | 0.02 / 0.04 s | 1.0 / 1.5 MB |
+| Material availability / projection | 0.62 / 0.01 s | 339 / 286 kB |
+| Dispatch list of one machine | 0.14 s | 82 kB |
+| Supervisor view (whole plant) | 4.4 s | 831 kB |
+| Legacy full-window Gantt (first day, all resources) | 6.5 s | 48 MB — not used by the planning board for large plans |
+
+**Manual moves** (DOWNSTREAM replan, 60–300 operations re-placed):
+
+| Step | Before | Now |
+|---|---:|---:|
+| Impact preview, first on a plan version (loads and compiles the version) | 182 s | 100 s |
+| Impact preview, following ones on the same version | 182 s | 30 s |
+| Apply (re-place, explain the re-placed operations, store the new version) | ~230 s | 63 s |
+| Impact preview on the version created by the move | 182 s | 31 s |
+
+How: the compiled plan of the current version is kept in memory and the next version's is derived from
+the move instead of being read and compiled again; the preview skips explanations, bottlenecks and
+pegging; the new version copies the parent's unchanged rows and read models inside the database and
+keeps the explanations of the operations that did not move.
+
+**Limits, stated plainly.** A move still re-validates, re-assembles and stores the whole 200 000-operation
+version (validation alone ≈ 14 s, writing a full version ≈ 6 s per 200 000 rows even server-side), so it
+takes tens of seconds, not the sub-second feel of a small plan. Getting there needs incremental validation
+and KPIs over the affected region and versions stored as differences from their parent; those are not
+implemented. The first preview after a new version is loaded (or after a restart) pays the full load.
