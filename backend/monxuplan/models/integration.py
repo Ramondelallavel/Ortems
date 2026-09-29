@@ -65,8 +65,11 @@ class WebhookSubscription(IdMixin, TenantMixin, TimestampMixin, VersionMixin, Ba
 
 
 class WebhookDelivery(IdMixin, TenantMixin, Base):
+    """Outbox row: written in the transaction of the event it announces, delivered by whichever worker
+    claims it (lease ``locked_until`` / ``locked_by``), retried with back-off from the last attempt."""
+
     __tablename__ = "webhook_delivery"
-    __table_args__ = (Index("ix_webhook_delivery_sub", "subscription_id", "created_at"),)
+    __table_args__ = (Index("ix_webhook_delivery_sub", "subscription_id", "created_at"), Index("ix_webhook_delivery_due", "status", "next_attempt_at"))
     subscription_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("webhook_subscription.id", ondelete="CASCADE"))
     event_type: Mapped[str] = mapped_column(String(60))
     payload: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
@@ -76,6 +79,10 @@ class WebhookDelivery(IdMixin, TenantMixin, Base):
     error: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=now)
+    last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    locked_by: Mapped[str | None] = mapped_column(String(120))
 
 
 class AuditLog(IdMixin, TenantMixin, Base):

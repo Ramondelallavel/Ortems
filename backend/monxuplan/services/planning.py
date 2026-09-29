@@ -45,7 +45,7 @@ from ..core.db import new_session
 from ..core.errors import Conflict, DomainError, Forbidden, NotFound, PlanningBlocked, ValidationFailed
 from ..core.events import bus
 from ..core.observability import PLANNING_RUNS, SOLVER_SECONDS
-from ..models import ConstraintViolation, Plan, PlanningRun, Plant, ProblemSnapshot, Scenario, ScheduledOperation
+from ..models import ConstraintViolation, Plan, PlanningRun, Plant, ProblemSnapshot, Scenario, ScheduledOperation, revision
 from . import audit, plan_store
 from .context import Ctx, system_ctx
 from .problem_builder import build_problem
@@ -121,8 +121,14 @@ def enqueue_run(s: Session, ctx: Ctx, scenario_id: uuid.UUID, kind: str = "OPTIM
     if running:
         raise Conflict("A planning run is already queued or running for this scenario.", code="RUN_IN_PROGRESS")
     run = PlanningRun(tenant_id=ctx.tenant_id, scenario_id=sc.id, kind=kind, params=params, progress=[{"step": st, "status": "PENDING"} for st in PIPELINE_STEPS], created_by=ctx.username)
-    s.add(run)
-    s.flush()
+    try:
+        # the count above is only a friendly early answer: the unique index on active runs is what
+        # makes two concurrent requests unable to queue two runs for one scenario
+        with s.begin_nested():
+            s.add(run)
+            s.flush()
+    except IntegrityError as exc:
+        raise Conflict("A planning run is already queued or running for this scenario.", code="RUN_IN_PROGRESS") from exc
     audit.record(s, ctx, "PLANNING_RUN_QUEUED", "scenario", sc.id, sc.name, after={"run_id": str(run.id), "kind": kind, "params": params})
     bus().publish("planning.run.queued", str(ctx.tenant_id), {"run_id": str(run.id), "scenario_id": str(sc.id), "kind": kind}, str(sc.plant_id))
     return run
@@ -133,6 +139,7 @@ def cancel_run(s: Session, ctx: Ctx, run_id: uuid.UUID) -> PlanningRun:
     if run is None:
         raise NotFound("Run not found")
     ctx.require("plan:run")
+    check_edit(ctx, get_scenario(s, ctx, run.scenario_id))
     if run.status == "QUEUED":
         run.status = "CANCELLED"
         run.finished_at = now()
@@ -214,9 +221,14 @@ def _execute_run(run_id: uuid.UUID, tenant_id: uuid.UUID) -> None:
         ctx = system_ctx(tenant_id, run.created_by or "worker")
         prog = _Progress(run.id, tenant_id, plant_id)
         provider = None
+        stale: str | None = None
+        owner = run.worker  # the claim; a run re-queued and claimed by another worker is not ours anymore
         try:
             params = run.params or {}
             baseline = head_plan(s, sc)
+            # the inputs this result will be computed from (checked again before it becomes the head)
+            run.input_revision = revision.current(s, tenant_id)
+            run.baseline_plan_id = baseline.id if baseline else None
             frozen = published_plan(s, plant_id) if sc.is_live else baseline
             overrides = {k: params[k] for k in ("objectives", "constraints", "solver", "horizon_days", "frozen_hours", "flexible_days") if k in params}
             if run.kind == "PLAN":
@@ -228,7 +240,14 @@ def _execute_run(run_id: uuid.UUID, tenant_id: uuid.UUID) -> None:
             bus().publish("planning.run.started", str(tenant_id), {"run_id": str(run.id), "scenario_id": str(sc.id)}, str(plant_id))
             solution = solve(problem, progress=prog, cancelled=prog.is_cancelled)
             prog.mark("Save schedule", "RUNNING")
-            plan = persist_solution(s, ctx, sc, problem, solution, info, kind="OPTIMIZED" if run.kind != "REPAIR" else "REPAIR", run=run, parent=baseline, note=params.get("note"))
+            stale = _promotion_check(s, run, sc, owner, tenant_id)
+            if stale == "NOT_OWNER":
+                s.rollback()
+                log.warning("planning run result discarded: the run was re-queued and belongs to another worker", extra={"planning_run": str(run_id)})
+                return
+            plan = persist_solution(
+                s, ctx, sc, problem, solution, info, kind="OPTIMIZED" if run.kind != "REPAIR" else "REPAIR", run=run, parent=baseline, note=params.get("note"), promote=stale is None
+            )
             solution._state = None  # the engine state (gigabytes on a large plant) is no longer needed
             if baseline is not None:
                 try:
@@ -236,7 +255,7 @@ def _execute_run(run_id: uuid.UUID, tenant_id: uuid.UUID) -> None:
                 except Exception:  # noqa: BLE001 - comparison is informative only
                     log.exception("comparison with previous plan failed")
             run.plan_id = plan.id
-            run.status = "SUCCEEDED"
+            run.status = "SUCCEEDED" if stale is None else "STALE"
             md = solution.solver_metadata
             run.provider, run.solver_status, run.objective, run.best_bound, run.gap, run.input_hash = md.provider, md.status, md.objective, md.best_bound, md.gap, md.input_hash
             run.result = {
@@ -244,7 +263,8 @@ def _execute_run(run_id: uuid.UUID, tenant_id: uuid.UUID) -> None:
                 "plan_number": plan.number,
                 "feasible": solution.feasible,
                 "kpis": solution.kpis,
-                "messages": md.messages + (["stopped by the user: best plan found so far"] if prog.cancelled else []),
+                "messages": md.messages + (["stopped by the user: best plan found so far"] if prog.cancelled else []) + ([stale] if stale else []),
+                "stale": stale,
                 "change_log": info.change_log,
                 "unscheduled": len(solution.unscheduled),
             }
@@ -253,7 +273,7 @@ def _execute_run(run_id: uuid.UUID, tenant_id: uuid.UUID) -> None:
             generate_alerts(s, ctx, plan, solution, sc)
             s.commit()  # commit before writing progress from another session (avoids lock waits)
             prog.mark("Save schedule", "DONE", plan.number)
-            prog.mark("Publish result", "DONE", "draft plan available")
+            prog.mark("Publish result", "DONE", "draft plan available" if stale is None else "not applied: the inputs changed while planning")
         except NotSupported as exc:
             s.rollback()
             _fail(run, "PROVIDER_NOT_SUPPORTED", str(exc), None)
@@ -267,6 +287,8 @@ def _execute_run(run_id: uuid.UUID, tenant_id: uuid.UUID) -> None:
             _fail(run, "ENGINE_ERROR", f"MonxuPlan couldn't generate the schedule (error {error_id}). The technical details were logged for the administrator.", traceback.format_exc()[-8000:])
             prog.mark(prog.current or "Optimize", "FAILED", str(exc)[:200])
         finally:
+            if stale == "NOT_OWNER":
+                return  # noqa: B012 - the run row belongs to the worker that re-claimed it: leave it alone
             run.finished_at = now()
             run.duration_s = round(time.monotonic() - t0, 3)
             s.commit()
@@ -277,6 +299,21 @@ def _execute_run(run_id: uuid.UUID, tenant_id: uuid.UUID) -> None:
                 extra={"planning_run": str(run.id), "scenario": str(sc.id), "plan": str(run.plan_id), "status": run.status, "duration_s": run.duration_s, "extra_data": {"provider": run.provider, "solver_status": run.solver_status, "gap": run.gap, "input_hash": run.input_hash}},
             )
             bus().publish("planning.run.finished", str(tenant_id), {"run_id": str(run.id), "status": run.status, "plan_id": str(run.plan_id) if run.plan_id else None, "error": run.error_message}, str(plant_id))
+
+
+def _promotion_check(s: Session, run: PlanningRun, sc: Scenario, owner: str | None, tenant_id: uuid.UUID) -> str | None:
+    """Before a run's result becomes the scenario head: lock the run and scenario rows and compare the
+    inputs the run started from with the current ones. Returns None (promote), a reason (keep the result
+    as a stale version; the head is left alone) or ``NOT_OWNER`` (another worker owns the run now)."""
+    fresh_run = s.execute(select(PlanningRun.worker, PlanningRun.status).where(PlanningRun.id == run.id).with_for_update()).one()
+    if fresh_run.worker != owner or fresh_run.status != "RUNNING":
+        return "NOT_OWNER"
+    s.refresh(sc, with_for_update=True)
+    if sc.head_plan_id != run.baseline_plan_id:
+        return "The scenario's current plan changed while this run was computing (manual edit, undo, restore or another run); the result was kept as a separate version and not applied."
+    if revision.current(s, tenant_id) != run.input_revision:
+        return "Planning data changed while this run was computing (master data, orders, inventory, calendars or scenario changes); the result was kept as a separate version and not applied. Run again to plan with the current data."
+    return None
 
 
 def _fail(run: PlanningRun, code: str, message: str, detail: str | None) -> None:
@@ -343,6 +380,7 @@ def persist_solution(
     explanations_from: Plan | None = None,
     snapshot_id: uuid.UUID | None = None,
     reuse: plan_store.Reuse | None = None,
+    promote: bool = True,
 ) -> Plan:
     md = sol.solver_metadata
     sha = md.input_hash or ""
@@ -369,7 +407,7 @@ def persist_solution(
             number=number,
             version_no=version_no,
             kind=kind,
-            status="DRAFT",
+            status="DRAFT" if promote else "STALE",
             feasible=sol.feasible,
             horizon_start=problem.horizon.start,
             horizon_end=problem.horizon.end,
@@ -395,9 +433,10 @@ def persist_solution(
     else:  # pragma: no cover
         raise Conflict("Could not allocate a plan number", code="PLAN_NUMBER")
     plan_store.write_results(s, ctx.tenant_id, plan, sol, info.op_rows if info else None, explanations_from, reuse)
-    # move the scenario head; a new version invalidates the redo stack
-    sc.head_plan_id = plan.id
-    sc.redo_stack = []
+    if promote:
+        # move the scenario head; a new version invalidates the redo stack
+        sc.head_plan_id = plan.id
+        sc.redo_stack = []
     audit.record(s, ctx, "PLAN_CREATED", "plan", plan.id, plan.number, after={"kind": kind, "scenario": sc.name, "feasible": sol.feasible, "solver": md.provider, "status": md.status, "objective": md.objective, "gap": md.gap})
     bus().publish("plan.created", str(ctx.tenant_id), {"plan_id": str(plan.id), "number": plan.number, "scenario_id": str(sc.id), "kind": kind}, str(sc.plant_id))
     return plan
@@ -898,22 +937,88 @@ def validate_plan(s: Session, ctx: Ctx, plan_id: uuid.UUID) -> dict[str, Any]:
     return result
 
 
+def final_validation(s: Session, plan: Plan) -> dict[str, Any]:
+    """Independent validation of a stored plan version against its own problem snapshot: the stored
+    positions are replayed exactly and checked by the validator (not by the builder that produced
+    them). Operations kept from a previous plan are validated like any other placement (release, start
+    in the past…); only the plan's genuine fixings (in progress, locked, frozen) are exempt from them."""
+    from monxuplan_engine.builder import Placement
+    from monxuplan_engine.validator import validate
+
+    from .engine_view import replay
+
+    cp, res = replay(s, plan)
+    placements: list[Placement | None] = []
+    for p in res.placements:
+        if p is not None and p.fixed_reason == "KEPT" and cp.ops[p.op].fixed is None:
+            q = copy.copy(p)  # the replay is cached: never mutate its placements
+            q.fixed, q.fixed_reason = False, None
+            placements.append(q)
+        else:
+            placements.append(p)
+    val = validate(cp, placements, res.unscheduled, include_data_issues=True)
+    hard = [v for v in val.violations if v.hardness == "HARD" and v.type != "UNSCHEDULED" and not v.type.startswith("DATA_")]
+    data_critical = [v for v in val.violations if v.type.startswith("DATA_") and v.severity == "CRITICAL"]
+    return {
+        "hard": hard,
+        "unscheduled": len(res.unscheduled),
+        "data_critical": data_critical,
+        "operations": sum(1 for p in placements if p is not None),
+        "describe": lambda vs: [{"type": v.type, "message": v.message, "op": cp.ops[v.op].id if v.op is not None else None} for v in vs[:20]],
+    }
+
+
+PUBLISH_BLOCKERS = ("NOT_CURRENT_VERSION", "NOT_VALIDATED", "HARD_VIOLATIONS", "UNSCHEDULED_OPERATIONS", "CRITICAL_DATA_ISSUES")
+
+
 def publish(s: Session, ctx: Ctx, plan_id: uuid.UUID, reason: str | None = None, force: bool = False) -> Plan:
+    """Publication gate (PLANNING_ENGINE.md, "Publication"). A plan becomes the plant's live plan only if
+
+    1. it is the current version (head) of its scenario and not stale,
+    2. it is VALIDATED when the plant requires it (setting ``publish_requires_validation``),
+    3. the independent validator, re-run now on the stored schedule, finds no HARD violation,
+    4. no operation is unscheduled, and
+    5. no critical data issue affects its input.
+
+    Conditions 2–5 can be overridden only with ``force`` and a reason; the overrides are recorded on the
+    plan and in the audit log. Condition 1 is never overridden (restore the version first). The plant row
+    is locked for the duration, so two publications of one plant are serialised.
+    """
     ctx.require("plan:publish")
     plan = s.get(Plan, plan_id)
     if plan is None:
         raise NotFound("Plan not found")
     sc = get_scenario(s, ctx, plan.scenario_id)
+    if force and not (reason or "").strip():
+        raise ValidationFailed("A reason is required to override the publication checks.", code="REASON_REQUIRED")
+    # serialise publishers of one plant, and read the current state under that lock
+    plant = s.get(Plant, plan.plant_id, with_for_update=True)
+    s.refresh(plan, with_for_update=True)
+    s.refresh(sc)
     if plan.status == "PUBLISHED":
         raise Conflict("This plan is already published.", code="ALREADY_PUBLISHED")
-    hard = s.scalar(
-        select(func.count()).select_from(ConstraintViolation).where(ConstraintViolation.plan_id == plan.id, ConstraintViolation.hardness == "HARD", ConstraintViolation.severity == "CRITICAL", ~ConstraintViolation.type.like("DATA_%"), ConstraintViolation.type != "UNSCHEDULED")
-    )
-    if hard and not force:
-        raise ValidationFailed(f"The plan has {hard} hard constraint violation(s). Resolve them or publish with an explicit override and reason.", code="PLAN_HAS_VIOLATIONS")
-    if force and hard and not reason:
-        raise ValidationFailed("A reason is required to publish a plan with violations.", code="REASON_REQUIRED")
-    plant = s.get(Plant, plan.plant_id)
+    if plan.status == "STALE" or sc.head_plan_id != plan.id:
+        raise Conflict(
+            "Only the current version of a scenario can be published. Restore this version first if it is the one to publish.",
+            code="NOT_CURRENT_VERSION",
+            context={"head_plan_id": str(sc.head_plan_id) if sc.head_plan_id else None},
+        )
+    blockers: list[dict[str, Any]] = []
+    if (plant.settings or {}).get("publish_requires_validation") and plan.status != "VALIDATED":
+        blockers.append({"code": "NOT_VALIDATED", "message": "This plant requires plans to be validated against the current data before publication."})
+    fv = final_validation(s, plan)
+    if fv["hard"]:
+        blockers.append({"code": "HARD_VIOLATIONS", "message": f"{len(fv['hard'])} hard constraint violation(s) in the stored schedule.", "details": fv["describe"](fv["hard"])})
+    if fv["unscheduled"]:
+        blockers.append({"code": "UNSCHEDULED_OPERATIONS", "message": f"{fv['unscheduled']} operation(s) of the plan's orders are not scheduled: the plan is incomplete."})
+    if fv["data_critical"]:
+        blockers.append({"code": "CRITICAL_DATA_ISSUES", "message": f"{len(fv['data_critical'])} critical data issue(s) in the plan's input.", "details": fv["describe"](fv["data_critical"])})
+    if blockers and not force:
+        raise ValidationFailed(
+            "The plan cannot be published: " + " ".join(b["message"] for b in blockers) + " Resolve them, or override explicitly with a reason.",
+            code="PUBLISH_BLOCKED",
+            context={"blockers": blockers},
+        )
     prev_id = plant.published_plan_id
     if prev_id:
         prev = s.get(Plan, prev_id)
@@ -923,11 +1028,22 @@ def publish(s: Session, ctx: Ctx, plan_id: uuid.UUID, reason: str | None = None,
     plan.published_at = now()
     plan.published_by = ctx.username
     plan.publish_reason = reason
+    plan.publish_overrides = [{"code": b["code"], "message": b["message"]} for b in blockers]
     plant.published_plan_id = plan.id
     if not sc.is_live:
         # publishing a what-if makes it the plant's live plan from now on
         audit.record(s, ctx, "SCENARIO_PROMOTED", "scenario", sc.id, sc.name, reason=reason)
-    audit.record(s, ctx, "PLAN_PUBLISHED", "plan", plan.id, plan.number, before={"published": str(prev_id) if prev_id else None}, after={"published": plan.number}, reason=reason)
+    audit.record(
+        s,
+        ctx,
+        "PLAN_PUBLISHED_FORCED" if blockers else "PLAN_PUBLISHED",
+        "plan",
+        plan.id,
+        plan.number,
+        before={"published": str(prev_id) if prev_id else None},
+        after={"published": plan.number, "overrides": plan.publish_overrides, "operations_validated": fv["operations"]},
+        reason=reason,
+    )
     bus().publish("plan.published", str(ctx.tenant_id), {"plan_id": str(plan.id), "number": plan.number}, str(plan.plant_id))
     from .webhooks import emit
 

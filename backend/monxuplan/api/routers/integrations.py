@@ -226,8 +226,9 @@ def create_webhook(body: WebhookIn, ctx: Ctx = Depends(get_ctx), s=Depends(get_d
     bad = [e for e in body.events if e not in OUT and e != "*"]
     if bad:
         raise ValidationFailed(f"Unknown event(s): {', '.join(bad)}")
-    if get_settings().is_production and not body.url.startswith("https://"):
-        raise ValidationFailed("Webhook URLs must use HTTPS in production")
+    from ...core.netpolicy import check_url
+
+    check_url(body.url, "Webhook")  # scheme, credentials and destination policy (checked again at every delivery)
     secret = body.secret or _secrets.token_urlsafe(32)
     w = WebhookSubscription(tenant_id=ctx.tenant_id, name=body.name, url=body.url, events=body.events, secret_encrypted=encrypt_secret(secret), is_active=body.is_active)
     s.add(w)

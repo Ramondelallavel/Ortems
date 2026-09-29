@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, LargeBinary, String, Text, UniqueConstraint, Uuid
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, LargeBinary, String, Text, UniqueConstraint, Uuid, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from ..core.clock import now
@@ -56,12 +56,29 @@ class ProblemSnapshot(IdMixin, TenantMixin, Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
+ACTIVE_RUN_STATUSES = ("QUEUED", "RUNNING")
+
+
 class PlanningRun(IdMixin, TenantMixin, TimestampMixin, Base):
     __tablename__ = "planning_run"
-    __table_args__ = (Index("ix_planning_run_queue", "status", "created_at"),)
+    __table_args__ = (
+        Index("ix_planning_run_queue", "status", "created_at"),
+        # at most one queued or running run per scenario, enforced by the database (not a count-then-insert)
+        Index(
+            "uq_planning_run_active_scenario",
+            "scenario_id",
+            unique=True,
+            postgresql_where=text("status IN ('QUEUED', 'RUNNING')"),
+            sqlite_where=text("status IN ('QUEUED', 'RUNNING')"),
+        ),
+    )
     scenario_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("scenario.id", ondelete="CASCADE"), index=True)
     kind: Mapped[str] = mapped_column(String(20), default="OPTIMIZE")  # OPTIMIZE/PLAN/REPAIR/VALIDATE/SIMULATE
-    status: Mapped[str] = mapped_column(String(20), default="QUEUED")  # QUEUED/RUNNING/SUCCEEDED/FAILED/CANCELLED
+    # QUEUED/RUNNING/SUCCEEDED/FAILED/CANCELLED, or STALE: computed, but its inputs changed meanwhile —
+    # the result is kept as a version that did not become the scenario's current plan
+    status: Mapped[str] = mapped_column(String(20), default="QUEUED")
+    input_revision: Mapped[int | None] = mapped_column(Integer)  # tenant input revision the problem was built from
+    baseline_plan_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)  # scenario head when the run started
     params: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
     progress: Mapped[list[Any]] = mapped_column(JSONType, default=list)
     current_step: Mapped[str | None] = mapped_column(String(80))
@@ -94,7 +111,9 @@ class Plan(IdMixin, TenantMixin, TimestampMixin, VersionMixin, Base):
     number: Mapped[str] = mapped_column(String(60))
     version_no: Mapped[int] = mapped_column(Integer)
     kind: Mapped[str] = mapped_column(String(20), default="OPTIMIZED")  # OPTIMIZED/MANUAL_EDIT/REPAIR/IMPORTED
-    status: Mapped[str] = mapped_column(String(20), default="DRAFT")  # DRAFT/VALIDATED/PUBLISHED/SUPERSEDED/ARCHIVED
+    # DRAFT/VALIDATED/PUBLISHED/SUPERSEDED/ARCHIVED, or STALE: result of a run whose inputs changed before
+    # it finished (never the scenario head, never publishable)
+    status: Mapped[str] = mapped_column(String(20), default="DRAFT")
     feasible: Mapped[bool] = mapped_column(Boolean, default=True)
     horizon_start: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     horizon_end: Mapped[datetime] = mapped_column(DateTime(timezone=True))
@@ -115,6 +134,8 @@ class Plan(IdMixin, TenantMixin, TimestampMixin, VersionMixin, Base):
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     published_by: Mapped[str | None] = mapped_column(String(120))
     publish_reason: Mapped[str | None] = mapped_column(Text)
+    # publication checks overridden with ``force`` (code, message), empty for a clean publication
+    publish_overrides: Mapped[list[Any]] = mapped_column(JSONType, default=list)
 
 
 class ScheduledOperation(IdMixin, PlanRowTenantMixin, Base):

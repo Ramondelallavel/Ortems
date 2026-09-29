@@ -73,7 +73,7 @@ class Api:
         t0 = time.time()
         while time.time() - t0 < timeout:
             r = self.ok(self.get(f"/planning/runs/{run_id}"))
-            if r["status"] in ("SUCCEEDED", "FAILED", "CANCELLED"):
+            if r["status"] in ("SUCCEEDED", "FAILED", "CANCELLED", "STALE"):
                 return r
             time.sleep(0.5)
         raise AssertionError("planning run did not finish")

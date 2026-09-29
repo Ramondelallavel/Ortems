@@ -60,8 +60,12 @@ def run_plan(time_limit: float) -> str:
         run = planning.enqueue_run(s, ctx, scid, "OPTIMIZE", {"solver": {"provider": "heuristic", "profile": "QUICK", "time_limit_s": time_limit}})
         s.commit()
         rid = run.id
+    from monxuplan.worker import claim_next
+
     with timed("execute_run_total"):
-        planning.execute_run(rid, tid)
+        job = claim_next()  # the same claim as the worker (a run is only promoted by its owner)
+        assert job is not None and job[0] == rid, "another queued run was claimed first"
+        planning.execute_run(*job)
     with new_session(tid, "planner") as s:
         run = s.get(M.PlanningRun, rid)
         print(json.dumps({"status": run.status, "error": run.error_message, "result": {k: v for k, v in (run.result or {}).items() if k != "kpis"}}, default=str)[:1500])

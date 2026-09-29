@@ -346,6 +346,8 @@ def update_plant_settings(plant_id: uuid.UUID, body: dict[str, Any], ctx: Ctx = 
     bad = [k for k in body if k not in SETTINGS_KEYS]
     if bad:
         raise ValidationFailed(f"Unknown setting(s): {', '.join(bad)}")
+    if "publish_requires_validation" in body and not isinstance(body["publish_requires_validation"], bool):
+        raise ValidationFailed("publish_requires_validation must be true or false")
     ar = body.get("auto_reschedule")
     if ar is not None:
         if not isinstance(ar, dict) or ar.get("scope", "LOCAL") not in ("LOCAL", "REGIONAL", "RESOURCE", "AREA", "GLOBAL") or any(e not in EVENT_TYPES for e in ar.get("events", [])):

@@ -85,6 +85,8 @@ def plan_summary(plan: Plan) -> dict[str, Any]:
         "created_by": plan.created_by,
         "published_at": to_json(_aware(plan.published_at)),
         "published_by": plan.published_by,
+        "publish_reason": plan.publish_reason,
+        "publish_overrides": plan.publish_overrides or [],
         "note": plan.note,
         "kpis": plan.kpis,
         "change_summary": plan.change_summary,

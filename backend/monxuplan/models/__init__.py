@@ -50,6 +50,7 @@ from .planning import (
     ScenarioChange,
     ScheduledOperation,
 )
+from .revision import DataRevision
 from .security import ApiKey, Permission, Role, User, UserRole
 from .transactions import (
     Customer,

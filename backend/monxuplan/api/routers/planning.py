@@ -49,6 +49,7 @@ def get_run(run_id: uuid.UUID, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
     r = s.get(PlanningRun, run_id)
     if r is None:
         raise NotFound("Run not found")
+    planning_svc.get_scenario(s, ctx, r.scenario_id)  # plant access and private scenarios
     out = row_dict(r)
     if "admin:config" not in ctx.permissions:
         out.pop("error_detail", None)
@@ -60,6 +61,7 @@ def list_runs(scenario_id: uuid.UUID, limit: int = 20, ctx: Ctx = Depends(get_ct
     from sqlalchemy import select
 
     ctx.require("plan:read")
+    planning_svc.get_scenario(s, ctx, scenario_id)  # plant access and private scenarios
     rows = s.scalars(select(PlanningRun).where(PlanningRun.scenario_id == scenario_id).order_by(PlanningRun.created_at.desc()).limit(limit))
     return [{k: v for k, v in row_dict(r).items() if k != "error_detail"} for r in rows]
 
