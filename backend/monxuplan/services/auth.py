@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import timedelta
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..core.clock import now
@@ -130,15 +130,30 @@ def user_from_oidc(s: Session, token: str) -> User | None:
     claims = verify_oidc(token)
     if not claims:
         return None
+    """The user bound to the token's subject (issuer and audience are verified by ``verify_oidc``).
+
+    An account is never matched by e-mail alone: an e-mail is linked only when the identity provider
+    says it is verified, the account has no subject yet, exactly one active account has that e-mail, and
+    linking is enabled (``MONXU_OIDC_LINK_BY_EMAIL``). The account is then bound to the subject."""
+    from ..core.config import get_settings
+
     sub = claims.get("sub")
-    email = claims.get("email")
-    q = select(User).where((User.external_subject == sub) | (User.email == email)).execution_options(skip_tenant_filter=True)
-    users = list(s.scalars(q))
-    if len(users) != 1 or not users[0].is_active:
+    if not sub:
         return None
-    u = users[0]
-    if not u.external_subject:
-        u.external_subject = sub
+    users = list(s.scalars(select(User).where(User.external_subject == str(sub)).execution_options(skip_tenant_filter=True)))
+    if len(users) == 1:
+        return users[0] if users[0].is_active else None
+    if users:  # the same subject on several accounts: refuse rather than guess
+        return None
+    email = claims.get("email")
+    if not (get_settings().oidc_link_by_email and email and claims.get("email_verified") is True):
+        return None
+    cands = list(s.scalars(select(User).where(func.lower(User.email) == str(email).lower(), User.external_subject.is_(None), User.is_active.is_(True)).execution_options(skip_tenant_filter=True)))
+    if len(cands) != 1:
+        return None
+    u = cands[0]
+    u.external_subject = str(sub)
+    audit.record(s, load_ctx(s, u, via="oidc"), "OIDC_LINKED", "user", u.id, u.username, after={"subject": str(sub), "email": email})
     return u
 
 

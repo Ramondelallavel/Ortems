@@ -53,6 +53,10 @@ class Settings:
     oidc_issuer: str | None = field(default_factory=lambda: os.environ.get("MONXU_OIDC_ISSUER") or None)
     oidc_audience: str | None = field(default_factory=lambda: os.environ.get("MONXU_OIDC_AUDIENCE") or None)
     oidc_jwks_url: str | None = field(default_factory=lambda: os.environ.get("MONXU_OIDC_JWKS_URL") or None)
+    # first sign-in of a provisioned user by verified e-mail (then bound to the token subject); off by default
+    oidc_link_by_email: bool = field(default_factory=lambda: _bool("MONXU_OIDC_LINK_BY_EMAIL", False))
+    # bearer token required by /metrics (unset: metrics are public, as for a scraper on a private network)
+    metrics_token: str | None = field(default_factory=lambda: os.environ.get("MONXU_METRICS_TOKEN") or None)
     log_level: str = field(default_factory=lambda: os.environ.get("MONXU_LOG_LEVEL", "INFO"))
     log_json: bool = field(default_factory=lambda: _bool("MONXU_LOG_JSON", True))
     anthropic_api_key: str | None = field(default_factory=lambda: os.environ.get("ANTHROPIC_API_KEY") or None)

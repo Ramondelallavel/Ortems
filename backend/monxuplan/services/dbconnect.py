@@ -33,6 +33,7 @@ from .. import models as M
 from ..core.clock import now
 from ..core.config import get_settings
 from ..core.errors import DomainError, NotFound, ValidationFailed
+from ..core.netpolicy import check_host
 from ..core.security import decrypt_secret, encrypt_secret
 from . import audit, imports
 from .context import Ctx
@@ -48,7 +49,18 @@ DIALECTS: dict[str, tuple[str, str | None, str | None, int | None, str]] = {
     "oracle": ("oracle+oracledb", "oracledb", "oracledb", 1521, "Oracle Database"),
     "sqlite": ("sqlite", None, None, None, "SQLite file"),
 }
-FORBIDDEN = re.compile(r"\b(insert|update|delete|merge|drop|alter|create|truncate|grant|revoke|exec|execute|call|copy|attach|detach|pragma|vacuum|replace|lock)\b", re.I)
+FORBIDDEN = re.compile(
+    r"\b(insert|update|delete|merge|drop|alter|create|truncate|grant|revoke|exec|execute|call|copy|attach|detach|pragma|vacuum|replace|lock"
+    # SELECT … INTO creates a table (PostgreSQL, SQL Server) or writes a file (MySQL INTO OUTFILE/DUMPFILE)
+    # (statement keywords such as SET or DECLARE cannot start a second statement: the query must begin
+    # with SELECT/WITH and contain no ';')
+    r"|into|outfile|dumpfile|load_file"
+    # server-side functions that read files, sleep, signal or reach the network
+    r"|pg_read_file|pg_read_binary_file|pg_ls_dir|pg_stat_file|pg_sleep\w*|pg_terminate_backend|pg_cancel_backend|pg_reload_conf|lo_import|lo_export|dblink\w*"
+    r"|sleep|benchmark|waitfor|openrowset|opendatasource|openquery"
+    r"|xp_\w+|sp_\w+|utl_\w+|dbms_\w+|sys_eval|sys_exec)\b",
+    re.I,
+)
 
 
 def runtime_supported() -> tuple[bool, str | None]:
@@ -108,14 +120,25 @@ def _url(cfg: dict[str, Any], password: str | None) -> URL:
     if not cfg.get("host"):
         raise ValidationFailed("Give the database server host.", code="REQUIRED", context={"field": "host"})
     query = {str(k): str(v) for k, v in (cfg.get("options") or {}).items()}
+    if any(k.lower() in ("host", "hostaddr", "server", "dsn") for k in query):
+        raise ValidationFailed("The server address is given in 'host', not in driver options.", code="EGRESS_DENIED", context={"field": "options"})
     if dialect == "oracle" and cfg.get("database") and "service_name" not in query:
         query["service_name"] = str(cfg["database"])
+    port_n = int(cfg.get("port") or port) if (cfg.get("port") or port) else None
+    # outbound policy on every resolved address; the driver then connects to the checked address
+    # (for PostgreSQL through hostaddr, which keeps the host name for TLS verification)
+    dest = check_host(str(cfg["host"]), port_n or 0, "Database connector")
+    host = str(cfg["host"])
+    if dialect == "postgresql":
+        query["hostaddr"] = dest.address
+    else:
+        host = dest.address
     return URL.create(
         drv,
         username=cfg.get("username") or None,
         password=password or None,
-        host=str(cfg["host"]),
-        port=int(cfg.get("port") or port) if (cfg.get("port") or port) else None,
+        host=host,
+        port=port_n,
         database=None if dialect == "oracle" else (cfg.get("database") or None),
         query=query,
     )
@@ -196,8 +219,10 @@ def _read(cfg: dict[str, Any], password: str | None, source: dict[str, Any], lim
         with engine.connect() as conn:
             try:
                 _read_only(conn, cfg["dialect"])
-            except Exception:  # noqa: BLE001 - not every server accepts it; the SELECT check still applies
-                conn.rollback()
+            except Exception as exc:
+                if cfg["dialect"] in ("postgresql", "mysql"):  # both support it: a failure is not normal
+                    raise ValidationFailed(f"The database refused a read-only transaction: {str(getattr(exc, 'orig', exc))[:200]}", code="READ_ONLY_REFUSED") from exc
+                conn.rollback()  # Oracle/SQL Server variants without it: the statement check still applies
             if source.get("query"):
                 sql = _clean_sql(str(source["query"]))
             elif source.get("table"):
@@ -380,7 +405,11 @@ def sync(s: Session, ctx: Ctx, cid: uuid.UUID, source_ids: list[str] | None = No
     if plant is None and cfg.get("plant_id"):
         plant = s.get(M.Plant, uuid.UUID(str(cfg["plant_id"])))
     if plant is None:
-        plant = s.scalar(select(M.Plant).order_by(M.Plant.code).limit(1))
+        plants = list(s.scalars(select(M.Plant).limit(2)))
+        if len(plants) != 1:
+            raise ValidationFailed("Choose the plant the connector's data belongs to.", code="NO_PLANT", context={"field": "plant_id"})
+        plant = plants[0]
+    ctx.require_plant(plant.id)
     for src in cfg.get("sources") or []:
         if source_ids and src.get("id") not in source_ids:
             continue

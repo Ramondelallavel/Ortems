@@ -190,6 +190,12 @@ def verify_oidc(token: str) -> dict[str, Any] | None:
     s = get_settings()
     if not s.oidc_issuer:
         return None
+    if not s.oidc_audience:
+        # without an audience any token of the issuer (issued to another application) would be accepted
+        import logging
+
+        logging.getLogger("monxuplan.security").error("OIDC is configured without MONXU_OIDC_AUDIENCE: OIDC tokens are refused")
+        return None
     global _jwks_client
     try:
         if _jwks_client is None:

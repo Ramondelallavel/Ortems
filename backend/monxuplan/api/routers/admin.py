@@ -129,12 +129,38 @@ class UserIn(BaseModel):
     locale: str = Field(default="en", pattern="^(en|es|fr|de|pt)$")
 
 
-def _check_roles(ctx: Ctx, roles: list[str]) -> None:
+def _check_roles(ctx: Ctx, roles: list[str], plant_ids: list[uuid.UUID] | None = None) -> None:
+    """Delegation rule: nobody grants what they do not have — every permission of the granted roles
+    must be one of the grantor's, and a plant-scoped grantor can only grant within their plants."""
     unknown = [r for r in roles if r not in ROLES]
     if unknown:
         raise ValidationFailed(f"Unknown role(s): {', '.join(unknown)}")
     if "SUPER_ADMIN" in roles and "SUPER_ADMIN" not in ctx.roles:
-        raise Forbidden("Only a Super Admin can grant Super Admin.")
+        raise Forbidden("Only a Super Admin can grant Super Admin.", code="DELEGATION_DENIED")
+    for r in roles:
+        missing = set(ROLES[r][1]) - ctx.permissions
+        if missing:
+            raise Forbidden(f"You cannot grant {r}: it includes permissions you do not have ({', '.join(sorted(missing))}).", code="DELEGATION_DENIED")
+    if ctx.plant_ids is not None:
+        if not plant_ids:
+            raise Forbidden("Your access is limited to some plants: choose the plants for this user.", code="DELEGATION_DENIED")
+        outside = [p for p in plant_ids if p not in ctx.plant_ids]
+        if outside:
+            raise Forbidden("You cannot grant access to plants you do not have access to.", code="DELEGATION_DENIED")
+
+
+def _check_manageable(s, ctx: Ctx, u: User) -> None:
+    """An administrator may only act on users whose rights are within their own (no password reset or
+    deactivation of a more privileged account)."""
+    from ...services.auth import load_ctx
+
+    if u.id == ctx.user_id:
+        return
+    other = load_ctx(s, u)
+    if other.permissions - ctx.permissions or ("SUPER_ADMIN" in other.roles and "SUPER_ADMIN" not in ctx.roles):
+        raise Forbidden("This user has rights you do not have; ask a more privileged administrator.", code="DELEGATION_DENIED")
+    if ctx.plant_ids is not None and (other.plant_ids is None or not other.plant_ids <= ctx.plant_ids):
+        raise Forbidden("This user has access to plants outside yours.", code="DELEGATION_DENIED")
 
 
 def _set_roles(s, ctx: Ctx, u: User, roles: list[str], plant_ids: list[uuid.UUID]) -> None:
@@ -153,7 +179,7 @@ def create_user(body: UserIn, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
     from ...services.auth import create_user as _create
 
     ctx.require("admin:users")
-    _check_roles(ctx, body.roles)
+    _check_roles(ctx, body.roles, body.plant_ids)
     u = _create(s, ctx.tenant_id, body.username, body.email, body.full_name, body.password, [])
     u.locale = body.locale
     _set_roles(s, ctx, u, body.roles, body.plant_ids)
@@ -178,6 +204,7 @@ def update_user(user_id: uuid.UUID, body: UserPatch, ctx: Ctx = Depends(get_ctx)
     u = s.get(User, user_id)
     if u is None:
         raise NotFound("User not found")
+    _check_manageable(s, ctx, u)
     if body.version is not None and body.version != u.version:
         from ...core.errors import Conflict
 
@@ -192,9 +219,12 @@ def update_user(user_id: uuid.UUID, body: UserPatch, ctx: Ctx = Depends(get_ctx)
     if body.unlock:
         u.failed_logins, u.locked_until = 0, None
     if body.roles is not None:
-        _check_roles(ctx, body.roles)
         existing = next(iter(before["plant_ids"]), None)
-        _set_roles(s, ctx, u, body.roles, body.plant_ids if body.plant_ids is not None else [uuid.UUID(p) for p in before["plant_ids"]] if existing else [])
+        plants = body.plant_ids if body.plant_ids is not None else [uuid.UUID(p) for p in before["plant_ids"]] if existing else []
+        _check_roles(ctx, body.roles, plants)
+        _set_roles(s, ctx, u, body.roles, plants)
+    elif body.plant_ids is not None:
+        raise ValidationFailed("Give the roles together with the plants.", code="ROLES_REQUIRED")
     s.flush()
     after = _user_out(s, u)
     audit.record(s, ctx, "UPDATE", "user", u.id, u.username, before={k: before[k] for k in ("full_name", "email", "is_active", "roles", "plant_ids")}, after={k: after[k] for k in ("full_name", "email", "is_active", "roles", "plant_ids")})
@@ -209,6 +239,11 @@ class PasswordReset(BaseModel):
 def reset_password(user_id: uuid.UUID, body: PasswordReset, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
     from ...services.auth import change_password
 
+    ctx.require("admin:users")
+    u = s.get(User, user_id)
+    if u is None:
+        raise NotFound("User not found")
+    _check_manageable(s, ctx, u)
     change_password(s, ctx, user_id, None, body.new_password)
     return {"ok": True}
 
@@ -230,6 +265,11 @@ class ApiKeyIn(BaseModel):
 def create_api_key(body: ApiKeyIn, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
     from ...services.auth import create_api_key as _create
 
+    ctx.require("admin:users")
+    if ctx.plant_ids is not None:
+        raise Forbidden("API keys give access to every plant: only administrators with access to all plants can create them.", code="DELEGATION_DENIED")
+    if ctx.via == "api_key":
+        raise Forbidden("An API key cannot create API keys.", code="DELEGATION_DENIED")
     _check_roles(ctx, [body.role_code])
     ak, full = _create(s, ctx, body.name, body.role_code, body.days)
     return {**row_dict(ak), "key": full, "note": "Copy the key now; only a hash is stored."}

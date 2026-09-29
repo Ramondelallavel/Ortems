@@ -7,6 +7,7 @@ directly. Plans react through rescheduling, automatically when the plant is conf
 
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -35,6 +36,8 @@ from ..models import (
 from . import audit
 from .context import Ctx
 
+log = logging.getLogger("monxuplan.events")
+
 EVENT_TYPES = (
     "OrderCreated",
     "OrderUpdated",
@@ -58,27 +61,45 @@ def _dt(v: Any) -> datetime:
     return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
 
 
-def _resource(s: Session, ref: str) -> Resource:
+def _in_scope(ctx: Ctx, stmt, plant_col):
+    """Restrict a lookup by business code to the caller's plants (codes may repeat across plants)."""
+    return stmt if ctx.plant_ids is None else stmt.where(plant_col.in_(ctx.plant_ids))
+
+
+def _one(s: Session, stmt, what: str, ref: Any):
+    rows = list(s.scalars(stmt.limit(2)))
+    if len(rows) > 1:
+        raise ValidationFailed(f"{what} {ref} is ambiguous (it exists in several plants): use its id.", code="AMBIGUOUS_REFERENCE")
+    return rows[0] if rows else None
+
+
+def _resource(s: Session, ctx: Ctx, ref: str) -> Resource:
     r = None
     try:
         r = s.get(Resource, uuid.UUID(str(ref)))
     except ValueError:
-        r = s.scalar(select(Resource).where(Resource.code == ref))
+        r = _one(s, _in_scope(ctx, select(Resource).where(Resource.code == ref), Resource.plant_id), "Resource", ref)
     if r is None:
         raise NotFound(f"Unknown resource {ref}", code="UNKNOWN_RESOURCE")
+    ctx.require_plant(r.plant_id)
     return r
 
 
-def _order_op(s: Session, payload: dict) -> ProductionOrderOperation:
+def _order(s: Session, ctx: Ctx, number: Any) -> ProductionOrder | None:
+    return _one(s, _in_scope(ctx, select(ProductionOrder).where(ProductionOrder.number == number), ProductionOrder.plant_id), "Order", number)
+
+
+def _order_op(s: Session, ctx: Ctx, payload: dict) -> ProductionOrderOperation:
     if payload.get("order_operation_id"):
         op = s.get(ProductionOrderOperation, uuid.UUID(str(payload["order_operation_id"])))
     else:
-        o = s.scalar(select(ProductionOrder).where(ProductionOrder.number == payload.get("order")))
+        o = _order(s, ctx, payload.get("order"))
         if o is None:
             raise NotFound(f"Unknown order {payload.get('order')}", code="UNKNOWN_ORDER")
         op = s.scalar(select(ProductionOrderOperation).where(ProductionOrderOperation.order_id == o.id, ProductionOrderOperation.seq == int(payload.get("seq", 0))))
     if op is None:
         raise NotFound("Unknown order operation", code="UNKNOWN_OPERATION")
+    ctx.require_plant(s.get(ProductionOrder, op.order_id).plant_id)
     return op
 
 
@@ -89,6 +110,7 @@ def ingest(s: Session, ctx: Ctx, type_: str, payload: dict[str, Any], source: st
     if correlation_id:
         dup = s.scalar(select(Event).where(Event.correlation_id == correlation_id, Event.type == type_))
         if dup is not None:
+            ctx.require_plant(dup.plant_id)
             return {"event_id": str(dup.id), "duplicate": True, "result": dup.processing_result}
     ev = Event(tenant_id=ctx.tenant_id, type=type_, payload=payload, source=source, correlation_id=correlation_id, occurred_at=_dt(occurred_at))
     s.add(ev)
@@ -108,14 +130,14 @@ def _apply(s: Session, ctx: Ctx, ev: Event) -> dict[str, Any]:
     p = ev.payload
     t = ev.type
     if t == "MachineDown":
-        r = _resource(s, p["resource"])
+        r = _resource(s, ctx, p["resource"])
         r.status = "DOWN"
         d = Downtime(tenant_id=ctx.tenant_id, resource_id=r.id, start=_dt(p.get("start") or ev.occurred_at), end=_dt(p["expected_end"]) if p.get("expected_end") else None, reason=p.get("reason"), source=ev.source)
         s.add(d)
         s.add(Alert(tenant_id=ctx.tenant_id, plant_id=r.plant_id, type="MACHINE_BREAKDOWN", severity="CRITICAL", title=f"{r.code} down", message=p.get("reason") or "", context={"page": "resources", "resource_id": str(r.id)}))
         return {"plant_id": str(r.plant_id), "resource": r.code, "downtime_id": str(d.id) if d.id else None, "action": "downtime recorded"}
     if t == "MachineAvailable":
-        r = _resource(s, p["resource"])
+        r = _resource(s, ctx, p["resource"])
         r.status = "AVAILABLE"
         closed = 0
         for d in s.scalars(select(Downtime).where(Downtime.resource_id == r.id, Downtime.end.is_(None))):
@@ -124,10 +146,10 @@ def _apply(s: Session, ctx: Ctx, ev: Event) -> dict[str, Any]:
         return {"plant_id": str(r.plant_id), "resource": r.code, "closed_downtimes": closed}
     if t in ("OperationStarted", "OperationFinished", "QuantityProduced", "Scrap"):
         action = {"OperationStarted": "START", "OperationFinished": "FINISH", "QuantityProduced": "QUANTITY", "Scrap": "QUANTITY"}[t]
-        op = _order_op(s, p)
-        return report_execution(s, ctx, {"order_operation_id": op.id, "action": action, "resource_id": _resource(s, p["resource"]).id if p.get("resource") else None, "good_quantity": float(p.get("good_quantity", p.get("quantity", 0)) if t != "Scrap" else 0), "scrap_quantity": float(p.get("scrap_quantity", p.get("quantity", 0)) if t == "Scrap" else p.get("scrap_quantity", 0)), "at": p.get("at") or ev.occurred_at}, log_event=False)
+        op = _order_op(s, ctx, p)
+        return report_execution(s, ctx, {"order_operation_id": op.id, "action": action, "resource_id": _resource(s, ctx, p["resource"]).id if p.get("resource") else None, "good_quantity": float(p.get("good_quantity", p.get("quantity", 0)) if t != "Scrap" else 0), "scrap_quantity": float(p.get("scrap_quantity", p.get("quantity", 0)) if t == "Scrap" else p.get("scrap_quantity", 0)), "at": p.get("at") or ev.occurred_at}, log_event=False)
     if t == "MaterialReceived":
-        ln = _po_line(s, p)
+        ln = _po_line(s, ctx, p)
         q = float(p["quantity"])
         ln.received_quantity = (ln.received_quantity or 0) + q
         if ln.received_quantity >= ln.quantity - 1e-9:
@@ -138,7 +160,7 @@ def _apply(s: Session, ctx: Ctx, ev: Event) -> dict[str, Any]:
             inv.on_hand = (inv.on_hand or 0) + q
         return {"plant_id": str(po.plant_id) if po.plant_id else None, "purchase_order": po.number, "received": q}
     if t == "MaterialDelayed":
-        ln = _po_line(s, p)
+        ln = _po_line(s, ctx, p)
         before = ln.expected_date
         ln.original_date = ln.original_date or ln.expected_date
         ln.expected_date = _dt(p["new_date"])
@@ -151,6 +173,7 @@ def _apply(s: Session, ctx: Ctx, ev: Event) -> dict[str, Any]:
         plant = s.scalar(select(Plant).where(Plant.code == p["plant"]))
         if it is None or plant is None:
             raise NotFound("Unknown item or plant")
+        ctx.require_plant(plant.id)
         inv = s.scalar(select(Inventory).where(Inventory.item_id == it.id, Inventory.plant_id == plant.id, Inventory.location == p.get("location", "MAIN")))
         if inv is None:
             inv = Inventory(tenant_id=ctx.tenant_id, item_id=it.id, plant_id=plant.id, location=p.get("location", "MAIN"))
@@ -160,14 +183,16 @@ def _apply(s: Session, ctx: Ctx, ev: Event) -> dict[str, Any]:
                 setattr(inv, k, float(p[k]))
         return {"plant_id": str(plant.id), "item": it.code}
     if t == "MaintenanceCreated":
-        r = _resource(s, p["resource"])
+        r = _resource(s, ctx, p["resource"])
         m = Maintenance(tenant_id=ctx.tenant_id, resource_id=r.id, start=_dt(p["start"]), end=_dt(p["end"]), kind=p.get("kind", "PLANNED"), description=p.get("description"))
         s.add(m)
         return {"plant_id": str(r.plant_id), "resource": r.code}
     if t in ("OrderCreated", "OrderUpdated"):
         from .masterdata import create_row, update_row
 
-        o = s.scalar(select(ProductionOrder).where(ProductionOrder.number == p["number"]))
+        o = _order(s, ctx, p["number"])
+        if o is not None:
+            ctx.require_plant(o.plant_id)
         data = dict(p)
         if "item" in data:
             it = s.scalar(select(Item).where(Item.code == data.pop("item")))
@@ -175,8 +200,12 @@ def _apply(s: Session, ctx: Ctx, ev: Event) -> dict[str, Any]:
                 raise NotFound("Unknown item")
             data["item_id"] = str(it.id)
         if "plant" in data:
-            pl = s.scalar(select(Plant).where(Plant.code == data.pop("plant")))
-            data["plant_id"] = str(pl.id) if pl else None
+            code = data.pop("plant")
+            pl = s.scalar(select(Plant).where(Plant.code == code))
+            if pl is None:
+                raise NotFound(f"Unknown plant {code}", code="UNKNOWN_PLANT")
+            ctx.require_plant(pl.id)
+            data["plant_id"] = str(pl.id)
         if o is None:
             row = create_row(s, ctx, "production-orders", data)
         else:
@@ -186,10 +215,11 @@ def _apply(s: Session, ctx: Ctx, ev: Event) -> dict[str, Any]:
     return {}
 
 
-def _po_line(s: Session, p: dict) -> PurchaseOrderLine:
-    po = s.scalar(select(PurchaseOrder).where(PurchaseOrder.number == p["purchase_order"]))
+def _po_line(s: Session, ctx: Ctx, p: dict) -> PurchaseOrderLine:
+    po = _one(s, _in_scope(ctx, select(PurchaseOrder).where(PurchaseOrder.number == p["purchase_order"]), PurchaseOrder.plant_id), "Purchase order", p.get("purchase_order"))
     if po is None:
         raise NotFound(f"Unknown purchase order {p.get('purchase_order')}")
+    ctx.require_plant(po.plant_id)
     ln = s.scalar(select(PurchaseOrderLine).where(PurchaseOrderLine.purchase_order_id == po.id, PurchaseOrderLine.line_no == int(p.get("line", 10))))
     if ln is None:
         raise NotFound("Unknown purchase order line")
@@ -203,9 +233,14 @@ def report_execution(s: Session, ctx: Ctx, body: dict[str, Any], log_event: bool
     if op is None:
         raise NotFound("Operation not found")
     order = s.get(ProductionOrder, op.order_id)
+    ctx.require_plant(order.plant_id)
     at = _dt(body.get("at"))
     action = body["action"]
     res_id = uuid.UUID(str(body["resource_id"])) if body.get("resource_id") else (op.actual_resource_id or op.pinned_resource_id)
+    if body.get("resource_id"):
+        res = s.get(Resource, res_id)
+        if res is None or res.plant_id != order.plant_id:
+            raise ValidationFailed("The resource does not belong to the order's plant.", code="RESOURCE_PLANT_MISMATCH")
     open_act = s.scalar(select(ActualProduction).where(ActualProduction.order_operation_id == op.id, ActualProduction.end.is_(None)).order_by(ActualProduction.start.desc()))
     if action in ("START", "RESUME"):
         if op.status == "COMPLETED":
@@ -257,8 +292,12 @@ def _maybe_auto_reschedule(s: Session, ctx: Ctx, ev: Event, result: dict[str, An
         return
     from .planning import reschedule
 
+    sp = s.begin_nested()  # a failed reschedule must not leave half-written plan rows in the event's transaction
     try:
         _plan, res = reschedule(s, ctx, plant.live_scenario_id, cfg.get("scope", "LOCAL"), note=f"auto-reschedule on {ev.type}")
+        sp.commit()
         result["auto_reschedule"] = {"plan": res["plan_number"], "affected_operations": len(res["affected_operations"])}
     except Exception as exc:  # noqa: BLE001 - the event is stored even if the reschedule fails
+        sp.rollback()
+        log.exception("auto-reschedule failed", extra={"extra_data": {"event": str(ev.id)}})
         result["auto_reschedule_error"] = str(exc)[:300]

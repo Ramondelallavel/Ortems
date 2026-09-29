@@ -420,6 +420,23 @@ def _cell(v: Any) -> Any:
     return v
 
 
+MAX_UNCOMPRESSED_BYTES = 400 * 1024 * 1024
+MAX_COMPRESSION_RATIO = 200
+
+
+def _check_archive(data: bytes) -> None:
+    """An .xlsx is a zip: refuse decompression bombs before the parser inflates them in memory."""
+    import zipfile
+
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as z:
+            total = sum(i.file_size for i in z.infolist())
+    except zipfile.BadZipFile as exc:
+        raise ValidationFailed("The Excel file is damaged (not a valid .xlsx archive).", code="BAD_FILE") from exc
+    if total > MAX_UNCOMPRESSED_BYTES or (total > 20 * 1024 * 1024 and total > MAX_COMPRESSION_RATIO * max(len(data), 1)):
+        raise ValidationFailed(f"The Excel file expands to {total // (1024 * 1024)} MB when opened, which is more than allowed. Split it or export it as CSV.", code="FILE_TOO_LARGE")
+
+
 def parse_file(data: bytes, filename: str, sheet: str | None = None) -> tuple[str, list[str], list[list[Any]], list[str]]:
     """→ (format, columns, rows, sheet names)."""
     name = filename.lower()
@@ -428,6 +445,7 @@ def parse_file(data: bytes, filename: str, sheet: str | None = None) -> tuple[st
     if name.endswith((".xlsx", ".xlsm")):
         from openpyxl import load_workbook
 
+        _check_archive(data)
         try:
             wb = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
         except Exception as exc:  # noqa: BLE001
@@ -741,9 +759,14 @@ def _job(s: Session, ctx: Ctx, job_id: uuid.UUID) -> M.ImportJob:
 
 def _plant(s: Session, ctx: Ctx, job: M.ImportJob) -> M.Plant:
     pid = (job.options or {}).get("plant_id")
-    plant = s.get(M.Plant, uuid.UUID(pid)) if pid else s.scalar(select(M.Plant).order_by(M.Plant.code).limit(1))
+    if pid:
+        plant = s.get(M.Plant, uuid.UUID(pid))
+    else:
+        # never "the first plant": only unambiguous when the tenant has a single plant
+        plants = list(s.scalars(select(M.Plant).limit(2)))
+        plant = plants[0] if len(plants) == 1 else None
     if plant is None:
-        raise ValidationFailed("No plant selected", code="NO_PLANT")
+        raise ValidationFailed("Choose the plant the imported data belongs to.", code="NO_PLANT")
     ctx.require_plant(plant.id)
     return plant
 

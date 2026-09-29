@@ -131,12 +131,20 @@ def create_app() -> FastAPI:
         try:
             with get_engine().connect() as c:
                 c.execute(text("SELECT 1"))
-        except Exception as exc:  # noqa: BLE001
-            return JSONResponse({"status": "unavailable", "database": str(exc)[:200]}, status_code=503)
+        except Exception:  # noqa: BLE001 - anonymous endpoint: the cause goes to the log, not to the caller
+            log.exception("readiness check: database unavailable")
+            return JSONResponse({"status": "unavailable", "database": "unavailable"}, status_code=503)
         return {"status": "ready", "database": "ok"}
 
     @app.get("/metrics", tags=["health"], response_class=PlainTextResponse)
-    def metrics():
+    def metrics(request: Request):
+        token = st.metrics_token
+        if token:
+            import hmac
+
+            given = (request.headers.get("authorization") or "").removeprefix("Bearer ").strip()
+            if not hmac.compare_digest(given.encode(), token.encode()):
+                return PlainTextResponse("unauthorized", status_code=401)
         try:
             from sqlalchemy import func, select
 
