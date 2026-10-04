@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -107,7 +107,20 @@ def user_from_claims(s: Session, claims: dict) -> User | None:
     u = s.get(User, uid)
     if u is None or u.tenant_id != tid or not u.is_active:
         return None
+    if u.tokens_valid_after is not None:
+        issued_ms = claims.get("iat_ms") or int(claims.get("iat") or 0) * 1000
+        if issued_ms < int(_aware(u.tokens_valid_after).timestamp() * 1000):
+            return None  # issued before a password change / deactivation / sign-out everywhere
     return u
+
+
+def _aware(d: datetime) -> datetime:
+    return d if d.tzinfo else d.replace(tzinfo=UTC)
+
+
+def revoke_tokens(u: User) -> None:
+    """Every session and bearer token of the user issued until now stops working."""
+    u.tokens_valid_after = now()
 
 
 def user_from_api_key(s: Session, key: str) -> tuple[User | None, ApiKey | None, Ctx | None]:
@@ -174,12 +187,14 @@ def change_password(s: Session, ctx: Ctx, user_id: uuid.UUID, old: str | None, n
     if u is None:
         raise NotFound("User not found")
     if ctx.user_id == user_id:
+        # not a 401: the caller's session is valid, only the confirmation is wrong
         if not verify_password(old or "", u.password_hash):
-            raise Unauthorized("Current password is incorrect.", code="INVALID_CREDENTIALS")
+            raise ValidationFailed("The current password is incorrect.", code="INVALID_CURRENT_PASSWORD")
     else:
         ctx.require("admin:users")
     problems = password_problems(new)
     if problems:
         raise ValidationFailed("Password needs " + ", ".join(problems), code="WEAK_PASSWORD")
     u.password_hash = hash_password(new)
+    revoke_tokens(u)  # other sessions (possibly an attacker's) end with the old password
     audit.record(s, ctx, "PASSWORD_CHANGE", "user", u.id, u.username)

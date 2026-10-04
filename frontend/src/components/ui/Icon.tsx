@@ -48,6 +48,7 @@ const P: Record<string, string> = {
   eye: "M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12zM12 9a3 3 0 100 6 3 3 0 000-6z",
   clock: "M12 3a9 9 0 100 18 9 9 0 000-18zM12 7v5l3 2",
   wrench: "M14 6a4 4 0 005 5l-8 8a2 2 0 01-3-3l8-8a4 4 0 01-2-2zM15 4l3 3",
+  print: "M7 8V3h10v5M5 17H3V9h18v8h-2M7 14h10v7H7z",
 };
 
 export type IconName = keyof typeof P;

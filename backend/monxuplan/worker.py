@@ -110,15 +110,39 @@ def stop() -> None:
     _stop.set()
 
 
+def requeue_own(worker: str = WORKER_ID) -> int:
+    """Puts the runs this worker is executing back in the queue (shutdown): another worker takes them
+    over at once instead of after the 10-minute heartbeat timeout. A result this worker had not
+    promoted yet is discarded with its transaction; promotion checks the owning worker."""
+    with new_session(None, "worker") as s:
+        res = s.execute(update(PlanningRun).where(PlanningRun.status == "RUNNING", PlanningRun.worker == worker).values(status="QUEUED", worker=None))
+        s.commit()
+        return res.rowcount or 0
+
+
 def main() -> None:  # pragma: no cover
+    import signal
+
     from .core.observability import configure_logging
 
     configure_logging()
+
+    def _terminate(signum, _frame):
+        # docker stop / systemd send SIGTERM: leave the loop (also from inside a run) and hand the run back
+        raise SystemExit(128 + signum)
+
+    signal.signal(signal.SIGTERM, _terminate)
     log.info("worker started", extra={"extra_data": {"worker": WORKER_ID}})
     try:
         loop()
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, SystemExit):
         pass
+    finally:
+        _stop.set()
+        n = requeue_own()
+        if n:
+            log.warning("re-queued %d planning run(s) interrupted by the shutdown", n)
+        log.info("worker stopped", extra={"extra_data": {"worker": WORKER_ID}})
 
 
 if __name__ == "__main__":  # pragma: no cover

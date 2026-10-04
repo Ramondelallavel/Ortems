@@ -1,6 +1,6 @@
 "use client";
 // MonxuPlan component library: dense, keyboard friendly, colour never the only status signal.
-import { createContext, useCallback, useContext, useEffect, useId, useMemo, useRef, useState, type ButtonHTMLAttributes, type ReactNode } from "react";
+import { cloneElement, createContext, isValidElement, useCallback, useContext, useEffect, useId, useMemo, useRef, useState, type ButtonHTMLAttributes, type ReactElement, type ReactNode } from "react";
 import { ApiError } from "@/lib/api";
 import { useSession } from "@/lib/session";
 import { Icon } from "./Icon";
@@ -227,15 +227,36 @@ export function Tabs({ tabs, value, onChange }: { tabs: { id: string; label: Rea
 // ------------------------------------------------------------------ fields
 export function Field({ label, children, hint, error }: { label: string; children: ReactNode; hint?: string; error?: string }) {
   const id = useId();
+  const hintId = `${id}-hint`;
+  // the label names the control: a single input/select/textarea/<Select> child receives the id;
+  // several controls (e.g. a select plus a number box) are named as a group
+  const single = isValidElement(children) && (typeof children.type === "string" ? ["input", "select", "textarea"].includes(children.type) : children.type === Select);
+  const extra = hint || error ? { "aria-describedby": hintId, ...(error ? { "aria-invalid": true } : {}) } : {};
+  const el = single ? cloneElement(children as ReactElement<Record<string, unknown>>, { id: ((children as ReactElement<{ id?: string }>).props.id as string) || id, ...extra }) : null;
+  const ctlId = el ? (el.props as { id: string }).id : undefined;
   return (
     <div className="min-w-0">
-      <label className="mx-label" htmlFor={id}>
-        {label}
-      </label>
-      <div id={id}>{children}</div>
-      {hint && !error && <div className="text-[11px] text-slate-600 mt-0.5">{hint}</div>}
+      {el ? (
+        <label className="mx-label" htmlFor={ctlId}>
+          {label}
+        </label>
+      ) : (
+        <div className="mx-label" id={`${id}-label`}>
+          {label}
+        </div>
+      )}
+      {el || (
+        <div role="group" aria-labelledby={`${id}-label`}>
+          {children}
+        </div>
+      )}
+      {hint && !error && (
+        <div id={hintId} className="text-[11px] text-slate-600 mt-0.5">
+          {hint}
+        </div>
+      )}
       {error && (
-        <div role="alert" className="text-[11px] text-red-600 mt-0.5">
+        <div id={hintId} role="alert" className="text-[11px] text-red-600 mt-0.5">
           ▲ {error}
         </div>
       )}
@@ -243,9 +264,9 @@ export function Field({ label, children, hint, error }: { label: string; childre
   );
 }
 
-export function Select({ value, onChange, options, className = "", ariaLabel, disabled }: { value: string; onChange: (v: string) => void; options: { value: string; label: string }[]; className?: string; ariaLabel?: string; disabled?: boolean }) {
+export function Select({ value, onChange, options, className = "", ariaLabel, disabled, id, ...aria }: { value: string; onChange: (v: string) => void; options: { value: string; label: string }[]; className?: string; ariaLabel?: string; disabled?: boolean; id?: string; "aria-describedby"?: string; "aria-invalid"?: boolean }) {
   return (
-    <select aria-label={ariaLabel} className={`mx-select ${className}`} value={value} onChange={(e) => onChange(e.target.value)} disabled={disabled}>
+    <select id={id} aria-label={ariaLabel} {...aria} className={`mx-select ${className}`} value={value} onChange={(e) => onChange(e.target.value)} disabled={disabled}>
       {options.map((o) => (
         <option key={o.value} value={o.value}>
           {o.label}
@@ -256,16 +277,29 @@ export function Select({ value, onChange, options, className = "", ariaLabel, di
 }
 
 // ------------------------------------------------------------------ Dialog / Drawer
+// open dialogs, innermost last: keyboard handling (Escape, focus trap) belongs to the top one only
+const dialogStack: object[] = [];
+
 export function Dialog({ open, title, onClose, children, footer, width = 520 }: { open: boolean; title: ReactNode; onClose: () => void; children: ReactNode; footer?: ReactNode; width?: number }) {
   const ref = useRef<HTMLDivElement>(null);
+  // callers often pass an inline onClose: keep the latest one without re-running the open effect
+  // (re-running it would move the focus back to the first field on every keystroke)
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
   useEffect(() => {
     if (!open) return;
+    const me = {};
+    dialogStack.push(me);
     const prev = document.activeElement as HTMLElement | null;
     const el = ref.current;
     const first = el?.querySelector<HTMLElement>("input,select,textarea,button:not([data-close])");
     (first || el)?.focus();
     const h = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (dialogStack[dialogStack.length - 1] !== me) return;
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        closeRef.current();
+      }
       if (e.key === "Tab" && el) {
         const f = Array.from(el.querySelectorAll<HTMLElement>("a,button,input,select,textarea,[tabindex]:not([tabindex='-1'])")).filter((x) => !x.hasAttribute("disabled"));
         if (!f.length) return;
@@ -281,9 +315,11 @@ export function Dialog({ open, title, onClose, children, footer, width = 520 }: 
     document.addEventListener("keydown", h);
     return () => {
       document.removeEventListener("keydown", h);
+      const i = dialogStack.indexOf(me);
+      if (i >= 0) dialogStack.splice(i, 1);
       prev?.focus();
     };
-  }, [open, onClose]);
+  }, [open]);
   if (!open) return null;
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-center pt-[8vh] bg-navy-950/40" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
@@ -302,12 +338,15 @@ export function Dialog({ open, title, onClose, children, footer, width = 520 }: 
 }
 
 export function Drawer({ open, title, onClose, children, width = 440 }: { open: boolean; title: ReactNode; onClose: () => void; children: ReactNode; width?: number }) {
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
   useEffect(() => {
     if (!open) return;
-    const h = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    // a dialog opened from the drawer handles Escape first
+    const h = (e: KeyboardEvent) => e.key === "Escape" && !dialogStack.length && closeRef.current();
     document.addEventListener("keydown", h);
     return () => document.removeEventListener("keydown", h);
-  }, [open, onClose]);
+  }, [open]);
   if (!open) return null;
   return (
     <aside role="complementary" aria-label={typeof title === "string" ? title : undefined} className="fixed top-11 right-0 bottom-0 z-40 bg-white border-l border-gray-200 shadow-xl flex flex-col" style={{ width, maxWidth: "100vw" }}>

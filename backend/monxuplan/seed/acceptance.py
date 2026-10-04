@@ -13,7 +13,6 @@ from __future__ import annotations
 import csv
 import io
 import random
-import sys
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -139,11 +138,20 @@ def build_files(today: date, seed: int = 195) -> dict[str, tuple[str, bytes]]:
     return files
 
 
-def main() -> None:  # pragma: no cover
-    out = Path(sys.argv[1] if len(sys.argv) > 1 else "acceptance_data")
+def main(argv: list[str] | None = None) -> None:  # pragma: no cover
+    import argparse
+
+    ap = argparse.ArgumentParser(
+        prog="python -m monxuplan.seed.acceptance",
+        description="Write the acceptance dataset (Excel/CSV files of a complete small plant, dated from today) into a folder, "
+        "in the order they are imported: calendars, customers, suppliers, items, resources, BOMs, routings, inventory, purchase and production orders.",
+    )
+    ap.add_argument("folder", nargs="?", default="acceptance_data", help="output folder (created if needed; default: ./acceptance_data)")
+    out = Path(ap.parse_args(argv).folder)
     out.mkdir(parents=True, exist_ok=True)
+    files = build_files(date.today())
     for entity in IMPORT_ORDER:
-        name, data = build_files(date.today())[entity]
+        name, data = files[entity]
         (out / name).write_bytes(data)
         print(f"{entity:18s} → {out / name}")
 

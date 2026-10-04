@@ -645,11 +645,10 @@ class CpSatProvider(OptimizationProvider):
 def full_model(cp: CompiledProblem, timing: Timing, ctx: SolveContext, heuristic_share: float = 0.15) -> ProviderResult:
     total = ctx.time_limit_s
     sub = SolveContext(time_limit_s=max(total * heuristic_share, 0.5), seed=ctx.seed, progress=ctx.progress, cancelled=ctx.cancelled)
-    # heuristic warm start (no local search: CP-SAT does the improving)
-    saved = cp.solver.local_search
-    cp.solver.local_search = False
+    # heuristic warm start, with its local search: the warm start is both CP-SAT's hint and the plan
+    # kept when CP-SAT does not beat it, so the result is never worse than what the heuristic alone
+    # finds in this share of the budget (the local search stops on convergence or on the share)
     h = HeuristicProvider().solve(cp, timing, sub)
-    cp.solver.local_search = saved
     ev = Evaluator(cp)
     ev.scale = h.details["scales"]
     ref = h.result

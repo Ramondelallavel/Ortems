@@ -8,6 +8,7 @@ from typing import Any
 from fastapi import APIRouter, Body, Depends
 from pydantic import BaseModel, Field
 
+from ...core.errors import PlanningBlocked
 from ...services import planning as planning_svc
 from ...services import scenarios as sc_svc
 from ...services.context import Ctx
@@ -135,9 +136,15 @@ def what_if(body: WhatIfIn, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
     sc, changes = sc_svc.what_if(s, ctx, body.plant_id, body.kind, body.params, body.base_scenario_id, body.name)
     out = sc_svc.scenario_dict(s, sc)
     if body.run:
-        params: dict[str, Any] = {"force": True, "note": f"what-if {body.kind}"}
+        params: dict[str, Any] = {"note": f"what-if {body.kind}"}
         if body.time_limit_s:
             params["solver"] = {"time_limit_s": body.time_limit_s}
-        run = planning_svc.enqueue_run(s, ctx, sc.id, "OPTIMIZE", params)
-        out["run_id"] = str(run.id)
+        try:
+            with s.begin_nested():
+                run = planning_svc.enqueue_run(s, ctx, sc.id, "OPTIMIZE", params)
+            out["run_id"] = str(run.id)
+        except PlanningBlocked as exc:
+            # the scenario is created; planning it despite critical data problems is the user's
+            # explicit decision (Plan scenario → plan anyway with a reason), never automatic
+            out["run_blocked"] = {"code": exc.code, "message": exc.message, "issues": exc.context.get("issues", [])}
     return out

@@ -32,8 +32,9 @@ class RunIn(BaseModel):
     objectives: dict[str, Any] | None = None
     constraints: dict[str, Any] | None = None
     solver: dict[str, Any] | None = None
-    force: bool = False
-    note: str | None = None
+    force: bool = False  # plan despite critical data problems (needs force_reason; recorded and audited)
+    force_reason: str | None = Field(default=None, max_length=1000)
+    note: str | None = Field(default=None, max_length=1000)
 
 
 @router.post("/planning/run", status_code=202)

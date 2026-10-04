@@ -2,6 +2,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Badge, Button, Empty, ErrorState, Icon, Kpi, Loading, Panel, StatusPill, statusTone, useToast } from "@/components/ui";
+import { alertHref } from "@/lib/alerts";
 import { api } from "@/lib/api";
 import { dt, duration, num, pct } from "@/lib/format";
 import { useApi, useEvents } from "@/lib/hooks";
@@ -35,14 +36,7 @@ export default function Dashboard() {
       toast.error(e);
     }
   };
-  const go = (a: any) => {
-    const c = a.context || {};
-    if (c.order_id) router.push(`/planning/orders?q=${encodeURIComponent(c.order_number || "")}`);
-    else if (c.resource_id) router.push(`/planning?scenario=${x.live_scenario_id}`);
-    else if (a.type?.startsWith("MATERIAL")) router.push("/planning/materials");
-    else if (a.source === "PLAN") router.push("/planning");
-    else router.push("/planning/alerts");
-  };
+  const go = (a: any) => router.push(alertHref(a));
 
   return (
     <div className="flex-1 overflow-auto mx-scroll">

@@ -43,6 +43,9 @@ class User(IdMixin, TenantMixin, TimestampMixin, VersionMixin, Base):
     preferences: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
     failed_logins: Mapped[int] = mapped_column(default=0)
     locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # sessions and bearer tokens issued before this instant are refused (password change, deactivation,
+    # "sign out everywhere"): tokens are stateless, this is their revocation point
+    tokens_valid_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class UserRole(IdMixin, TenantMixin, Base):

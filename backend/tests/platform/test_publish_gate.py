@@ -98,3 +98,46 @@ def test_plant_policy_requires_validation(client, planner, sevilla, whatif):
     assert "NOT_VALIDATED" in _blockers(r)
     bad = admin.put(f"/plants/{sevilla['id']}/settings", json={"publish_requires_validation": "yes"})
     assert bad.status_code == 422
+
+
+def test_planning_past_critical_data_problems_needs_a_reason_and_is_audited(client):
+    """Critical data problems block planning; planning anyway is explicit (force + reason), recorded on
+    the run and in the audit log. A what-if never forces on the user's behalf."""
+    from conftest import Api
+    from sqlalchemy import select
+
+    from monxuplan.models import Item, ProductionOrder
+
+    admin = Api(client, "admin")
+    qro = next(p for p in admin.ok(admin.get("/plants")) if p["code"] == "QRO")
+    with _session(admin) as s:
+        item = s.scalar(select(Item).where(Item.make_or_buy == "MAKE").order_by(Item.code))
+        po = ProductionOrder(tenant_id=item.tenant_id, number=f"DQ-{uuid.uuid4().hex[:6]}", plant_id=uuid.UUID(qro["id"]), item_id=item.id, quantity=1, status="RELEASED", due_date=item.created_at + timedelta(days=3650))
+        s.add(po)  # an open order without operations: ORDER_WITHOUT_OPERATIONS (critical)
+        s.commit()
+        po_id = po.id
+    run_id = None
+    try:
+        body = {"scenario_id": qro["live_scenario_id"], "solver": {"provider": "heuristic", "time_limit_s": 2}}
+        r = admin.post("/planning/run", json=body)
+        assert r.status_code == 409 and r.json()["error"]["code"] == "DATA_QUALITY_BLOCK", r.text
+        assert "ORDER_WITHOUT_OPERATIONS" in {i["code"] for i in r.json()["error"]["context"]["issues"]}
+        r = admin.post("/planning/run", json={**body, "force": True})
+        assert r.status_code == 422 and r.json()["error"]["code"] == "REASON_REQUIRED", r.text
+        w = admin.ok(admin.post("/scenarios/what-if", json={"plant_id": qro["id"], "kind": "OVERTIME", "params": {}, "name": f"dq-{uuid.uuid4().hex[:6]}"}), 201)
+        assert "run_id" not in w and w["run_blocked"]["code"] == "DATA_QUALITY_BLOCK", w
+        admin.ok(admin.post(f"/scenarios/{w['id']}/archive"))
+        run_id = admin.ok(admin.post("/planning/run", json={**body, "force": True, "force_reason": "order import fixed after the run"}), 202)["run_id"]
+        run = admin.ok(admin.get(f"/planning/runs/{run_id}"))
+        assert run["params"]["overridden_issues"] and run["params"]["force_reason"] == "order import fixed after the run"
+        log = admin.ok(admin.get("/audit", params={"entity_id": qro["live_scenario_id"]}))
+        rows = log["items"] if isinstance(log, dict) else log
+        forced = [a for a in rows if a["action"] == "PLANNING_RUN_FORCED"]
+        assert forced and forced[0]["reason"] == "order import fixed after the run"
+    finally:
+        if run_id:
+            admin.post(f"/planning/runs/{run_id}/cancel")
+            admin.wait_run(run_id)
+        with _session(admin) as s:
+            s.delete(s.get(ProductionOrder, po_id))
+            s.commit()

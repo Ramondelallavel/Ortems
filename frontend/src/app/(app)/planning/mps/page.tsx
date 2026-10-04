@@ -2,7 +2,7 @@
 import { useMemo, useState } from "react";
 import { Badge, Button, DataTable, ErrorState, Loading, PageHeader, Panel, Select, Tabs, useToast } from "@/components/ui";
 import { api } from "@/lib/api";
-import { date, num } from "@/lib/format";
+import { date, dt, num } from "@/lib/format";
 import { useSession } from "@/lib/session";
 import { SectionData } from "@/components/data/SectionData";
 
@@ -104,7 +104,7 @@ export default function MpsPage() {
                   <th>Row</th>
                   {periods.map((p) => (
                     <th key={p} className="!text-right">
-                      {date(p).slice(0, 6)}
+                      {weekLabel(p)}
                     </th>
                   ))}
                 </tr>
@@ -141,6 +141,7 @@ export default function MpsPage() {
                 )}
               </tbody>
             </table>
+            {items.length > 150 && <div className="p-2 text-[11.5px] text-slate-600">Showing the first 150 of {items.length} items. Narrow the item type to see the others; planned orders and exceptions list all of them.</div>}
             {Object.keys(data.beyond_horizon_demand || {}).length > 0 && <div className="p-2 text-[11.5px] text-slate-600">Demand after the last period is not included ({Object.keys(data.beyond_horizon_demand).length} items). Extend the number of weeks to include it.</div>}
           </Panel>
         )}
@@ -214,7 +215,7 @@ export default function MpsPage() {
                   <th>Resource / group</th>
                   {periods.map((p) => (
                     <th key={p} className="!text-right">
-                      {date(p).slice(0, 6)}
+                      {weekLabel(p)}
                     </th>
                   ))}
                 </tr>
@@ -246,6 +247,7 @@ export default function MpsPage() {
               <>
                 <div className="text-[12px]">
                   Status <Badge tone={agg.status === "OPTIMAL" ? "ok" : "warn"}>{agg.status}</Badge> · objective {num(agg.objective, 1)}
+                  {agg.planning_level === "AGGREGATE_BUCKETED" && <span className="text-slate-600"> · aggregate plan in weekly buckets (family volumes against group hours) — not a detailed schedule</span>}
                 </div>
                 <Panel title="Families">
                   <table className="mx-table">
@@ -255,7 +257,7 @@ export default function MpsPage() {
                         <th>Row</th>
                         {agg.periods.map((p: string) => (
                           <th key={p} className="!text-right">
-                            {date(p).slice(0, 6)}
+                            {weekLabel(p)}
                           </th>
                         ))}
                       </tr>
@@ -289,7 +291,7 @@ export default function MpsPage() {
                         <th>Row</th>
                         {agg.periods.map((p: string) => (
                           <th key={p} className="!text-right">
-                            {date(p).slice(0, 6)}
+                            {weekLabel(p)}
                           </th>
                         ))}
                       </tr>
@@ -326,4 +328,9 @@ export default function MpsPage() {
       </div>
     </div>
   );
+}
+
+/** Column header of a weekly bucket: its first day (day + month in the user's language). */
+function weekLabel(iso: string): string {
+  return dt(iso, { day: "2-digit", month: "short" });
 }

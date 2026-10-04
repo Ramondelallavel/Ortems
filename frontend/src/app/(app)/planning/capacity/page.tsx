@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Chart, INK, SEQ_BLUE, STATUS, axisCat, axisVal } from "@/components/charts/Chart";
 import { Badge, ErrorState, Loading, PageHeader, Panel, Select, statusTone } from "@/components/ui";
 import { num } from "@/lib/format";
-import { useApi } from "@/lib/hooks";
+import { useApi, useQueryParam } from "@/lib/hooks";
 import { useScenarioSelection } from "@/lib/plan";
 import { useSession } from "@/lib/session";
 import { SectionData } from "@/components/data/SectionData";
@@ -23,6 +23,14 @@ export default function CapacityPage() {
   const [typed, setTyped] = useState("");
   const [q, setQ] = useState("");
   const [sort, setSort] = useState<"code" | "load">("code");
+  // deep link from an alert: /planning/capacity?resource=<code> shows that resource
+  const resParam = useQueryParam("resource");
+  useEffect(() => {
+    if (resParam) {
+      setGroupBy("resource");
+      setTyped(resParam);
+    }
+  }, [resParam]);
   useEffect(() => {
     const h = setTimeout(() => {
       setQ(typed.trim());
@@ -35,7 +43,7 @@ export default function CapacityPage() {
   const totalRows: number = load.data?.rows_total ?? 0;
 
   const rows = useMemo(() => (load.data?.rows || []).filter((r: any) => !["LABOR_POOL", "TOOL"].includes(r.kind) || r.scheduled > 0 || r.requirement > 0), [load.data]);
-  const sel = rows.find((r: any) => r.id === focus) || rows.find((r: any) => r.requirement > r.capacity) || rows[0];
+  const sel = rows.find((r: any) => r.id === focus) || (resParam && rows.find((r: any) => r.code === resParam)) || rows.find((r: any) => r.requirement > r.capacity) || rows[0];
   const labels = (load.data?.buckets || []).map((b: any) => b.label);
 
   const loadOption = useMemo(() => {

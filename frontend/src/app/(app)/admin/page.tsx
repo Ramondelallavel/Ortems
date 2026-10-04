@@ -1,6 +1,6 @@
 "use client";
 import Link from "next/link";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Badge, Button, DataTable, Dialog, ErrorState, Field, Loading, NoPermission, PageHeader, Panel, Select, Tabs, useConfirm, useToast } from "@/components/ui";
 import { api } from "@/lib/api";
 import { dt } from "@/lib/format";
@@ -59,8 +59,11 @@ function Users() {
   const [edit, setEdit] = useState<any>(null);
   const save = async () => {
     try {
-      if (edit.id) await api(`/users/${edit.id}`, { method: "PATCH", body: { full_name: edit.full_name, email: edit.email, is_active: edit.is_active, roles: edit.roles, plant_ids: edit.plant_ids, locale: edit.locale, unlock: edit.unlock, version: edit.version } });
-      else await api("/users", { body: { username: edit.username, email: edit.email, full_name: edit.full_name, password: edit.password, roles: edit.roles, plant_ids: edit.plant_ids || [], locale: edit.locale || "en" } });
+      if (edit.id) {
+        await api(`/users/${edit.id}`, { method: "PATCH", body: { full_name: edit.full_name, email: edit.email, is_active: edit.is_active, roles: edit.roles, plant_ids: edit.plant_ids, locale: edit.locale, unlock: edit.unlock, version: edit.version } });
+        // a new password ends the user's open sessions and tokens
+        if (edit.new_password) await api(`/users/${edit.id}/password`, { body: { new_password: edit.new_password } });
+      } else await api("/users", { body: { username: edit.username, email: edit.email, full_name: edit.full_name, password: edit.password, roles: edit.roles, plant_ids: edit.plant_ids || [], locale: edit.locale || "en" } });
       toast.ok("User saved");
       setEdit(null);
       users.reload();
@@ -138,10 +141,16 @@ function Users() {
             <Field label="Language">
               <Select value={edit.locale || "en"} onChange={(v) => setEdit({ ...edit, locale: v })} className="w-full" options={LOCALES.map((l) => ({ value: l.code, label: l.label }))} />
             </Field>
-            {!edit.id && (
+            {!edit.id ? (
               <Field label="Initial password" hint="≥ 10 characters, upper and lower case, a digit">
                 <input className="mx-input w-full" type="password" autoComplete="new-password" value={edit.password || ""} onChange={(e) => setEdit({ ...edit, password: e.target.value })} />
               </Field>
+            ) : edit.id !== me?.id ? (
+              <Field label="Set a new password (optional)" hint="Signs the user out everywhere. ≥ 10 characters, upper and lower case, a digit">
+                <input className="mx-input w-full" type="password" autoComplete="new-password" value={edit.new_password || ""} onChange={(e) => setEdit({ ...edit, new_password: e.target.value })} />
+              </Field>
+            ) : (
+              <div className="text-[12px] text-slate-600 pt-5">Change your own password under My account (your name in the top bar).</div>
             )}
             <Field label="Roles">
               <div className="flex flex-col gap-1">
@@ -255,20 +264,22 @@ function Keys() {
 }
 
 function Audit() {
+  const [typed, setTyped] = useState("");
   const [q, setQ] = useState("");
   const [action, setAction] = useState("");
+  useEffect(() => {
+    const h = setTimeout(() => setQ(typed.trim()), 300);
+    return () => clearTimeout(h);
+  }, [typed]);
+  const actions = useApi<string[]>("/audit/actions");
   const log = useApi<any>("/audit", { q: q || undefined, action: action || undefined, limit: 500 });
   const [open, setOpen] = useState<any>(null);
   return (
     <div className="space-y-2">
       <div className="flex gap-2">
-        <input className="mx-input w-[240px]" placeholder="Search label / reason" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Search audit" />
-        <Select
-          ariaLabel="Action"
-          value={action}
-          onChange={setAction}
-          options={[{ value: "", label: "All actions" }, ...["LOGIN", "CREATE", "UPDATE", "DELETE", "PUBLISH", "MANUAL_MOVE", "UNDO", "REDO", "RESCHEDULE", "IMPORT", "EVENT", "PLAN_VALIDATED"].map((a) => ({ value: a, label: a }))]}
-        />
+        <input className="mx-input w-[240px]" placeholder="Search label / reason" value={typed} onChange={(e) => setTyped(e.target.value)} aria-label="Search audit" />
+        <Select ariaLabel="Action" value={action} onChange={setAction} options={[{ value: "", label: "All actions" }, ...(actions.data || []).map((a) => ({ value: a, label: a }))]} />
+        {log.data && <span className="self-center text-[11.5px] text-slate-600 tabular">{log.data.total > log.data.items.length ? `${log.data.items.length} most recent of ${log.data.total}` : `${log.data.total} entries`}</span>}
       </div>
       {log.error && <ErrorState error={log.error} />}
       <div className="h-[calc(100vh-240px)] bg-white border border-gray-200">
@@ -320,7 +331,7 @@ function Settings() {
   const ar = cur.auto_reschedule || { events: [], scope: "LOCAL" };
   const save = async () => {
     try {
-      await api(`/plants/${plant!.id}/settings`, { method: "PUT", body: { auto_reschedule: ar } });
+      await api(`/plants/${plant!.id}/settings`, { method: "PUT", body: { auto_reschedule: ar, publish_requires_validation: !!cur.publish_requires_validation } });
       toast.ok("Settings saved");
       setDraft(null);
       st.reload();
@@ -331,6 +342,17 @@ function Settings() {
   if (!st.data) return st.error ? <ErrorState error={st.error} /> : <Loading />;
   return (
     <div className="max-w-3xl space-y-3">
+      <Panel title={`Publication — ${plant?.code}`}>
+        <div className="p-3 space-y-2 text-[12.5px]">
+          <label className="flex gap-2 items-start">
+            <input type="checkbox" className="mt-0.5" checked={!!cur.publish_requires_validation} onChange={(e) => setDraft({ ...cur, publish_requires_validation: e.target.checked })} />
+            <span>
+              Require validation before publishing
+              <span className="block text-slate-600">A plan can only be published after “Validate” has checked it against the current data (otherwise the publication gate lists it as a blocker that needs an explicit override).</span>
+            </span>
+          </label>
+        </div>
+      </Panel>
       <Panel title={`Automatic rescheduling — ${plant?.code}`}>
         <div className="p-3 space-y-3 text-[12.5px]">
           <p className="text-slate-600">When one of these shop-floor events arrives, MonxuPlan repairs the live plan automatically with the chosen scope (the result is a new plan version, never published automatically). Otherwise the planner gets an alert.</p>
@@ -344,11 +366,18 @@ function Settings() {
           <Field label="Scope">
             <Select value={ar.scope} onChange={(v) => setDraft({ ...cur, auto_reschedule: { ...ar, scope: v } })} options={["LOCAL", "REGIONAL", "GLOBAL"].map((x) => ({ value: x, label: x.toLowerCase() }))} />
           </Field>
-          <Button variant="primary" onClick={save} disabled={!draft}>
-            Save
-          </Button>
         </div>
       </Panel>
+      <div className="flex gap-2">
+        <Button variant="primary" onClick={save} disabled={!draft}>
+          Save
+        </Button>
+        {draft && (
+          <Button variant="ghost" onClick={() => setDraft(null)}>
+            Discard changes
+          </Button>
+        )}
+      </div>
     </div>
   );
 }

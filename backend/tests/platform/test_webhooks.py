@@ -87,3 +87,42 @@ def test_delivery_to_a_refused_destination_fails_without_retry(deliveries, monke
     assert webhooks.deliver(ids[0], worker="w") == "FAILED"
     with new_session(tid, "tests") as s:
         assert "metadata" in s.get(WebhookDelivery, ids[0]).error
+
+
+def test_pause_resume_and_test_delivery(client, monkeypatch):
+    """A webhook can be paused and resumed; "send test" queues one signed delivery to it alone."""
+    from conftest import Api
+    from sqlalchemy import update
+
+    from monxuplan.core.db import new_session
+    from monxuplan.models import WebhookDelivery
+    from monxuplan.services import webhooks
+
+    import socket
+
+    real = socket.getaddrinfo
+    # the sandbox has no DNS: hooks.example.com resolves to a public documentation address
+    monkeypatch.setattr(socket, "getaddrinfo", lambda host, *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.215.14", 443))] if host == "hooks.example.com" else real(host, *a, **k))
+    admin = Api(client, "admin")
+    tid = uuid.UUID(admin.ok(admin.get("/auth/me"))["tenant_id"])
+    with new_session(tid, "tests") as s:
+        s.execute(update(WebhookDelivery).where(WebhookDelivery.status == "PENDING").values(status="FAILED", error="parked by test"))
+        s.commit()
+    w = admin.ok(admin.post("/webhooks", json={"name": f"t-{uuid.uuid4().hex[:4]}", "url": "https://hooks.example.com/t", "events": ["plan.published"]}), 201)
+    paused = admin.ok(admin.patch(f"/webhooks/{w['id']}", json={"is_active": False}))
+    assert paused["is_active"] is False
+    r = admin.post(f"/webhooks/{w['id']}/test")
+    assert r.status_code == 422 and r.json()["error"]["code"] == "WEBHOOK_PAUSED"
+    assert admin.patch(f"/webhooks/{w['id']}", json={"events": ["nope"]}).status_code == 422
+    assert admin.patch(f"/webhooks/{w['id']}", json={"url": "http://169.254.169.254/x"}).status_code in (400, 403, 422)
+    admin.ok(admin.patch(f"/webhooks/{w['id']}", json={"is_active": True, "events": ["plan.published", "alert.created"]}))
+    d = admin.ok(admin.post(f"/webhooks/{w['id']}/test"), 202)
+    assert d["event_type"] == "webhook.test" and d["status"] == "PENDING"
+    seen = []
+    monkeypatch.setattr(webhooks, "_send", lambda url, body, headers, timeout: seen.append((url, headers["X-Monxu-Event"], headers["X-Monxu-Signature"])) or 204)
+    assert webhooks.deliver_pending() == 1
+    assert seen == [("https://hooks.example.com/t", "webhook.test", seen[0][2])] and seen[0][2].startswith("sha256=")
+    rows = admin.ok(admin.get(f"/webhooks/{w['id']}/deliveries"))
+    assert rows[0]["status"] == "DELIVERED" and rows[0]["response_code"] == 204
+    log = admin.ok(admin.get("/audit", params={"entity_id": w["id"]}))
+    assert {"CREATE", "UPDATE"} <= {a["action"] for a in log["items"]}

@@ -142,6 +142,7 @@ def create_token(user_id: uuid.UUID, tenant_id: uuid.UUID, hours: int | None = N
         "sub": str(user_id),
         "tid": str(tenant_id),
         "iat": int(t.timestamp()),
+        "iat_ms": int(t.timestamp() * 1000),  # exact issue time: revocation (tokens_valid_after) is to the millisecond
         "exp": int((t + timedelta(hours=hours or s.session_hours)).timestamp()),
         "iss": "monxuplan",
         "jti": secrets.token_hex(8),

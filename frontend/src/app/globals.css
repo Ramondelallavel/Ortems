@@ -263,3 +263,37 @@ textarea.mx-input {
   overflow: hidden;
   clip: rect(0 0 0 0);
 }
+
+/* Printing (dispatch list, reports): only the page content, no application chrome, nothing clipped */
+@media print {
+  @page {
+    size: A4 landscape;
+    margin: 10mm;
+  }
+  html,
+  body {
+    height: auto !important;
+    background: #fff !important;
+    font-size: 10.5px;
+  }
+  header.h-11,
+  aside,
+  [aria-live],
+  .no-print {
+    display: none !important;
+  }
+  .h-screen,
+  main,
+  main * {
+    height: auto !important;
+    max-height: none !important;
+    overflow: visible !important;
+  }
+  .mx-table th,
+  .mx-table td {
+    white-space: normal;
+  }
+  .mx-table tr {
+    break-inside: avoid;
+  }
+}

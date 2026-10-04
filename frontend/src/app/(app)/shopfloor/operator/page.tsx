@@ -23,7 +23,13 @@ export default function OperatorPage() {
     if (!cur?.order_operation_id) return;
     setBusy(true);
     try {
-      await api("/execution/report", { body: { order_operation_id: cur.order_operation_id, action, resource_id: resId, good_quantity: Number(good || 0), scrap_quantity: Number(scrap || 0) } });
+      const g = qty(good);
+      const sc = qty(scrap);
+      if (Number.isNaN(g) || Number.isNaN(sc) || g < 0 || sc < 0) {
+        toast.warn("Enter quantities as positive numbers (for example 12 or 12,5).");
+        return;
+      }
+      await api("/execution/report", { body: { order_operation_id: cur.order_operation_id, action, resource_id: resId, good_quantity: g, scrap_quantity: sc } });
       toast.ok(`${action.toLowerCase()} reported for ${cur.op_id}`);
       setGood("");
       setScrap("");
@@ -128,4 +134,10 @@ export default function OperatorPage() {
       </div>
     </div>
   );
+}
+
+/** Quantity typed on the terminal: empty = 0, decimal comma or point. */
+function qty(v: string): number {
+  const t = v.trim().replace(/\s/g, "").replace(",", ".");
+  return t === "" ? 0 : Number(t);
 }

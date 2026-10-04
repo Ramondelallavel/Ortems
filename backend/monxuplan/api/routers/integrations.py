@@ -248,6 +248,57 @@ def delete_webhook(webhook_id: uuid.UUID, ctx: Ctx = Depends(get_ctx), s=Depends
     return {"deleted": True}
 
 
+class WebhookPatch(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    url: str | None = Field(default=None, pattern=r"^https?://", max_length=500)
+    events: list[str] | None = None
+    is_active: bool | None = None
+
+
+@router.patch("/webhooks/{webhook_id}")
+def update_webhook(webhook_id: uuid.UUID, body: WebhookPatch, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+    """Pause / resume a subscription or change its name, destination or events (the secret stays)."""
+    from ...core.netpolicy import check_url
+    from ...services.webhooks import EVENT_TYPES as OUT
+
+    ctx.require("integration:manage")
+    w = s.get(WebhookSubscription, webhook_id)
+    if w is None:
+        raise NotFound("Webhook not found")
+    if body.events is not None:
+        bad = [e for e in body.events if e not in OUT and e != "*"]
+        if bad or not body.events:
+            raise ValidationFailed(f"Unknown event(s): {', '.join(bad)}" if bad else "Choose at least one event.")
+    if body.url is not None:
+        check_url(body.url, "Webhook")
+    before = {"name": w.name, "url": w.url, "events": list(w.events or []), "is_active": w.is_active}
+    for f in ("name", "url", "events", "is_active"):
+        v = getattr(body, f)
+        if v is not None:
+            setattr(w, f, v)
+    audit.record(s, ctx, "UPDATE", "webhook", w.id, w.name, before=before, after={"name": w.name, "url": w.url, "events": list(w.events or []), "is_active": w.is_active})
+    return row_dict(w)
+
+
+@router.post("/webhooks/{webhook_id}/test", status_code=202)
+def test_webhook(webhook_id: uuid.UUID, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+    """Queues a signed ``webhook.test`` delivery to this subscription only (sent like any other
+    delivery; its result appears under Deliveries)."""
+    from ...core.clock import now as _now
+
+    ctx.require("integration:manage")
+    w = s.get(WebhookSubscription, webhook_id)
+    if w is None:
+        raise NotFound("Webhook not found")
+    if not w.is_active:
+        raise ValidationFailed("The webhook is paused: resume it before sending a test.", code="WEBHOOK_PAUSED")
+    t = _now()
+    d = WebhookDelivery(tenant_id=ctx.tenant_id, subscription_id=w.id, event_type="webhook.test", payload={"event": "webhook.test", "data": {"webhook": w.name, "requested_by": ctx.username}, "emitted_at": t.isoformat()}, next_attempt_at=t)
+    s.add(d)
+    s.flush()
+    return row_dict(d)
+
+
 @router.get("/webhooks/{webhook_id}/deliveries")
 def deliveries(webhook_id: uuid.UUID, limit: int = Query(50, le=500), ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
     ctx.require("integration:manage")

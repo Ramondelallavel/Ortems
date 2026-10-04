@@ -50,6 +50,8 @@ export function MovePreview({ planId, planVersion, move, resCodes, onClose, onAp
     }
   };
   const cmp = preview?.comparison;
+  // overriding (frozen zone, new hard violations) is an explained decision: the server requires a reason
+  const needsReason = allowFrozen || (!!preview && !preview.feasible && !!cmp?.new_hard_violation_count);
   return (
     <Dialog
       open={!!move}
@@ -59,7 +61,7 @@ export function MovePreview({ planId, planVersion, move, resCodes, onClose, onAp
       footer={
         <>
           <Button onClick={onClose}>{t("common.cancel")}</Button>
-          <Button variant={preview && !preview.feasible ? "danger" : "primary"} busy={busy} disabled={!preview || loading} onClick={apply}>
+          <Button variant={preview && !preview.feasible ? "danger" : "primary"} busy={busy} disabled={!preview || loading || (needsReason && !reason.trim())} title={needsReason && !reason.trim() ? "Give a reason first" : undefined} onClick={apply}>
             {preview && !preview.feasible ? "Apply with violations" : t("plan.applyMove")}
           </Button>
         </>
@@ -156,7 +158,7 @@ export function MovePreview({ planId, planVersion, move, resCodes, onClose, onAp
                   </div>
                 </div>
               )}
-              <Field label="Reason (audit log)">
+              <Field label={needsReason ? "Reason (required, audit log)" : "Reason (audit log)"} error={needsReason && !reason.trim() ? "Changing the frozen zone or accepting hard violations needs a reason." : undefined}>
                 <input className="mx-input w-full" value={reason} onChange={(e) => setReason(e.target.value)} placeholder="e.g. customer called, expedite" />
               </Field>
             </>

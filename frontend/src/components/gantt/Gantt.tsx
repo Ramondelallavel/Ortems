@@ -539,9 +539,18 @@ export const Gantt = forwardRef<GanttHandle, {
     g.moveTo(0, HEAD_H - 0.5);
     g.lineTo(width, HEAD_H - 0.5);
     g.stroke();
+    // label column: plan number and the time zone every time on the board is shown in
+    g.save();
+    g.beginPath();
+    g.rect(0, 0, LABEL_W - 4, HEAD_H);
+    g.clip();
     g.fillStyle = "#4a5565";
     g.font = "600 11px Inter Variable, Inter, system-ui, sans-serif";
-    g.fillText(`${data.plan.number} · ${data.timezone}`, 8, 12);
+    g.fillText(data.plan.number, 8, 12);
+    g.font = "11px Inter Variable, Inter, system-ui, sans-serif";
+    g.fillStyle = "#667081";
+    g.fillText(data.timezone, 8, 30);
+    g.restore();
     g.font = "11px Inter Variable, Inter, system-ui, sans-serif";
     const minorMin = z.pxPerMin >= 3 ? 15 : z.pxPerMin >= 1 ? 60 : z.pxPerMin >= 0.4 ? 240 : z.pxPerMin >= 0.1 ? 1440 : z.pxPerMin >= 0.03 ? 1440 : 10080;
     // iterate plant-local hours (DST aware via Intl)
@@ -554,6 +563,7 @@ export const Gantt = forwardRef<GanttHandle, {
     g.rect(LABEL_W, 0, width - LABEL_W, height);
     g.clip();
     let guard = 0;
+    let firstDayX: number | null = null;
     while (tt <= endMs && guard++ < 5000) {
       const p = localParts(tt);
       const x = xOf(tt);
@@ -565,6 +575,7 @@ export const Gantt = forwardRef<GanttHandle, {
         g.moveTo(x, 18);
         g.lineTo(x, height);
         g.stroke();
+        if (firstDayX === null && x >= LABEL_W) firstDayX = x;
         if (z.pxPerMin * 1440 > 40 || p.wd === 0) {
           g.fillStyle = p.wd >= 5 ? "#8a94a3" : "#262c36";
           g.font = "600 11px Inter Variable, Inter, system-ui, sans-serif";
@@ -584,6 +595,19 @@ export const Gantt = forwardRef<GanttHandle, {
       }
       tt += stepMs;
       if (minorMin >= 1440) tt = Math.floor(tt / 3600e3) * 3600e3; // hourly stepping for day zoom
+    }
+    // the day the view starts in stays readable even when its midnight is scrolled out of view
+    {
+      g.font = "600 11px Inter Variable, Inter, system-ui, sans-serif";
+      const lbl = dt(new Date(viewStart), z.pxPerMin * 1440 > 90 ? { weekday: "short", day: "2-digit", month: "short" } : { day: "2-digit", month: "short" });
+      const w = g.measureText(lbl).width + 8;
+      if (firstDayX === null || firstDayX - LABEL_W > w + 4) {
+        g.fillStyle = "#f6f7f9";
+        g.fillRect(LABEL_W, 0, w, 17);
+        g.fillStyle = "#262c36";
+        g.fillText(lbl, LABEL_W + 4, 12);
+      }
+      g.font = "11px Inter Variable, Inter, system-ui, sans-serif";
     }
     if (xn > LABEL_W && xn < width) {
       g.fillStyle = "#2f6fb3";

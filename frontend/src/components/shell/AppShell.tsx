@@ -6,6 +6,7 @@ import { Button, Dialog, Icon, Kbd, Loading, Select } from "@/components/ui";
 import { useHotkeys } from "@/lib/hooks";
 import { LOCALES, type Locale } from "@/lib/i18n";
 import { useSession } from "@/lib/session";
+import { AccountDialog } from "./AccountDialog";
 import { AssistantDrawer } from "./Assistant";
 import { Logo } from "./Logo";
 
@@ -60,6 +61,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   const [assistant, setAssistant] = useState(false);
   const [help, setHelp] = useState(false);
   const [mobileNav, setMobileNav] = useState(false);
+  const [account, setAccount] = useState(false);
 
   useEffect(() => {
     if (!loading && !me) router.replace(`/login?next=${encodeURIComponent(path)}`);
@@ -115,29 +117,29 @@ export function AppShell({ children }: { children: ReactNode }) {
       <a href="#main" className="sr-only-focusable absolute z-[70] bg-white p-2">
         Skip to content
       </a>
-      <header className="h-11 bg-navy-950 text-white flex items-center gap-3 px-3 shrink-0 border-b border-black/30">
+      <header className="h-11 bg-navy-950 text-white flex items-center gap-2 sm:gap-3 px-2 sm:px-3 shrink-0 border-b border-black/30">
         <button className="md:hidden mx-btn mx-btn-ghost mx-btn-sm text-white" aria-label="Menu" onClick={() => setMobileNav((m) => !m)}>
           <Icon name="menu" />
         </button>
-        <Link href="/dashboard" className="flex items-center gap-2 font-semibold tracking-tight">
+        <Link href="/dashboard" className="flex items-center gap-2 font-semibold tracking-tight shrink-0" aria-label="MonxuPlan">
           <Logo /> <span className="hidden sm:inline">MonxuPlan</span>
         </Link>
         <div className="h-5 w-px bg-white/15 hidden sm:block" />
         <label className="sr-only" htmlFor="plant-select">
           {t("common.plant")}
         </label>
-        <select id="plant-select" value={plant?.id || ""} onChange={(e) => setPlantId(e.target.value)} className="h-7 rounded-[3px] bg-navy-900 border border-white/15 text-white text-[12.5px] px-2 max-w-[220px]">
+        <select id="plant-select" value={plant?.id || ""} onChange={(e) => setPlantId(e.target.value)} className="h-7 min-w-0 flex-1 sm:flex-none rounded-[3px] bg-navy-900 border border-white/15 text-white text-[12.5px] px-2 max-w-[220px]">
           {me.plants.map((p) => (
             <option key={p.id} value={p.id}>
               {p.code} · {p.name}
             </option>
           ))}
         </select>
-        <div className="flex-1" />
-        <button onClick={() => setAssistant((a) => !a)} className="h-7 px-2.5 rounded-[3px] border border-white/15 text-[12px] flex items-center gap-1.5 hover:bg-navy-900" aria-pressed={assistant} title="Ctrl/⌘ + J">
+        <div className="hidden sm:block flex-1" />
+        <button onClick={() => setAssistant((a) => !a)} className="h-7 px-2.5 shrink-0 rounded-[3px] border border-white/15 text-[12px] flex items-center gap-1.5 hover:bg-navy-900" aria-pressed={assistant} aria-label={t("nav.assistant")} title="Ctrl/⌘ + J">
           <Icon name="chat" size={14} /> <span className="hidden sm:inline">{t("nav.assistant")}</span>
         </button>
-        <button onClick={() => setHelp(true)} className="h-7 w-7 rounded-[3px] border border-white/15 flex items-center justify-center hover:bg-navy-900" aria-label={t("common.shortcuts")} title={t("common.shortcuts") + " (?)"}>
+        <button onClick={() => setHelp(true)} className="h-7 w-7 shrink-0 hidden sm:flex rounded-[3px] border border-white/15 items-center justify-center hover:bg-navy-900" aria-label={t("common.shortcuts")} title={t("common.shortcuts") + " (?)"}>
           <Icon name="keyboard" size={14} />
         </button>
         <Select
@@ -145,15 +147,13 @@ export function AppShell({ children }: { children: ReactNode }) {
           value={locale}
           onChange={(v) => setLocale(v as Locale)}
           options={LOCALES.map((l) => ({ value: l.code, label: l.code.toUpperCase() }))}
-          className="!h-7 !bg-navy-900 !text-white !border-white/15 !w-[58px]"
+          className="!h-7 shrink-0 !bg-navy-900 !text-white !border-white/15 !w-[58px]"
         />
-        <div className="hidden sm:flex items-center gap-2 text-[12px] text-white/80">
+        <button onClick={() => setAccount(true)} className="h-7 px-1.5 shrink-0 rounded-[3px] flex items-center gap-2 text-[12px] text-white/80 hover:bg-navy-900 hover:text-white" aria-label={t("acct.title")} title={`${t("acct.title")} · ${me.roles.join(", ")}`}>
           <Icon name="user" size={14} />
-          <span className="max-w-[140px] truncate" title={me.roles.join(", ")}>
-            {me.full_name}
-          </span>
-        </div>
-        <button onClick={logout} className="h-7 w-7 rounded-[3px] flex items-center justify-center hover:bg-navy-900" aria-label={t("common.signOut")} title={t("common.signOut")}>
+          <span className="hidden sm:inline max-w-[140px] truncate">{me.full_name}</span>
+        </button>
+        <button onClick={logout} className="h-7 w-7 shrink-0 rounded-[3px] flex items-center justify-center hover:bg-navy-900" aria-label={t("common.signOut")} title={t("common.signOut")}>
           <Icon name="logout" size={15} />
         </button>
       </header>
@@ -169,6 +169,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         </main>
       </div>
       <AssistantDrawer open={assistant} onClose={() => setAssistant(false)} />
+      <AccountDialog open={account} onClose={() => setAccount(false)} />
       <Dialog open={help} title={t("common.shortcuts")} onClose={() => setHelp(false)} footer={<Button onClick={() => setHelp(false)}>{t("common.close")}</Button>}>
         <table className="mx-table">
           <tbody>

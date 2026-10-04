@@ -8,10 +8,11 @@ import { FieldInput, fieldLabel, invalidateRefOptions, parseJsonFields, type Fie
 import { ImportWizard } from "@/components/data/ImportWizard";
 import { api, ApiError, download } from "@/lib/api";
 import { dt } from "@/lib/format";
-import { useApi } from "@/lib/hooks";
+import { useApi, useUnsavedWarning } from "@/lib/hooks";
 import { useSession } from "@/lib/session";
 
 const HIDDEN = new Set(["tenant_id"]);
+const LIMIT = 5000;
 const ALIASES: Record<string, string> = { bom: "boms" };
 
 export default function EntityPage() {
@@ -20,11 +21,33 @@ export default function EntityPage() {
   const { plant, can, t } = useSession();
   const toast = useToast();
   const schema = useApi<any>(`/master-data/${entity}/schema`);
+  const [typed, setTyped] = useState("");
   const [q, setQ] = useState("");
-  const list = useApi<any>(`/master-data/${entity}`, { limit: 5000, plant_id: plant?.id, q: q || undefined });
+  useEffect(() => {
+    const h = setTimeout(() => setQ(typed.trim()), 300);
+    return () => clearTimeout(h);
+  }, [typed]);
+  const list = useApi<any>(`/master-data/${entity}`, { limit: LIMIT, plant_id: plant?.id, q: q || undefined });
   const [edit, setEdit] = useState<any | null>(null);
   const [mode, setMode] = useState<"list" | "grid">("list");
   const [importing, setImporting] = useState(false);
+  const { confirm, node: confirmNode } = useConfirm();
+  const [editorDirty, setEditorDirty] = useState(false);
+  const [gridDirty, setGridDirty] = useState(0);
+  const discardOk = async (dirty: boolean) => !dirty || (await confirm(t("md.discardQ"), { danger: true, body: t("md.discardBody") })).ok;
+  const closeEditor = async () => {
+    if (await discardOk(editorDirty)) {
+      setEdit(null);
+      setEditorDirty(false);
+    }
+  };
+  const switchMode = async (m: "list" | "grid") => {
+    if (m === mode) return;
+    if (await discardOk(gridDirty > 0)) {
+      setMode(m);
+      setGridDirty(0);
+    }
+  };
 
   const fields: FieldDef[] = schema.data?.fields || [];
   const cols: Column<any>[] = useMemo(() => {
@@ -64,13 +87,13 @@ export default function EntityPage() {
         }
         actions={
           <>
-            <input className="mx-input w-[180px] hidden md:block" placeholder={t("md.search")} aria-label={t("md.search")} value={q} onChange={(e) => setQ(e.target.value)} />
+            <input className="mx-input w-[180px] hidden md:block" placeholder={t("md.search")} aria-label={t("md.search")} value={typed} onChange={(e) => setTyped(e.target.value)} />
             {writable && (
               <div className="flex rounded-[3px] border border-gray-300 overflow-hidden" role="group" aria-label={t("md.view")}>
-                <button className={`px-2.5 h-7 text-[12px] ${mode === "list" ? "bg-navy-700 text-white" : "bg-white"}`} aria-pressed={mode === "list"} onClick={() => setMode("list")}>
+                <button className={`px-2.5 h-7 text-[12px] ${mode === "list" ? "bg-navy-700 text-white" : "bg-white"}`} aria-pressed={mode === "list"} onClick={() => switchMode("list")}>
                   {t("md.viewList")}
                 </button>
-                <button className={`px-2.5 h-7 text-[12px] ${mode === "grid" ? "bg-navy-700 text-white" : "bg-white"}`} aria-pressed={mode === "grid"} onClick={() => setMode("grid")}>
+                <button className={`px-2.5 h-7 text-[12px] ${mode === "grid" ? "bg-navy-700 text-white" : "bg-white"}`} aria-pressed={mode === "grid"} onClick={() => switchMode("grid")}>
                   {t("md.viewGrid")}
                 </button>
               </div>
@@ -98,12 +121,13 @@ export default function EntityPage() {
         {!list.data || !schema.data ? (
           <Loading />
         ) : mode === "grid" && writable ? (
-          <EditableGrid entity={entity} fields={fields} rows={list.data.items} defaults={defaults} onSaved={list.reload} />
+          <EditableGrid entity={entity} fields={fields} rows={list.data.items} defaults={defaults} onSaved={list.reload} onDirty={setGridDirty} />
         ) : (
-          <DataTable rows={list.data.items} columns={cols} rowKey={(r) => r.id} onRowClick={(r) => setEdit(r)} selectedKey={edit?.id} exportName={entity} filterable />
+          <DataTable rows={list.data.items} columns={cols} rowKey={(r) => r.id} onRowClick={async (r) => (await discardOk(editorDirty)) && (setEditorDirty(false), setEdit(r))} selectedKey={edit?.id} exportName={entity} filterable />
         )}
+        {list.data && list.data.total > list.data.items.length && <div className="px-3 py-1 text-[11.5px] text-slate-600 border-t border-gray-200">{t("md.truncated", { n: list.data.items.length, total: list.data.total })}</div>}
       </div>
-      <Drawer open={!!edit} onClose={() => setEdit(null)} title={edit?.id ? `${title}: ${edit.code || edit.number || edit.name || edit.id.slice(0, 8)}` : `${t("md.new")}: ${title}`} width={640}>
+      <Drawer open={!!edit} onClose={closeEditor} title={edit?.id ? `${title}: ${edit.code || edit.number || edit.name || edit.id.slice(0, 8)}` : `${t("md.new")}: ${title}`} width={640}>
         {edit && schema.data && (
           <Editor
             entity={entity}
@@ -111,9 +135,11 @@ export default function EntityPage() {
             id={edit.id}
             onSaved={() => {
               list.reload();
+              setEditorDirty(false);
               setEdit(null);
             }}
             onError={toast.error}
+            onDirty={setEditorDirty}
           />
         )}
       </Drawer>
@@ -137,11 +163,12 @@ export default function EntityPage() {
           />
         )}
       </Dialog>
+      {confirmNode}
     </div>
   );
 }
 
-function Editor({ entity, schema, id, onSaved, onError }: { entity: string; schema: any; id?: string; onSaved: () => void; onError: (e: unknown) => void }) {
+function Editor({ entity, schema, id, onSaved, onError, onDirty }: { entity: string; schema: any; id?: string; onSaved: () => void; onError: (e: unknown) => void; onDirty: (dirty: boolean) => void }) {
   const { plant, can, t } = useSession();
   const toast = useToast();
   const { confirm, node } = useConfirm();
@@ -152,14 +179,21 @@ function Editor({ entity, schema, id, onSaved, onError }: { entity: string; sche
   const [errs, setErrs] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const [tab, setTab] = useState("fields");
+  const [base, setBase] = useState<string>("{}");
   const children: any[] = schema.children || [];
+  const dirty = dirtyKids.size > 0 || JSON.stringify(form) !== base;
+  useUnsavedWarning(dirty);
+  useEffect(() => onDirty(dirty), [dirty, onDirty]);
   useEffect(() => {
     if (row.data) {
       setForm(row.data);
+      setBase(JSON.stringify(row.data));
       setKids(Object.fromEntries(children.map((c) => [c.name, row.data[c.name] || []])));
       setDirtyKids(new Set());
     } else if (!id) {
-      setForm(plant && schema.fields.some((f: FieldDef) => f.name === "plant_id") ? { plant_id: plant.id } : {});
+      const init = plant && schema.fields.some((f: FieldDef) => f.name === "plant_id") ? { plant_id: plant.id } : {};
+      setForm(init);
+      setBase(JSON.stringify(init));
       setKids(Object.fromEntries(children.map((c) => [c.name, []])));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps

@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
-import { Badge, Button, ComingSoon, DataTable, Dialog, ErrorState, Field, Loading, PageHeader, Panel, Select, StatusPill, Tabs, useToast } from "@/components/ui";
+import { Badge, Button, ComingSoon, DataTable, Dialog, ErrorState, Field, Loading, PageHeader, Panel, Select, StatusPill, Tabs, useConfirm, useToast } from "@/components/ui";
 import { api, download } from "@/lib/api";
 import { dt } from "@/lib/format";
 import { useApi, useQueryParam } from "@/lib/hooks";
@@ -105,6 +105,7 @@ function Exports() {
 
 function Webhooks() {
   const toast = useToast();
+  const { confirm, node: confirmNode } = useConfirm();
   const hooks = useApi<any[]>("/webhooks");
   const types = useApi<any>("/events/types");
   const [open, setOpen] = useState(false);
@@ -122,10 +123,31 @@ function Webhooks() {
       toast.error(e);
     }
   };
-  const del = async (id: string) => {
+  const del = async (w: any) => {
+    const r = await confirm(`Delete webhook "${w.name}"?`, { danger: true, body: "Its pending deliveries are dropped and the destination receives no more events. Pausing keeps it instead." });
+    if (!r.ok) return;
     try {
-      await api(`/webhooks/${id}`, { method: "DELETE" });
+      await api(`/webhooks/${w.id}`, { method: "DELETE" });
+      if (deliv === w.id) setDeliv(null);
       hooks.reload();
+    } catch (e) {
+      toast.error(e);
+    }
+  };
+  const setActive = async (w: any, is_active: boolean) => {
+    try {
+      await api(`/webhooks/${w.id}`, { method: "PATCH", body: { is_active } });
+      hooks.reload();
+    } catch (e) {
+      toast.error(e);
+    }
+  };
+  const sendTest = async (w: any) => {
+    try {
+      await api(`/webhooks/${w.id}/test`, { method: "POST" });
+      toast.ok(`Test delivery queued for "${w.name}": its result appears under Deliveries within a few seconds.`);
+      setDeliv(w.id);
+      setTimeout(() => deliveries.reload(), 12000);
     } catch (e) {
       toast.error(e);
     }
@@ -140,12 +162,20 @@ function Webhooks() {
                 <td>{w.name}</td>
                 <td className="code truncate max-w-[280px]">{w.url}</td>
                 <td>{(w.events || []).join(", ")}</td>
-                <td>{w.is_active ? <Badge tone="ok">active</Badge> : <Badge tone="neutral">inactive</Badge>}</td>
-                <td className="w-[160px]">
+                <td>{w.is_active ? <Badge tone="ok">active</Badge> : <Badge tone="neutral">paused</Badge>}</td>
+                <td className="whitespace-nowrap text-right">
                   <Button size="sm" variant="ghost" onClick={() => setDeliv(w.id)}>
                     Deliveries
                   </Button>
-                  <Button size="sm" variant="ghost" onClick={() => del(w.id)}>
+                  {w.is_active && (
+                    <Button size="sm" variant="ghost" onClick={() => sendTest(w)}>
+                      Send test
+                    </Button>
+                  )}
+                  <Button size="sm" variant="ghost" onClick={() => setActive(w, !w.is_active)}>
+                    {w.is_active ? "Pause" : "Resume"}
+                  </Button>
+                  <Button size="sm" variant="ghost" onClick={() => del(w)}>
                     Delete
                   </Button>
                 </td>
@@ -160,9 +190,26 @@ function Webhooks() {
         </table>
       </Panel>
       {deliv && deliveries.data && (
-        <Panel title="Recent deliveries">
+        <Panel
+          title={`Recent deliveries — ${(hooks.data || []).find((w) => w.id === deliv)?.name || ""}`}
+          actions={
+            <div className="flex gap-1">
+              <Button size="sm" variant="ghost" icon="refresh" onClick={deliveries.reload}>
+                Refresh
+              </Button>
+              <Button size="sm" variant="ghost" aria-label="Close deliveries" onClick={() => setDeliv(null)}>
+                ✕
+              </Button>
+            </div>
+          }
+        >
           <table className="mx-table">
             <tbody>
+              {!deliveries.data.length && (
+                <tr>
+                  <td className="text-slate-600">No deliveries yet.</td>
+                </tr>
+              )}
               {deliveries.data.map((d) => (
                 <tr key={d.id}>
                   <td>{dt(d.created_at)}</td>
@@ -202,6 +249,7 @@ function Webhooks() {
         <p className="mb-2">{created?.note}</p>
         <pre className="code bg-gray-50 border border-gray-200 p-2 select-all break-all whitespace-pre-wrap">{created?.secret}</pre>
       </Dialog>
+      {confirmNode}
     </div>
   );
 }

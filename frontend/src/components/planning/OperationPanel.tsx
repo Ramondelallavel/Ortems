@@ -8,7 +8,7 @@ import { useSession } from "@/lib/session";
 const REASON_ICON: Record<string, string> = { PREDECESSOR: "chevronRight", MATERIAL: "materials", RESOURCE: "factory", CALENDAR: "clock", SETUP: "wrench", LABOR: "user", TOOL: "wrench", RELEASE: "clock", FROZEN: "lock" };
 
 /** Everything the planner needs to understand one operation, straight from the stored plan. */
-export function OperationPanel({ planId, opId, resCodes, onClose, onHighlightOrder, onLock, canEdit }: { planId: string; opId: string; resCodes: Record<string, string>; onClose: () => void; onHighlightOrder: (orderId: string | null) => void; onLock: (op: string, locked: boolean) => void; canEdit: boolean }) {
+export function OperationPanel({ planId, opId, resCodes, onClose, onHighlightOrder, onLock, canEdit }: { planId: string; opId: string; resCodes: Record<string, string>; onClose: () => void; onHighlightOrder: (orderId: string | null) => void; onLock: (op: string, locked: boolean) => Promise<unknown> | unknown; canEdit: boolean }) {
   const { t } = useSession();
   const [tab, setTab] = useState("why");
   const detail = useApi<any>(`/plans/${planId}/operations/${encodeURIComponent(opId)}`);
@@ -25,7 +25,10 @@ export function OperationPanel({ planId, opId, resCodes, onClose, onHighlightOrd
       <div className="flex items-center gap-2 h-9 px-3 border-b border-gray-200 bg-gray-100">
         <span className="code font-semibold truncate flex-1">{opId}</span>
         {sch && canEdit && (
-          <Button size="sm" variant="ghost" icon={sch.is_locked ? "unlock" : "lock"} onClick={() => onLock(opId, !sch.is_locked)} title={sch.is_locked ? "Unlock" : "Lock position (kept by the next runs)"}>
+          <Button size="sm" variant="ghost" icon={sch.is_locked ? "unlock" : "lock"} onClick={async () => {
+              await onLock(opId, !sch.is_locked);
+              detail.reload(); // the lock state shown here comes from the stored plan
+            }} title={sch.is_locked ? "Unlock" : "Lock position (kept by the next runs)"}>
             {sch.is_locked ? "Unlock" : "Lock"}
           </Button>
         )}
@@ -86,7 +89,7 @@ export function OperationPanel({ planId, opId, resCodes, onClose, onHighlightOrd
                   {[
                     ["Resource", rc(sch.resource_key)],
                     ["Setup", `${dt(sch.setup_start)} · ${duration(sch.setup_minutes)}`],
-                    ["Run", `${dt(sch.start)} → ${dt(sch.end)} (${duration(sch.run_minutes)})`],
+                    ["Run", `${dt(sch.start)} → ${dt(sch.end)} (${duration(sch.run_minutes)} working time)`],
                     ["Zone", sch.zone],
                     ["Secondary", (sch.secondary || []).map((x: any) => `${rc(x.resource_id)}×${x.units}`).join(", ") || "—"],
                   ].map(([k, v]) => (

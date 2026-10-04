@@ -200,3 +200,25 @@ def test_monte_carlo_gives_on_time_probabilities():
     assert 0.0 < probs["O1"] < 1.0  # tight order is at risk under variance
     assert mc["throughput_units"]["p50"] is not None
     assert T0  # factory import used
+
+
+@pytest.mark.parametrize("provider", ["cpsat", "hybrid"])
+def test_exact_providers_never_return_a_worse_plan_than_the_heuristic(provider):
+    """CP-SAT and hybrid start from the heuristic (with its local search) and keep it when CP-SAT does
+    not beat it: asking for the stronger solver must not give a worse plan (the 50-order benchmark
+    instance used to come back 0.25 worse than the heuristic alone)."""
+    import os
+    import sys
+
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "benchmarks"))
+    from run_benchmarks import generate
+
+    def objective(name: str) -> float:
+        p = generate("M")
+        p.solver.provider = name
+        p.solver.time_limit_s = 4
+        sol = solve(p)
+        assert sol.feasible
+        return sol.solver_metadata.objective
+
+    assert objective(provider) <= objective("heuristic") + 1e-6

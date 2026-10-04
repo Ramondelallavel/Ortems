@@ -1,6 +1,6 @@
 "use client";
 import { useState } from "react";
-import { Badge, DataTable, ErrorState, Loading, PageHeader, Select, StatusPill } from "@/components/ui";
+import { Badge, Button, DataTable, ErrorState, Loading, PageHeader, Select, StatusPill } from "@/components/ui";
 import { dt, duration } from "@/lib/format";
 import { useApi } from "@/lib/hooks";
 import { useSession } from "@/lib/session";
@@ -24,9 +24,9 @@ export default function DispatchPage() {
             <SectionData tables={["actual-production", "order-operations", "maintenance", "downtimes"]} />
             <Select ariaLabel="Resource" value={res} onChange={setRes} options={[{ value: "", label: "All resources" }, ...(resources.data?.items || []).filter((r: any) => ["MACHINE", "WORK_CENTER", "LINE"].includes(r.kind)).map((r: any) => ({ value: r.id, label: r.code }))]} />
             <Select ariaLabel="Window" value={hours} onChange={setHours} options={["8", "12", "24", "48", "72", "168"].map((h) => ({ value: h, label: `next ${h} h` }))} />
-            <button className="mx-btn" onClick={() => window.print()}>
+            <Button icon="print" onClick={() => window.print()} disabled={!d.data}>
               Print
-            </button>
+            </Button>
           </>
         }
       />
@@ -36,6 +36,10 @@ export default function DispatchPage() {
         ) : !d.data ? (
           <Loading />
         ) : (
+          <>
+          {/* the screen table is virtualised and scrolls; the printed list holds every row */}
+          <PrintList data={d.data} />
+          <div className="h-full print:hidden">
           <DataTable
             rows={d.data.rows}
             rowKey={(r) => r.op_id + r.resource_id}
@@ -57,8 +61,64 @@ export default function DispatchPage() {
               { key: "flags", label: "", sortable: false, width: 90, render: (r) => <>{r.late && <Badge tone="bad">late</Badge>} {r.fixed && <Badge tone="info">🔒︎</Badge>}</> },
             ]}
           />
+          </div>
+          </>
         )}
       </div>
+    </div>
+  );
+}
+
+function PrintList({ data }: { data: any }) {
+  const rows = [...data.rows].sort((a: any, b: any) => (a.resource || "").localeCompare(b.resource || "") || String(a.setup_start).localeCompare(String(b.setup_start)));
+  return (
+    <div className="hidden print:block">
+      <h1 className="text-[15px] font-semibold">
+        Dispatch list · {data.plan.number} ({data.plan.status.toLowerCase()})
+      </h1>
+      <div className="mb-2">
+        {dt(data.from)} → {dt(data.to)} · {rows.length} operations · printed {dt(new Date())}
+      </div>
+      <table className="mx-table">
+        <thead>
+          <tr>
+            <th>Resource</th>
+            <th>Setup</th>
+            <th>Start</th>
+            <th>End</th>
+            <th>Order</th>
+            <th>Operation</th>
+            <th>Step</th>
+            <th>Product</th>
+            <th className="!text-right">Qty</th>
+            <th>Material</th>
+            <th>Status</th>
+            <th>Done</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r: any) => (
+            <tr key={r.op_id + r.resource_id}>
+              <td className="code">{r.resource}</td>
+              <td>{dt(r.setup_start)}</td>
+              <td>{dt(r.start)}</td>
+              <td>{dt(r.end)}</td>
+              <td className="code">{r.order}</td>
+              <td className="code">{r.op_id}</td>
+              <td>{r.operation}</td>
+              <td className="code">{r.product}</td>
+              <td className="num">{r.quantity}</td>
+              <td>{r.material}</td>
+              <td>
+                {r.status}
+                {r.late ? " · late" : ""}
+                {r.fixed ? " · locked" : ""}
+              </td>
+              <td>☐</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }

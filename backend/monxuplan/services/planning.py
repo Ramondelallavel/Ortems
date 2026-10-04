@@ -104,19 +104,35 @@ def enqueue_run(s: Session, ctx: Ctx, scenario_id: uuid.UUID, kind: str = "OPTIM
     params = dict(params or {})
     if kind not in ("OPTIMIZE", "PLAN", "REPAIR", "VALIDATE"):
         raise ValidationFailed(f"Unknown run kind {kind}")
-    provider = (params.get("solver") or {}).get("provider")
+    solver = params.get("solver") or {}
+    provider = solver.get("provider")
     if provider == "mip":
         raise ValidationFailed("The MIP provider performs aggregate planning only; choose heuristic, cpsat or hybrid for detailed scheduling.", code="PROVIDER_NOT_SUPPORTED")
-    if not params.get("force"):
-        from .dataquality import blocking_issues
+    if provider is not None and provider not in ("heuristic", "cpsat", "hybrid"):
+        raise ValidationFailed(f"Unknown solver provider {provider!r}: choose heuristic, cpsat or hybrid.", code="UNKNOWN_PROVIDER")
+    tl = solver.get("time_limit_s")
+    if tl is not None and (not isinstance(tl, int | float) or isinstance(tl, bool) or not 0 < tl <= 86400):
+        raise ValidationFailed("The time limit must be between 1 second and 24 hours.", code="INVALID_TIME_LIMIT")
+    from .dataquality import blocking_issues
 
-        blockers = blocking_issues(s, sc.plant_id)
-        if blockers:
+    blockers = blocking_issues(s, sc.plant_id)
+    if blockers:
+        # critical data problems block planning; planning anyway is an explicit, recorded decision
+        if not params.get("force"):
             raise PlanningBlocked(
-                f"Planning is blocked by {len(blockers)} critical data problem(s). Fix them in the Data Quality Center or run with 'force'.",
+                f"Planning is blocked by {len(blockers)} critical data problem(s). Fix them in the Data Quality Center, or plan anyway with a reason.",
                 code="DATA_QUALITY_BLOCK",
                 context={"issues": blockers[:20]},
             )
+        if not (params.get("force_reason") or "").strip():
+            raise ValidationFailed(
+                "A reason is required to plan despite critical data problems.",
+                code="REASON_REQUIRED",
+                context={"issues": blockers[:20]},
+            )
+        params["overridden_issues"] = blockers[:20]
+    else:
+        params.pop("force", None)  # nothing was overridden
     running = s.scalar(select(func.count()).select_from(PlanningRun).where(PlanningRun.scenario_id == sc.id, PlanningRun.status.in_(["QUEUED", "RUNNING"])))
     if running:
         raise Conflict("A planning run is already queued or running for this scenario.", code="RUN_IN_PROGRESS")
@@ -129,7 +145,17 @@ def enqueue_run(s: Session, ctx: Ctx, scenario_id: uuid.UUID, kind: str = "OPTIM
             s.flush()
     except IntegrityError as exc:
         raise Conflict("A planning run is already queued or running for this scenario.", code="RUN_IN_PROGRESS") from exc
-    audit.record(s, ctx, "PLANNING_RUN_QUEUED", "scenario", sc.id, sc.name, after={"run_id": str(run.id), "kind": kind, "params": params})
+    forced = bool(params.get("overridden_issues"))
+    audit.record(
+        s,
+        ctx,
+        "PLANNING_RUN_FORCED" if forced else "PLANNING_RUN_QUEUED",
+        "scenario",
+        sc.id,
+        sc.name,
+        after={"run_id": str(run.id), "kind": kind, "params": params},
+        reason=params.get("force_reason") if forced else None,
+    )
     bus().publish("planning.run.queued", str(ctx.tenant_id), {"run_id": str(run.id), "scenario_id": str(sc.id), "kind": kind}, str(sc.plant_id))
     return run
 
@@ -670,15 +696,20 @@ def _apply_move(s: Session, ctx: Ctx, plan_id: uuid.UUID, op_key: str, resource_
     ctx.require("plan:edit")
     plan, sc = _require_head(s, ctx, plan_id, expected_version)
     check_edit(ctx, sc)
+    if allow_frozen and not (reason or "").strip():
+        raise ValidationFailed("A reason is required to change the frozen zone.", code="REASON_REQUIRED")
     # one computation: the re-placed operations are explained, the others keep their explanation
     prev = _move(s, ctx, plan, op_key, resource_id, start, replan, allow_frozen, explain="CHANGED")
     sol: Solution = prev["_solution"]
-    if not sol.feasible and prev["comparison"]["new_hard_violation_count"] and not accept_violations:
+    creates_violations = not sol.feasible and bool(prev["comparison"]["new_hard_violation_count"])
+    if creates_violations and not accept_violations:
         raise ValidationFailed(
             "The move creates hard constraint violations. Choose another replan mode, use automatic repair, or confirm explicitly.",
             code="MOVE_CREATES_VIOLATIONS",
             context={"violations": prev["hard_violations"][:10]},
         )
+    if creates_violations and not (reason or "").strip():
+        raise ValidationFailed("A reason is required to accept hard constraint violations.", code="REASON_REQUIRED", context={"violations": prev["hard_violations"][:10]})
     problem: Problem = prev["_problem"]
     base: MoveBase = prev["_base"]
     if base.op_rows is None:
@@ -713,7 +744,7 @@ def _apply_move(s: Session, ctx: Ctx, plan_id: uuid.UUID, op_key: str, resource_
         new_plan.id,
         new_plan.number,
         before={"op": op_key, "plan": plan.number, **_pos(s, plan.id, op_key)},
-        after={"op": op_key, "resource": resource_id, "start": start.isoformat(), "replan": replan},
+        after={"op": op_key, "resource": resource_id, "start": start.isoformat(), "replan": replan, "frozen_zone_changed": allow_frozen, "hard_violations_accepted": prev["comparison"]["new_hard_violation_count"] if creates_violations else 0},
         reason=reason,
         compact=False,
     )

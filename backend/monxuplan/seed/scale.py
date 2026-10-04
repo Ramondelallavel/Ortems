@@ -233,9 +233,9 @@ def _delete_plant(s, plant: M.Plant) -> None:
 
 def main() -> None:  # pragma: no cover
     ap = argparse.ArgumentParser(description="Create the high-volume Scale Plant")
-    ap.add_argument("--orders", type=int, default=100_000)
-    ap.add_argument("--machines", type=int, default=None)
-    ap.add_argument("--reset", action="store_true")
+    ap.add_argument("--orders", type=int, default=100_000, help="production orders to create (default 100 000)")
+    ap.add_argument("--machines", type=int, default=None, help="machines (default: sized to the order volume)")
+    ap.add_argument("--reset", action="store_true", help="delete an existing Scale Plant first")
     args = ap.parse_args()
     create_all()
     print(json.dumps(seed_scale(args.orders, args.machines, reset=args.reset), indent=2))

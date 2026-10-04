@@ -149,3 +149,26 @@ def test_input_revision_counts_inputs_only(planner, scenario):
         s.flush()
         assert revision.current(s, tid) == r0 + 1
         s.rollback()
+
+
+def test_worker_shutdown_hands_its_runs_back(planner, scenario):
+    """A worker stopped mid-run (SIGTERM) re-queues its own runs at once; other workers' runs stay."""
+    from sqlalchemy import update
+
+    from monxuplan import worker
+    from monxuplan.models import PlanningRun
+
+    with _session(planner) as s:
+        mine = PlanningRun(scenario_id=uuid.UUID(scenario["id"]), kind="OPTIMIZE", status="RUNNING", worker="shutdown-test:1", params={"solver": {"provider": "heuristic", "time_limit_s": 2}})
+        s.add(mine)
+        s.commit()
+        rid = mine.id
+    assert worker.requeue_own("other-worker:9") == 0
+    assert worker.requeue_own("shutdown-test:1") == 1
+    with _session(planner) as s:
+        r = s.get(PlanningRun, rid)
+        # back in the queue (or already taken over by a running worker): no longer owned by the stopped one
+        assert r.worker != "shutdown-test:1" and r.status in ("QUEUED", "RUNNING", "SUCCEEDED", "STALE")
+        s.execute(update(PlanningRun).where(PlanningRun.id == rid, PlanningRun.status == "QUEUED").values(status="CANCELLED"))
+        s.commit()
+    planner.wait_run(str(rid))

@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
-import { Badge, Button, Icon, ProgressBar, statusTone } from "@/components/ui";
-import { api } from "@/lib/api";
+import { Badge, Button, Icon, ProgressBar, statusTone, useToast } from "@/components/ui";
+import { api, ApiError } from "@/lib/api";
 import { useEvents } from "@/lib/hooks";
 
 /** Terminal run states. STALE: computed, but the data or the current plan changed meanwhile — the
@@ -10,7 +10,10 @@ export const FINAL = ["SUCCEEDED", "FAILED", "CANCELLED", "STALE"];
 
 /** Live progress of a planning run: the 17 pipeline steps with their real status and details. */
 export function RunProgress({ runId, onDone, onClose }: { runId: string; onDone: (run: any) => void; onClose: () => void }) {
+  const toast = useToast();
   const [run, setRun] = useState<any>(null);
+  const [lost, setLost] = useState<string | null>(null);
+  const [stopping, setStopping] = useState(false);
   const [t0] = useState(Date.now());
   const [elapsed, setElapsed] = useState(0);
   useEffect(() => {
@@ -24,8 +27,14 @@ export function RunProgress({ runId, onDone, onClose }: { runId: string; onDone:
           onDone(r);
           return;
         }
-      } catch {
-        /* retry */
+        setLost(null);
+      } catch (e) {
+        // connection problems are retried; an answer from the server (no access, run gone) is final
+        if (e instanceof ApiError && e.status >= 400 && e.status < 500) {
+          if (!stop) setLost(e.message);
+          return;
+        }
+        if (!stop) setLost(e instanceof Error ? e.message : String(e));
       }
       if (!stop) setTimeout(tick, 1000);
     };
@@ -73,6 +82,11 @@ export function RunProgress({ runId, onDone, onClose }: { runId: string; onDone:
             </li>
           ))}
         </ol>
+        {lost && (
+          <div className="text-amber-600 text-[12px]" role="alert">
+            ◆ {lost}
+          </div>
+        )}
         {run?.error_message && <div className="text-red-600 text-[12px]">▲ {run.error_message}</div>}
         {run?.status === "STALE" && run.result && (
           <div className="text-amber-600 text-[12px]" role="alert">
@@ -91,8 +105,25 @@ export function RunProgress({ runId, onDone, onClose }: { runId: string; onDone:
           </div>
         )}
         {!finished && (
-          <Button size="sm" variant="danger" icon="stop" onClick={() => api(`/planning/runs/${runId}/cancel`, { method: "POST" }).catch(() => {})}>
-            Stop and keep best plan found
+          <Button
+            size="sm"
+            variant="danger"
+            icon="stop"
+            busy={stopping}
+            disabled={!!run?.cancel_requested}
+            onClick={async () => {
+              setStopping(true);
+              try {
+                const r = await api(`/planning/runs/${runId}/cancel`, { method: "POST" });
+                setRun((x: any) => (x ? { ...x, ...r } : r));
+              } catch (e) {
+                toast.error(e);
+              } finally {
+                setStopping(false);
+              }
+            }}
+          >
+            {run?.cancel_requested ? "Stopping…" : run?.status === "QUEUED" ? "Cancel" : "Stop and keep best plan found"}
           </Button>
         )}
       </div>

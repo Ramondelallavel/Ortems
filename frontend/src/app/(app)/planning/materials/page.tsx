@@ -1,11 +1,11 @@
 "use client";
 import { useRouter } from "next/navigation";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Chart, INK, SEQ_BLUE, STATUS, axisVal } from "@/components/charts/Chart";
 import { Badge, Button, DataTable, Dialog, ErrorState, Field, Loading, PageHeader, Panel, StatusPill, Tabs, useToast } from "@/components/ui";
 import { api } from "@/lib/api";
 import { dt, duration, num } from "@/lib/format";
-import { useApi } from "@/lib/hooks";
+import { useApi, useQueryParam } from "@/lib/hooks";
 import { useScenarioSelection } from "@/lib/plan";
 import { useSession } from "@/lib/session";
 import { SectionData } from "@/components/data/SectionData";
@@ -20,6 +20,13 @@ export default function MaterialsPage() {
   const [mat, setMat] = useState<{ id: string; code: string } | null>(null);
   const [delay, setDelay] = useState<{ id: string; code: string } | null>(null);
   const [days, setDays] = useState("3");
+  // deep link from an alert: /planning/materials?material=<code> opens that material's projection
+  const matParam = useQueryParam("material");
+  const matLookup = useApi<any>(matParam ? "/master-data/items" : null, { q: matParam, limit: 20 });
+  useEffect(() => {
+    const hit = (matLookup.data?.items || []).find((i: any) => i.code === matParam);
+    if (hit) setMat({ id: hit.id, code: hit.code });
+  }, [matLookup.data, matParam]);
   const av = useApi<any>(planId ? "/materials/availability" : null, planId ? { plan_id: planId } : undefined);
   const receipts = useApi<any[]>(plant && tab === "receipts" ? "/receipts" : null, plant ? { plant_id: plant.id } : undefined);
   const proj = useApi<any>(mat && planId ? `/materials/${mat.id}/projection` : null, planId ? { plan_id: planId } : undefined);
@@ -43,7 +50,8 @@ export default function MaterialsPage() {
     if (!delay || !plant) return;
     try {
       const sc = await api("/scenarios/what-if", { body: { plant_id: plant.id, kind: "MATERIAL_DELAY", params: { material_id: delay.id, delay_minutes: Math.round(Number(days) * 1440) }, name: `What-if: ${delay.code} +${days} d`, run: true } });
-      toast.ok(`Scenario "${sc.name}" created and planning started.`);
+      if (sc.run_blocked) toast.warn(t("run.whatIfBlocked"));
+      else toast.ok(`Scenario "${sc.name}" created and planning started.`);
       router.push(`/planning/scenarios?id=${sc.id}`);
     } catch (e) {
       toast.error(e);

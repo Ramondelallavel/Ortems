@@ -180,3 +180,27 @@ def test_audit_log(client):
     admin = Api(client, "admin")
     a = admin.ok(admin.get("/audit", params={"action": "LOGIN"}))
     assert a["total"] >= 1
+
+
+def test_frozen_zone_change_needs_a_reason(client, base_plan):
+    """Changing the frozen zone is an explicit, explained decision (permission + reason, audited)."""
+    from conftest import Api
+
+    admin = Api(client, "admin")  # holds plan:edit and plan:frozen
+    head = admin.ok(admin.get(f"/plans/{base_plan['id']}"))
+    plan_id = head["scenario"]["head_plan_id"] or base_plan["id"]  # other tests may have moved the head
+    g = admin.ok(admin.get(f"/plans/{plan_id}/gantt"))
+    op = next((o for o in g["operations"] if o["zone"] == "FROZEN" and not o["fixed"]), None) or g["operations"][0]
+    body = {"op_id": op["id"], "resource_id": op["resource_id"], "start": op["start"], "replan": "NO_REPLAN", "allow_frozen": True}
+    r = admin.post(f"/plans/{plan_id}/moves", json=body)
+    assert r.status_code == 422 and r.json()["error"]["code"] == "REASON_REQUIRED", r.text
+    planner = Api(client, "planner")  # no plan:frozen
+    r = planner.post(f"/plans/{plan_id}/moves", json={**body, "reason": "rush"})
+    assert r.status_code == 403, r.text
+
+
+def test_run_request_is_validated_before_queueing(planner, sevilla):
+    sc = sevilla["live_scenario_id"]
+    for solver, code in (({"provider": "nope"}, "UNKNOWN_PROVIDER"), ({"provider": "mip"}, "PROVIDER_NOT_SUPPORTED"), ({"time_limit_s": 0}, "INVALID_TIME_LIMIT"), ({"time_limit_s": "x"}, "INVALID_TIME_LIMIT")):
+        r = planner.post("/planning/run", json={"scenario_id": sc, "solver": solver})
+        assert r.status_code == 422 and r.json()["error"]["code"] == code, (solver, r.text)

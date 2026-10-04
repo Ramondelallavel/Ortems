@@ -65,11 +65,11 @@ def generate_alerts(s: Session, ctx: Ctx, plan: Plan, sol: Solution, sc: Scenari
             add("UNSCHEDULED_" + reason, sev, title, "; ".join(u.message for u in unsched if u.reason == reason)[:1500], {"page": "planning", "panel": "exceptions", "reason": reason}, n)
     for b in sol.bottlenecks:
         if b.kind == "OVERLOADED":
-            add("RESOURCE_OVERLOADED", "WARNING", f"{b.ref} overloaded {b.overload_minutes // 60} h", f"Requirement {b.requirement_minutes // 60} h vs capacity {b.capacity_minutes // 60} h; {b.orders_affected} late orders waited on it.", {"page": "capacity", "resource_id": b.resource_id}, b.overload_minutes / 60)
+            add("RESOURCE_OVERLOADED", "WARNING", f"{b.ref} overloaded {b.overload_minutes // 60} h", f"Requirement {b.requirement_minutes // 60} h vs capacity {b.capacity_minutes // 60} h; {b.orders_affected} late orders waited on it.", {"page": "capacity", "resource_id": b.resource_id, "resource_code": b.ref}, b.overload_minutes / 60)
         elif b.kind == "MATERIAL" and b.orders_affected:
             add("MATERIAL_LATE", "WARNING", f"Material {b.ref} delays {b.orders_affected} orders", "Late or insufficient supply.", {"page": "materials", "material": b.ref}, b.orders_affected)
         elif b.kind in ("LABOR", "TOOL") and b.induced_wait_minutes > 480:
-            add(f"{b.kind}_CONSTRAINT", "WARNING", f"{b.ref}: {b.induced_wait_minutes // 60} h of waiting", f"Operations waited for {b.kind.lower()} availability.", {"page": "capacity", "resource_id": b.resource_id}, b.induced_wait_minutes / 60)
+            add(f"{b.kind}_CONSTRAINT", "WARNING", f"{b.ref}: {b.induced_wait_minutes // 60} h of waiting", f"Operations waited for {b.kind.lower()} availability.", {"page": "capacity", "resource_id": b.resource_id, "resource_code": b.ref}, b.induced_wait_minutes / 60)
     shortages = [v for v in sol.violations if v.type == "MATERIAL_SHORTAGE"]
     if shortages:
         add("NEGATIVE_INVENTORY", "CRITICAL", f"{len(shortages)} materials would go negative", "Material shortage allowed by the scenario settings.", {"page": "materials"}, len(shortages))
@@ -89,7 +89,8 @@ def generate_alerts(s: Session, ctx: Ctx, plan: Plan, sol: Solution, sc: Scenari
 def acknowledge(s: Session, ctx: Ctx, alert_id, note: str | None = None, resolve: bool = False) -> Alert:
     ctx.require("alerts:manage")
     a = s.get(Alert, alert_id)
-    if a is None:
+    if a is None or not ctx.can_access_plant(a.plant_id):
+        # an alert of a plant outside the caller's scope does not exist for them
         from ..core.errors import NotFound
 
         raise NotFound("Alert not found")

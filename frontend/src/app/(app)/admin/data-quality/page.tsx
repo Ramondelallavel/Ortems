@@ -26,7 +26,11 @@ export default function DataQuality() {
       <div className="flex-1 overflow-auto mx-scroll p-3 space-y-2">
         <ErrorState error={dq.error} onRetry={dq.reload} />
         {!d && <Loading />}
-        {d?.planning_blocked && <div className="p-2 border border-red-600/40 bg-red-100 text-red-600 rounded-[3px]">▲ Planning is blocked until the errors below are fixed (a plan built on broken data would not be executable).</div>}
+        {d?.planning_blocked && (
+          <div className="p-2 border border-red-600/40 bg-red-100 text-red-600 rounded-[3px]">
+            ▲ Planning is blocked until the errors below are fixed (a plan built on broken data would not be executable). Planning anyway is possible only as an explicit decision with a reason, recorded on the run and in the audit log.
+          </div>
+        )}
         {d?.checks.map((c: any) => (
           <Panel
             key={c.code}
@@ -46,31 +50,48 @@ export default function DataQuality() {
             }
           >
             {c.count > 0 && <div className="px-3 py-1.5 text-[12px] text-slate-600">{c.hint}</div>}
-            {open === c.code && (
-              <table className="mx-table">
-                <thead>
-                  <tr>
-                    {Object.keys(c.examples[0] || {}).map((k) => (
-                      <th key={k}>{k}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {c.examples.map((e: any, i: number) => (
-                    <tr key={i}>
-                      {Object.values(e).map((v: any, j) => (
-                        <td key={j} className="whitespace-normal">
-                          {typeof v === "object" ? JSON.stringify(v) : String(v ?? "")}
-                        </td>
-                      ))}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
+            {open === c.code && <Examples check={c} />}
           </Panel>
         ))}
       </div>
     </div>
+  );
+}
+
+/** Examples of a check: internal identifiers are not shown (codes and numbers identify the records). */
+function Examples({ check }: { check: any }) {
+  const rows: Record<string, unknown>[] = check.examples || [];
+  const keys = Object.keys(rows[0] || {}).filter((k) => k !== "id" && !k.endsWith("_id"));
+  return (
+    <>
+      <table className="mx-table">
+        <thead>
+          <tr>
+            {keys.map((k) => (
+              <th key={k}>{k.replaceAll("_", " ")}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((e, i) => (
+            <tr key={i}>
+              {keys.map((k) => {
+                const v = e[k];
+                return (
+                  <td key={k} className="whitespace-normal">
+                    {typeof v === "boolean" ? (v ? "✓" : "—") : typeof v === "object" && v !== null ? JSON.stringify(v) : String(v ?? "")}
+                  </td>
+                );
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {check.count > rows.length && (
+        <div className="px-3 py-1.5 text-[11.5px] text-slate-600">
+          {rows.length} of {check.count} shown
+        </div>
+      )}
+    </>
   );
 }

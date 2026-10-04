@@ -212,6 +212,10 @@ def update_user(user_id: uuid.UUID, body: UserPatch, ctx: Ctx = Depends(get_ctx)
     before = _user_out(s, u)
     if body.is_active is False and u.id == ctx.user_id:
         raise ValidationFailed("You cannot deactivate yourself")
+    if body.is_active is False and u.is_active:
+        from ...services.auth import revoke_tokens
+
+        revoke_tokens(u)  # a deactivated account loses its open sessions now, not at their expiry
     for f in ("full_name", "email", "is_active", "locale"):
         v = getattr(body, f)
         if v is not None:
@@ -324,6 +328,13 @@ def audit_log(
     total = s.scalar(select(func.count()).select_from(stmt.subquery()))
     rows = s.scalars(stmt.order_by(AuditLog.at.desc()).offset(offset).limit(limit))
     return {"total": total, "items": [row_dict(a) for a in rows]}
+
+
+@router.get("/audit/actions")
+def audit_actions(ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+    """The action codes present in this tenant's audit log (filter values of the audit screen)."""
+    ctx.require("admin:audit")
+    return sorted(a for a in s.scalars(select(AuditLog.action).distinct()) if a)
 
 
 # ------------------------------------------------------------------ saved views

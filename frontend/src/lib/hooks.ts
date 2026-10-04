@@ -1,7 +1,7 @@
 "use client";
+import { useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ApiError } from "./api";
-import { loc } from "./loc";
 
 export type Loadable<T> = { data: T | undefined; error: ApiError | undefined; loading: boolean; reload: () => void; setData: (d: T) => void };
 
@@ -89,16 +89,12 @@ export function useLocalState<T>(key: string, initial: T): [T, (v: T) => void] {
   return [v, set];
 }
 
+/** A query-string parameter of the current URL; follows client-side navigations to the same page. */
 export function useQueryParam(name: string): string | null {
-  const [v, setV] = useState<string | null>(null);
-  useEffect(() => {
-    const read = () => setV(new URLSearchParams(loc.search()).get(name));
-    read();
-    window.addEventListener("popstate", read);
-    return () => window.removeEventListener("popstate", read);
-  }, [name]);
-  return v;
+  return useSearchParams().get(name);
 }
+
+const TEXT_KEYS = new Set(["mod+z", "mod+y", "mod+shift+z", "mod+a", "mod+c", "mod+v", "mod+x"]);
 
 export function useHotkeys(map: Record<string, (e: KeyboardEvent) => void>, enabled = true) {
   const ref = useRef(map);
@@ -108,9 +104,13 @@ export function useHotkeys(map: Record<string, (e: KeyboardEvent) => void>, enab
     const h = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement;
       const typing = t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable);
-      const k = [(e.ctrlKey || e.metaKey) && "mod", e.shiftKey && "shift", e.altKey && "alt", e.key.toLowerCase()].filter(Boolean).join("+");
+      // Alt+digit: on macOS e.key is a symbol (Alt+1 → "¡"); the physical key is what the user pressed
+      const base = e.altKey && /^Digit\d$/.test(e.code) ? e.code.slice(5) : (e.key || "").toLowerCase();
+      const k = [(e.ctrlKey || e.metaKey) && "mod", e.shiftKey && "shift", e.altKey && "alt", base].filter(Boolean).join("+");
       const fn = ref.current[k];
-      if (fn && (!typing || k.startsWith("mod+") || k === "escape")) {
+      // while typing, the field keeps its own editing keys (undo/redo/select-all/copy/paste…):
+      // only application shortcuts that have no meaning in a text field pass through
+      if (fn && (!typing || k === "escape" || (k.startsWith("mod+") && !TEXT_KEYS.has(k)))) {
         e.preventDefault();
         fn(e);
       }
@@ -118,4 +118,17 @@ export function useHotkeys(map: Record<string, (e: KeyboardEvent) => void>, enab
     window.addEventListener("keydown", h);
     return () => window.removeEventListener("keydown", h);
   }, [enabled]);
+}
+
+/** Warns before the page is closed or reloaded while there are unsaved changes. */
+export function useUnsavedWarning(dirty: boolean) {
+  useEffect(() => {
+    if (!dirty) return;
+    const h = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", h);
+    return () => window.removeEventListener("beforeunload", h);
+  }, [dirty]);
 }

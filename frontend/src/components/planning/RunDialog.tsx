@@ -1,8 +1,9 @@
 "use client";
 import { useEffect, useState } from "react";
-import { Button, Dialog, Field, Select, useToast } from "@/components/ui";
-import { api } from "@/lib/api";
+import { Button, Dialog, Field, Select, useConfirm, useToast } from "@/components/ui";
 import { useApi } from "@/lib/hooks";
+import { startRun } from "@/lib/runs";
+import { useSession } from "@/lib/session";
 
 /** Optimise / plan dialog: objective preset, solver provider and time profile. Nothing hidden:
  * the chosen settings are sent as-is and stored with the plan version. */
@@ -10,6 +11,8 @@ export function RunDialog({ open, onClose, scenarioId, onStarted }: { open: bool
   const presets = useApi<any>(open ? "/planning/presets" : null);
   const providers = useApi<any[]>(open ? "/planning/providers" : null);
   const toast = useToast();
+  const { t } = useSession();
+  const { confirm, node: confirmNode } = useConfirm();
   const [mode, setMode] = useState("OPTIMIZE");
   const [preset, setPreset] = useState("");
   const [provider, setProvider] = useState("hybrid");
@@ -32,8 +35,12 @@ export function RunDialog({ open, onClose, scenarioId, onStarted }: { open: bool
       if (custom) solver.time_limit_s = Number(custom);
       const body: any = { scenario_id: scenarioId, mode, solver, constraints: { allow_overtime: overtime, materials }, note: note || undefined };
       if (preset) body.objectives = { preset };
-      const r = await api("/planning/run", { body });
-      onStarted(r.run_id);
+      const runId = await startRun(body, confirm, t);
+      if (!runId) {
+        setBusy(false);
+        return;
+      }
+      onStarted(runId);
       onClose();
     } catch (e) {
       toast.error(e);
@@ -46,6 +53,7 @@ export function RunDialog({ open, onClose, scenarioId, onStarted }: { open: bool
     if (detailed.length && !detailed.some((p) => p.name === provider)) setProvider(detailed.some((p) => p.name === "hybrid") ? "hybrid" : detailed[0].name);
   }, [detailed, provider]);
   return (
+    <>
     <Dialog
       open={open}
       onClose={onClose}
@@ -99,5 +107,7 @@ export function RunDialog({ open, onClose, scenarioId, onStarted }: { open: bool
         </div>
       </div>
     </Dialog>
+    {confirmNode}
+    </>
   );
 }

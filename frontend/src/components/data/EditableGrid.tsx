@@ -1,7 +1,8 @@
 "use client";
-import { Fragment, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { Button, useConfirm, useToast } from "@/components/ui";
 import { api, ApiError } from "@/lib/api";
+import { useUnsavedWarning } from "@/lib/hooks";
 import { useSession } from "@/lib/session";
 import { FieldInput, fieldLabel, invalidateRefOptions, parseJsonFields, type FieldDef } from "./FieldInput";
 
@@ -13,7 +14,7 @@ const HIDDEN = new Set(["tenant_id"]);
  * then save once. Every change goes through the same API as the record editor (validation,
  * optimistic locking by version, audit); rows that fail keep their changes and show the reason.
  */
-export function EditableGrid({ entity, fields, rows, onSaved, defaults }: { entity: string; fields: FieldDef[]; rows: any[]; onSaved: () => void; defaults?: Record<string, any> }) {
+export function EditableGrid({ entity, fields, rows, onSaved, defaults, onDirty }: { entity: string; fields: FieldDef[]; rows: any[]; onSaved: () => void; defaults?: Record<string, any>; onDirty?: (pending: number) => void }) {
   const { t } = useSession();
   const toast = useToast();
   const { confirm, node } = useConfirm();
@@ -34,6 +35,9 @@ export function EditableGrid({ entity, fields, rows, onSaved, defaults }: { enti
   const pages = Math.max(1, Math.ceil(visible.length / PAGE));
   const slice = visible.slice(page * PAGE, page * PAGE + PAGE);
   const dirty = Object.keys(edits).length + added.length;
+  useUnsavedWarning(dirty > 0);
+  useEffect(() => onDirty?.(dirty), [dirty, onDirty]);
+  const byId = useMemo(() => new Map(rows.map((r) => [r.id, r])), [rows]);
 
   const setCell = (id: string, name: string, v: any) => setEdits((e) => ({ ...e, [id]: { ...(e[id] || {}), [name]: v } }));
   const setNew = (tmp: string, name: string, v: any) => setAdded((a) => a.map((r) => (r.tmp === tmp ? { ...r, values: { ...r.values, [name]: v } } : r)));
@@ -49,7 +53,7 @@ export function EditableGrid({ entity, fields, rows, onSaved, defaults }: { enti
     const errs: Record<string, string> = {};
     let ok = 0;
     for (const [id, ch] of Object.entries(edits)) {
-      const row = rows.find((r) => r.id === id);
+      const row = byId.get(id);
       const p = parseJsonFields(cols, ch);
       if (!p.ok) {
         errs[id] = `${p.field}: ${t("grid.badJson")}`;
@@ -105,11 +109,12 @@ export function EditableGrid({ entity, fields, rows, onSaved, defaults }: { enti
       }
     }
     setBusy(false);
-    setSelected(new Set());
+    setSelected(new Set(Object.keys(errs)));
     setErrors(errs);
     invalidateRefOptions(entity);
     onSaved();
-    toast.ok(t("grid.deleted", { d: deleted, x: deactivated }));
+    if (deleted || deactivated) toast.ok(t("grid.deleted", { d: deleted, x: deactivated }));
+    if (Object.keys(errs).length) toast.error(new Error(t("grid.deleteFailed", { n: Object.keys(errs).length })));
   };
 
   const cell = (f: FieldDef, value: any, label: string | undefined, onChange: (v: any) => void) => (

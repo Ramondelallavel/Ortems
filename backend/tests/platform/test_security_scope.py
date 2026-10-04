@@ -69,6 +69,24 @@ def test_runs_of_another_plant_are_not_visible(sev_supervisor, plants):
     assert sev_supervisor.get("/planning/runs", params={"scenario_id": qro_live}).status_code == 403
 
 
+def test_alerts_of_another_plant_cannot_be_acknowledged(sev_supervisor, plants):
+    from monxuplan.models import Alert
+
+    sev, qro = plants
+    tid = uuid.UUID(sev_supervisor.ok(sev_supervisor.get("/auth/me"))["tenant_id"])
+    with _session(sev_supervisor) as s:
+        a = Alert(tenant_id=tid, plant_id=uuid.UUID(qro["id"]), type="TEST", severity="INFO", title="qro alert", message="")
+        b = Alert(tenant_id=tid, plant_id=uuid.UUID(sev["id"]), type="TEST", severity="INFO", title="sev alert", message="")
+        s.add_all([a, b])
+        s.commit()
+        qro_alert, sev_alert = str(a.id), str(b.id)
+    assert sev_supervisor.post(f"/alerts/{qro_alert}/acknowledge", json={}).status_code == 404
+    with _session(sev_supervisor) as s:
+        assert s.get(Alert, uuid.UUID(qro_alert)).status == "OPEN"
+    done = sev_supervisor.ok(sev_supervisor.post(f"/alerts/{sev_alert}/acknowledge", json={"resolve": True}))
+    assert done["status"] == "RESOLVED" and done["acknowledged_by"] == "sev-supervisor"
+
+
 # ------------------------------------------------------------------ delegation
 def test_plant_admin_cannot_escalate(sev_admin, plants):
     sev, qro = plants

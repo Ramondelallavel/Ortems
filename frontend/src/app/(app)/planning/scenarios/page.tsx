@@ -8,6 +8,7 @@ import { api } from "@/lib/api";
 import { dt, duration, localInputToIso, num } from "@/lib/format";
 import { useApi, useQueryParam } from "@/lib/hooks";
 import type { ScenarioRow } from "@/lib/plan";
+import { startRun } from "@/lib/runs";
 import { useSession } from "@/lib/session";
 import { SectionData } from "@/components/data/SectionData";
 
@@ -61,8 +62,8 @@ export default function ScenariosPage() {
   };
   const runScenario = async (s: ScenarioRow) => {
     try {
-      const r = await api("/planning/run", { body: { scenario_id: s.id, force: true } });
-      setRunId(r.run_id);
+      const id = await startRun({ scenario_id: s.id }, confirm, t);
+      if (id) setRunId(id);
     } catch (e) {
       toast.error(e);
     }
@@ -212,7 +213,17 @@ export default function ScenariosPage() {
         </div>
       )}
       {tab === "compare" && <Compare planIds={cmpIds} />}
-      <WhatIfWizard kind={wizard} onClose={() => setWizard(null)} onCreated={(s) => { scen.reload(); setSel(s.id); if (s.run_id) setRunId(s.run_id); setTab("detail"); }} />
+      <WhatIfWizard
+        kind={wizard}
+        onClose={() => setWizard(null)}
+        onCreated={(s) => {
+          scen.reload();
+          setSel(s.id);
+          if (s.run_id) setRunId(s.run_id);
+          if (s.run_blocked) toast.warn(t("run.whatIfBlocked"));
+          setTab("detail");
+        }}
+      />
       <CloneDialog open={cloneOpen} onClose={() => setCloneOpen(false)} scenarios={list} onCreated={(s) => { scen.reload(); setSel(s.id); }} />
       {node}
     </div>
@@ -401,7 +412,7 @@ function WhatIfWizard({ kind, onClose, onCreated }: { kind: string | null; onClo
     setBusy(true);
     try {
       const s = await api("/scenarios/what-if", { body: { plant_id: plant.id, kind, params: build(), name: p.name || undefined, run: true } });
-      toast.ok(`Scenario "${s.name}" created; planning started.`);
+      if (s.run_id) toast.ok(`Scenario "${s.name}" created; planning started.`);
       onCreated(s);
       onClose();
     } catch (e) {
