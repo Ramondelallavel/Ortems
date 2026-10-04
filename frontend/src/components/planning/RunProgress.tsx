@@ -14,10 +14,14 @@ export function RunProgress({ runId, onDone, onClose }: { runId: string; onDone:
   const [run, setRun] = useState<any>(null);
   const [lost, setLost] = useState<string | null>(null);
   const [stopping, setStopping] = useState(false);
-  const [t0] = useState(Date.now());
   const [elapsed, setElapsed] = useState(0);
   useEffect(() => {
     let stop = false;
+    // a new run starts from a clean panel (never the previous run's status)
+    setRun(null);
+    setLost(null);
+    setElapsed(0);
+    const started = Date.now();
     const tick = async () => {
       try {
         const r = await api(`/planning/runs/${runId}`);
@@ -39,7 +43,7 @@ export function RunProgress({ runId, onDone, onClose }: { runId: string; onDone:
       if (!stop) setTimeout(tick, 1000);
     };
     tick();
-    const iv = setInterval(() => setElapsed(Math.round((Date.now() - t0) / 1000)), 500);
+    const iv = setInterval(() => setElapsed(Math.round((Date.now() - started) / 1000)), 500);
     return () => {
       stop = true;
       clearInterval(iv);

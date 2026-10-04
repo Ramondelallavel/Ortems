@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from ..core.errors import Forbidden
 
@@ -34,6 +34,11 @@ class Ctx:
     def require_plant(self, plant_id: uuid.UUID | None) -> None:
         if not self.can_access_plant(plant_id):
             raise Forbidden("You do not have access to this plant.", code="NO_PLANT_ACCESS")
+
+    def elevated(self, *perms: str) -> Ctx:
+        """A copy with extra permissions for one internal read the caller's own rights justify (same
+        user, tenant and plant scope). Never use it for writes."""
+        return replace(self, permissions=set(self.permissions) | set(perms))
 
 
 def system_ctx(tenant_id: uuid.UUID, username: str = "system") -> Ctx:

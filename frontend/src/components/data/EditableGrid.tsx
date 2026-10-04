@@ -1,5 +1,5 @@
 "use client";
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { Fragment, useLayoutEffect, useMemo, useState } from "react";
 import { Button, useConfirm, useToast } from "@/components/ui";
 import { api, ApiError } from "@/lib/api";
 import { useUnsavedWarning } from "@/lib/hooks";
@@ -36,7 +36,7 @@ export function EditableGrid({ entity, fields, rows, onSaved, defaults, onDirty 
   const slice = visible.slice(page * PAGE, page * PAGE + PAGE);
   const dirty = Object.keys(edits).length + added.length;
   useUnsavedWarning(dirty > 0);
-  useEffect(() => onDirty?.(dirty), [dirty, onDirty]);
+  useLayoutEffect(() => onDirty?.(dirty), [dirty, onDirty]); // before the next click (view switch)
   const byId = useMemo(() => new Map(rows.map((r) => [r.id, r])), [rows]);
 
   const setCell = (id: string, name: string, v: any) => setEdits((e) => ({ ...e, [id]: { ...(e[id] || {}), [name]: v } }));

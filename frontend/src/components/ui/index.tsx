@@ -230,7 +230,9 @@ export function Field({ label, children, hint, error }: { label: string; childre
   const hintId = `${id}-hint`;
   // the label names the control: a single input/select/textarea/<Select> child receives the id;
   // several controls (e.g. a select plus a number box) are named as a group
-  const single = isValidElement(children) && (typeof children.type === "string" ? ["input", "select", "textarea"].includes(children.type) : children.type === Select);
+  const single =
+    isValidElement(children) &&
+    (typeof children.type === "string" ? ["input", "select", "textarea"].includes(children.type) : children.type === Select || !!(children.type as { acceptsId?: boolean }).acceptsId);
   const extra = hint || error ? { "aria-describedby": hintId, ...(error ? { "aria-invalid": true } : {}) } : {};
   const el = single ? cloneElement(children as ReactElement<Record<string, unknown>>, { id: ((children as ReactElement<{ id?: string }>).props.id as string) || id, ...extra }) : null;
   const ctlId = el ? (el.props as { id: string }).id : undefined;

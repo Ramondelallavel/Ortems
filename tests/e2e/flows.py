@@ -114,6 +114,11 @@ def api(page, method: str, path: str, body=None):
     return r.json()
 
 
+def drawer(page):
+    """The open side drawer (the navigation sidebar is an <aside> too)."""
+    return page.locator("aside[role=complementary]")
+
+
 def wait_canvas(page):
     expect(page.locator("canvas[aria-roledescription='Gantt chart']")).to_be_visible(timeout=60000)
 
@@ -288,7 +293,7 @@ def flow_planning(b, rep: Report):
             toast(page, r"published with \d+ override", timeout=60000)
         else:
             toast(page, r"PLAN-.* published", timeout=60000)
-        expect(page.locator("div.flex.flex-wrap").get_by_text("PUBLISHED", exact=True).first).to_be_visible(timeout=15000)
+        expect(page.get_by_text(re.compile(r"^\W*PUBLISHED$")).first).to_be_visible(timeout=15000)
 
     def compare_link():
         page.get_by_role("button", name="Compare").click()
@@ -319,11 +324,11 @@ def flow_orders(b, rep: Report):
         rows = page.locator("[aria-live=polite]", has_text=re.compile(r"[\d,.]+ rows"))
         expect(rows.first).to_be_visible(timeout=20000)
         page.get_by_label("Search rows").fill("WO-1001")
-        expect(page.get_by_role("row").filter(has_text="WO-1001").first).to_be_visible()
-        page.get_by_role("row").filter(has_text="WO-1001").first.click()
-        expect(page.get_by_role("complementary")).to_contain_text("WO-1001")
-        expect(page.get_by_role("complementary")).to_contain_text("Operations", timeout=20000)
-        page.get_by_role("complementary").get_by_label("Close").click()
+        expect(page.get_by_text(re.compile(r"^\d{1,2} rows$"))).to_be_visible(timeout=15000)
+        page.get_by_role("row").filter(has_text="WO-10010").first.click()
+        expect(drawer(page)).to_contain_text("WO-10010")
+        expect(drawer(page)).to_contain_text("Operations", timeout=20000)
+        drawer(page).get_by_label("Close").click()
 
     def new_order():
         page.get_by_role("button", name="New order").click()
@@ -350,7 +355,7 @@ def flow_orders(b, rep: Report):
 
     def deep_link():
         page.goto(BASE + "/planning/orders?q=WO-10042")
-        expect(page.get_by_role("complementary")).to_contain_text("WO-10042", timeout=20000)
+        expect(drawer(page)).to_contain_text("WO-10042", timeout=20000)
 
     rep.step("orders: search and open an order", search_and_open, page)
     rep.step("orders: create a production order", new_order, page)
@@ -381,13 +386,14 @@ def flow_scenarios(b, rep: Report):
         expect(page.locator("[role=status]").get_by_text("SUCCEEDED")).to_be_visible(timeout=240000)
 
     def what_if():
-        page.get_by_label("What-if").select_option("OVERTIME")
+        page.get_by_label("What-if", exact=True).select_option("OVERTIME")
         dlg = page.get_by_role("dialog")
         expect(dlg).to_contain_text("What-if: Allow overtime")
         dlg.get_by_label("Scenario name (optional)").fill(f"E2E overtime {RUN}")
         dlg.get_by_role("button", name="Create and plan").click()
         toast(page, r"created; planning started")
-        expect(page.locator("[role=status]").get_by_text("SUCCEEDED")).to_be_visible(timeout=240000)
+        # the list shows the scenario's own plan once its run has finished
+        expect(page.get_by_role("button", name=re.compile(rf"E2E overtime {RUN}.*PLAN-"))).to_be_visible(timeout=240000)
 
     def compare():
         page.reload()
@@ -402,7 +408,7 @@ def flow_scenarios(b, rep: Report):
             page.get_by_role("button", name=re.compile(re.escape(n))).click()
             page.get_by_role("button", name="Archive").click()
             dlg = page.get_by_role("dialog")
-            expect(dlg).to_contain_text(f'Archive "{n}"?')
+            expect(dlg).to_contain_text(f'Archive "{n}')
             dlg.get_by_role("button", name="Confirm").click()
             expect(page.get_by_role("button", name=re.compile(re.escape(n)))).to_have_count(0, timeout=15000)
 
@@ -511,28 +517,28 @@ def flow_masterdata(b, rep: Report):
         page.goto(BASE + "/master-data/customers")
         expect(page.get_by_role("grid")).to_be_visible(timeout=20000)
         page.get_by_role("button", name="New", exact=True).click()
-        drawer = page.get_by_role("complementary")
-        drawer.get_by_label("Code *").fill(code)
-        drawer.get_by_label("Name *").fill("E2E customer")
-        drawer.get_by_role("button", name="Save").click()
+        dr = drawer(page)
+        dr.get_by_label("Code *").fill(code)
+        dr.get_by_label("Name *").fill("E2E customer")
+        dr.get_by_role("button", name="Save").click()
         toast(page, r"^.?\s*Saved")
         page.get_by_label("Search", exact=False).first.fill(code)
         row = page.get_by_role("row").filter(has_text=code)
         expect(row).to_have_count(1, timeout=15000)
         row.click()
-        drawer = page.get_by_role("complementary")
-        drawer.get_by_label("Name *").fill("E2E customer renamed")
+        dr = drawer(page)
+        dr.get_by_label("Name *").fill("E2E customer renamed")
         # closing with unsaved changes asks first
         page.keyboard.press("Escape")
         conf = page.get_by_role("dialog").filter(has_text="Discard unsaved changes?")
         expect(conf).to_be_visible()
         conf.get_by_role("button", name="Cancel").click()
-        drawer.get_by_role("button", name="Save").click()
+        dr.get_by_role("button", name="Save").click()
         toast(page, r"Saved")
         expect(page.get_by_role("row").filter(has_text="E2E customer renamed")).to_have_count(1, timeout=15000)
         page.get_by_role("row").filter(has_text=code).click()
-        drawer = page.get_by_role("complementary")
-        drawer.get_by_role("button", name="Delete").click()
+        dr = drawer(page)
+        dr.get_by_role("button", name="Delete").click()
         conf = page.get_by_role("dialog")
         conf.get_by_label("Reason (recorded in the audit log)").fill("e2e cleanup")
         conf.get_by_role("button", name="Confirm").click()
@@ -542,7 +548,7 @@ def flow_masterdata(b, rep: Report):
     def grid_edit():
         page.goto(BASE + "/master-data/customers")
         expect(page.get_by_role("grid")).to_be_visible(timeout=20000)
-        page.get_by_role("button", name="Grid").click()
+        page.get_by_role("button", name="Edit as table").click()
         page.get_by_role("button", name="Add row").click()
         new_row = page.locator("tr.bg-green-50")
         inputs = new_row.locator("input[type=text], input:not([type])")
@@ -566,9 +572,9 @@ def flow_masterdata(b, rep: Report):
             page.get_by_role("button", name="Excel").click()
         assert d.value.suggested_filename.endswith(".xlsx")
         page.get_by_role("row").nth(1).click()
-        drawer = page.get_by_role("complementary")
-        drawer.get_by_role("tab", name=re.compile("BOM")).last.click()
-        expect(drawer.get_by_text(re.compile(r"MAKE|BUY")).first).to_be_visible(timeout=15000)
+        dr = drawer(page)
+        dr.get_by_role("tab", name=re.compile("BOM")).last.click()
+        expect(dr.get_by_text(re.compile(r"MAKE|BUY")).first).to_be_visible(timeout=15000)
         page.keyboard.press("Escape")
 
     rep.step("master data: create, edit (discard guard), delete with reason", create_edit_delete, page)
@@ -601,8 +607,8 @@ def flow_import(b, rep: Report):
         page.get_by_role("button", name="Preview", exact=True).click()
         page.get_by_role("button", name=re.compile(r"Import 2")).click()
         toast(page, r"created", timeout=30000)
-        expect(page.get_by_text(re.compile(r"Created\s*2"))).to_be_visible()
-        page.get_by_role("tab", name=re.compile("History")).click()
+        expect(page.get_by_text(re.compile(r"created\s*2", re.I))).to_be_visible()
+        page.get_by_role("tab", name=re.compile("history", re.I)).click()
         expect(page.get_by_role("row").filter(has_text="customers.csv").first).to_be_visible(timeout=15000)
 
     def exports():
@@ -722,7 +728,7 @@ def flow_admin(b, rep: Report):
         dlg.get_by_role("button", name="Add source").click()
         feeds = dlg.get_by_label("Feeds the MonxuPlan table")
         feeds.select_option(feeds.locator("option", has_text="Customers").first.get_attribute("value"))
-        dlg.get_by_label("Table or view").select_option("erp_customers")
+        dlg.locator("input[list^=tables-]").fill("erp_customers")
         dlg.get_by_role("button", name="Save").click()
         toast(page, r"Saved")
         row = page.get_by_role("row").filter(has_text=f"E2EDB{RUN}")
@@ -749,7 +755,7 @@ def flow_admin(b, rep: Report):
         p2.get_by_label("My account").click()
         dlg = p2.get_by_role("dialog")
         dlg.get_by_label("Current password").fill(state["password"])
-        dlg.get_by_label("New password").fill("E2e-Third-Pass-33")
+        dlg.get_by_label("New password", exact=True).fill("E2e-Third-Pass-33")
         dlg.get_by_label("Repeat new password").fill("E2e-Third-Pass-3x")
         expect(dlg.get_by_role("button", name="Change password")).to_be_disabled()
         dlg.get_by_label("Repeat new password").fill("E2e-Third-Pass-33")
@@ -796,7 +802,8 @@ def flow_mps(b, rep: Report):
             toast(page, r"firm production orders created", timeout=60000)
         page.get_by_role("tab", name="Aggregate plan (MIP)").click()
         page.get_by_role("button", name="Solve aggregate plan").click()
-        expect(page.get_by_text(re.compile(r"Status\s+(OPTIMAL|FEASIBLE)"))).to_be_visible(timeout=120000)
+        expect(page.get_by_text(re.compile(r"objective [\d.,]+"))).to_be_visible(timeout=120000)
+        expect(page.get_by_text(re.compile(r"^\W*(OPTIMAL|FEASIBLE)$")).first).to_be_visible()
 
     rep.step("MPS/MRP: calculate, tabs, firm a planned order, aggregate plan", mps, page)
     ctx.close()
@@ -822,11 +829,11 @@ def flow_analytics_assistant(b, rep: Report):
     def assistant():
         page.goto(BASE + "/dashboard")
         page.keyboard.press("Control+j")
-        drawer = page.get_by_role("complementary")
-        drawer.get_by_text("Which orders are late?").click()
-        expect(drawer.get_by_text(re.compile(r"late", re.I)).nth(1)).to_be_visible(timeout=60000)
-        drawer.get_by_label(re.compile(r"Ask")).fill("What is the bottleneck?")
-        drawer.get_by_role("button", name="Send").click()
+        dr = drawer(page)
+        dr.get_by_text("Which orders are late?").click()
+        expect(dr.get_by_text(re.compile(r"late", re.I)).nth(1)).to_be_visible(timeout=60000)
+        dr.get_by_label(re.compile(r"Ask")).fill("What is the bottleneck?")
+        dr.get_by_role("button", name="Send").click()
         page.wait_for_timeout(1500)
         no_error_toast(page)
 

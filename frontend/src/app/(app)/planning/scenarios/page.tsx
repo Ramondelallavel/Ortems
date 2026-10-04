@@ -407,6 +407,15 @@ function WhatIfWizard({ kind, onClose, onCreated }: { kind: string | null; onClo
         return {};
     }
   };
+  // the inputs each what-if needs (the server checks them too)
+  const ready =
+    kind === "NIGHT_SHIFT" ? (p.resource_ids || []).length > 0 && (p.weekdays || [0, 1, 2, 3, 4]).length > 0
+    : kind === "ADD_MACHINE" ? !!p.clone_of
+    : kind === "RUSH_ORDER" ? !!p.item_code && Number(p.quantity) > 0 && !!p.due
+    : kind === "MATERIAL_DELAY" ? !!p.material_id && Number(p.days) > 0
+    : kind === "BREAKDOWN" ? !!p.resource_id && !!p.start && !!p.end && p.end > p.start
+    : kind === "ADD_OPERATOR" ? !!p.resource_id && Number(p.capacity) > 0
+    : !!kind;
   const create = async () => {
     if (!plant || !kind) return;
     setBusy(true);
@@ -422,7 +431,7 @@ function WhatIfWizard({ kind, onClose, onCreated }: { kind: string | null; onClo
     }
   };
   return (
-    <Dialog open={!!kind} onClose={onClose} title={`What-if: ${w?.label || ""}`} width={560} footer={<><Button onClick={onClose}>Cancel</Button><Button variant="primary" icon="play" busy={busy} onClick={create}>Create and plan</Button></>}>
+    <Dialog open={!!kind} onClose={onClose} title={`What-if: ${w?.label || ""}`} width={560} footer={<><Button onClick={onClose}>Cancel</Button><Button variant="primary" icon="play" busy={busy} disabled={!ready} title={ready ? undefined : "Fill in the fields of this what-if first"} onClick={create}>Create and plan</Button></>}>
       <p className="text-slate-600 mb-3">{w?.desc}. A copy of the live scenario is created with this change and planned; compare it with the live plan afterwards.</p>
       <div className="grid grid-cols-2 gap-3">
         {kind === "NIGHT_SHIFT" && (

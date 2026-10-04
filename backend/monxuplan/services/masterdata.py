@@ -204,6 +204,9 @@ def list_rows(s: Session, ctx: Ctx, name: str, q: str | None = None, filters: di
     if d.plant_scoped and plant_id is not None and hasattr(Mdl, "plant_id"):
         ctx.require_plant(plant_id)
         conds.append(Mdl.plant_id == plant_id)
+    elif ctx.plant_ids is not None and hasattr(Mdl, "plant_id"):
+        # a plant-scoped user lists their plants' rows (and tenant-wide rows without a plant)
+        conds.append(or_(Mdl.plant_id.in_(list(ctx.plant_ids)), Mdl.plant_id.is_(None)))
     if q and d.search:
         like = f"%{q.lower()}%"
         conds.append(or_(*[func.lower(getattr(Mdl, c)).like(like) for c in d.search]))
@@ -253,11 +256,16 @@ def _add_ref_labels(s: Session, d: EntityDef, items: list[dict]) -> None:
                 it[col.removesuffix("_id") + "_label"] = labels.get(it[col])
 
 
+def _in_scope(ctx: Ctx, obj: Any) -> bool:
+    """Rows of a plant are visible and changeable only for users with access to that plant."""
+    return ctx.can_access_plant(getattr(obj, "plant_id", None))
+
+
 def get_row(s: Session, ctx: Ctx, name: str, id_: uuid.UUID, with_children: bool = True) -> dict[str, Any]:
     d = get_def(name)
     ctx.require(d.read_perm)
     obj = s.get(d.model, id_)
-    if obj is None or not _matches_fixed(d, obj):
+    if obj is None or not _matches_fixed(d, obj) or not _in_scope(ctx, obj):
         raise NotFound(f"{d.label} not found", code="NOT_FOUND")
     out = row_dict(obj)
     _add_ref_labels(s, d, [out])
@@ -316,7 +324,7 @@ def update_row(s: Session, ctx: Ctx, name: str, id_: uuid.UUID, data: dict[str, 
     d = get_def(name)
     ctx.require(d.write_perm)
     obj = s.get(d.model, id_)
-    if obj is None or not _matches_fixed(d, obj):
+    if obj is None or not _matches_fixed(d, obj) or not _in_scope(ctx, obj):
         raise NotFound(f"{d.label} not found", code="NOT_FOUND")
     if hasattr(obj, "version") and "version" in data and data["version"] is not None and int(data["version"]) != obj.version:
         raise Conflict(
@@ -328,6 +336,8 @@ def update_row(s: Session, ctx: Ctx, name: str, id_: uuid.UUID, data: dict[str, 
     apply_fields(obj, data, d)
     if d.before_save:
         d.before_save(s, ctx, obj, data)
+    if getattr(obj, "plant_id", None) is not None:
+        ctx.require_plant(obj.plant_id)  # nor can a record be moved into a plant outside the user's scope
     try:
         with s.begin_nested():
             s.flush()
@@ -342,7 +352,7 @@ def delete_row(s: Session, ctx: Ctx, name: str, id_: uuid.UUID, reason: str | No
     d = get_def(name)
     ctx.require(d.write_perm)
     obj = s.get(d.model, id_)
-    if obj is None or not _matches_fixed(d, obj):
+    if obj is None or not _matches_fixed(d, obj) or not _in_scope(ctx, obj):
         raise NotFound(f"{d.label} not found", code="NOT_FOUND")
     before = audit.snapshot(obj)
     try:

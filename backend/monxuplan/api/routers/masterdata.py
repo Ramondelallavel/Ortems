@@ -86,7 +86,14 @@ def update_order(id_: uuid.UUID, body: dict[str, Any] = Body(...), ctx: Ctx = De
 
 @router.get("/resources")
 def resources(plant_id: uuid.UUID | None = None, q: str | None = None, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
-    return md.list_rows(s, ctx, "resources", q=q, plant_id=plant_id, limit=2000)
+    """The plant's resources. Master-data readers get the full records; shop-floor and planning roles
+    (plan:read) get what the planning board already shows them: identity, kind, capacity, status."""
+    if ctx.has("masterdata:read") or not ctx.has("plan:read"):
+        return md.list_rows(s, ctx, "resources", q=q, plant_id=plant_id, limit=2000)
+    out = md.list_rows(s, ctx.elevated("masterdata:read"), "resources", q=q, plant_id=plant_id, limit=2000)
+    keep = ("id", "code", "name", "kind", "plant_id", "capacity", "status", "is_active", "area_id", "work_center_id")
+    out["items"] = [{k: r.get(k) for k in keep} for r in out["items"]]
+    return out
 
 
 @router.get("/items/{id_}/bom-tree")

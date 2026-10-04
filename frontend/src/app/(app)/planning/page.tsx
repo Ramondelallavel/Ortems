@@ -86,7 +86,8 @@ export default function PlanningBoard() {
   const refreshAll = useCallback(() => {
     scenarios.reload();
     plans.reload();
-  }, [scenarios, plans]);
+    header.reload(); // status (published, validated), KPIs and counters of the shown version
+  }, [scenarios, plans, header]);
   const isHead = header.data?.is_head;
   const editable = can("plan:edit") && isHead && !selected?.locked_by;
 
@@ -170,6 +171,7 @@ export default function PlanningBoard() {
     const hit = gantt.data.operations.find((o: GOp) => o.id.toLowerCase().includes(q) || o.order.toLowerCase().includes(q) || (o.item || "").toLowerCase().includes(q));
     if (hit) {
       setSel(hit);
+      setPanelOp(hit.id); // the planner searched for it: show why it is where it is
       gref.current?.scrollToOp(hit.id);
       return;
     }

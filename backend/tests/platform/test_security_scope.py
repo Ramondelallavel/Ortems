@@ -193,3 +193,57 @@ def test_connector_accepts_plain_reads():
 
     for sql in ("SELECT codigo, 'insert into x' AS note FROM articulos", "WITH a AS (SELECT 1 AS n) SELECT n FROM a", "SELECT offset_days FROM t ORDER BY 1 OFFSET 5"):
         assert _clean_sql(sql)
+
+
+def test_master_data_rows_of_another_plant_are_out_of_reach(client, plants, resources):
+    """Listing without a plant filter, reading, changing, moving and deleting by id all respect the
+    user's plant scope."""
+    sev, qro = plants
+    (sev_id, _sev_code), (qro_id, _qro_code) = resources
+    sev_planner = _user(client, "sev-planner", ["PLANNER"], [sev["id"]])
+    rows = sev_planner.ok(sev_planner.get("/master-data/resources", params={"limit": 5000}))["items"]
+    assert rows and {r["plant_id"] for r in rows} <= {sev["id"], None}
+    assert sev_planner.get(f"/master-data/resources/{qro_id}").status_code == 404
+    assert sev_planner.put(f"/master-data/resources/{qro_id}", json={"name": "taken over"}).status_code == 404
+    assert sev_planner.delete(f"/master-data/resources/{qro_id}", params={"reason": "x"}).status_code == 404
+    mine = sev_planner.ok(sev_planner.get(f"/master-data/resources/{sev_id}"))
+    r = sev_planner.put(f"/master-data/resources/{sev_id}", json={"plant_id": qro["id"], "version": mine["version"]})
+    assert r.status_code == 403, r.text
+    admin = Api(client, "admin")
+    assert admin.ok(admin.get(f"/master-data/resources/{qro_id}"))["name"] != "taken over"
+
+
+def test_shop_floor_roles_list_their_plant_resources(client, plants):
+    """The operator terminal needs the machine list: plan:read gets the identity fields only."""
+    op = Api(client, "operator")
+    out = op.ok(op.get("/resources", params={"plant_id": plants[0]["id"]}))
+    assert out["items"] and set(out["items"][0]) <= {"id", "code", "name", "kind", "plant_id", "capacity", "status", "is_active", "area_id", "work_center_id"}
+    assert op.get("/master-data/resources").status_code == 403  # the master records stay restricted
+
+
+def test_what_if_inputs_are_validated_and_plant_scoped(client, plants, resources):
+    """Missing or malformed what-if inputs are a 422 naming the field (never a server error); a
+    resource of another plant is not found; a chosen name is kept as typed."""
+    import uuid as _uuid
+
+    sev, _qro = plants
+    (_sev_id, sev_code), (qro_id, _qro_code) = resources
+    planner = Api(client, "planner")
+    cases = [
+        ("ADD_MACHINE", {}, "clone_of"),
+        ("BREAKDOWN", {"resource_id": sev_code}, "start"),
+        ("RUSH_ORDER", {"item_code": "X", "quantity": "lots", "due": "2030-01-01T00:00:00Z"}, "quantity"),
+        ("RUSH_ORDER", {"item_code": "X", "quantity": 5, "due": "next friday"}, "due"),
+        ("ADD_OPERATOR", {"resource_id": sev_code, "capacity": 0}, "capacity"),
+        ("MATERIAL_DELAY", {"delay_minutes": 60}, "material_id"),
+        ("BREAKDOWN", {"resource_id": sev_code, "start": "2030-01-02T00:00:00Z", "end": "2030-01-01T00:00:00Z"}, "end"),
+    ]
+    for kind, params, field in cases:
+        r = planner.post("/scenarios/what-if", json={"plant_id": sev["id"], "kind": kind, "params": params, "run": False})
+        assert r.status_code == 422 and field in r.json()["error"]["context"]["fields"], (kind, r.text)
+    r = planner.post("/scenarios/what-if", json={"plant_id": sev["id"], "kind": "NIGHT_SHIFT", "params": {"resource_ids": [qro_id]}, "run": False})
+    assert r.status_code == 404, r.text
+    name = f"my what-if {_uuid.uuid4().hex[:4]}"
+    sc = planner.ok(planner.post("/scenarios/what-if", json={"plant_id": sev["id"], "kind": "OVERTIME", "params": {}, "name": name, "run": False}), 201)
+    assert sc["name"] == name
+    planner.ok(planner.post(f"/scenarios/{sc['id']}/archive"))

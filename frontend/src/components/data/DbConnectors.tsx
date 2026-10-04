@@ -316,7 +316,7 @@ function SourceEditor({ conn, src, tables, open, onToggle, onChange, onRemove }:
             </Field>
           ) : (
             <Field label={t("db.tableOrView")} hint={tables.length ? undefined : t("db.testForList")}>
-              <input className="mx-input w-full code" list={`tables-${conn.code}`} value={src.table || ""} onChange={(e) => onChange({ ...src, table: e.target.value })} />
+              <input className="mx-input w-full code" aria-label={t("db.tableOrView")} list={`tables-${conn.code}`} value={src.table || ""} onChange={(e) => onChange({ ...src, table: e.target.value })} />
               <datalist id={`tables-${conn.code}`}>
                 {tables.map((x) => (
                   <option key={x} value={x} />

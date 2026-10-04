@@ -26,7 +26,7 @@ export function invalidateRefOptions(entity?: string) {
   else refCache.clear();
 }
 
-export function RefSelect({ entity, value, label, onChange, compact }: { entity: string; value: string | null; label?: string; onChange: (v: string | null) => void; compact?: boolean }) {
+export function RefSelect({ entity, value, label, onChange, compact, id, name }: { entity: string; value: string | null; label?: string; onChange: (v: string | null) => void; compact?: boolean; id?: string; name?: string }) {
   const [opts, setOpts] = useState<RefOption[] | null>(null);
   useEffect(() => {
     let live = true;
@@ -38,7 +38,7 @@ export function RefSelect({ entity, value, label, onChange, compact }: { entity:
     };
   }, [entity]);
   return (
-    <select className={`mx-select w-full ${compact ? "!h-7 !text-[12px]" : ""}`} value={value || ""} onChange={(e) => onChange(e.target.value || null)} aria-label={entity}>
+    <select className={`mx-select w-full ${compact ? "!h-7 !text-[12px]" : ""}`} value={value || ""} onChange={(e) => onChange(e.target.value || null)} id={id} aria-label={id ? undefined : name || entity}>
       <option value="">—</option>
       {!opts && value && <option value={value}>{label || value}</option>}
       {(opts || []).map((o) => (
@@ -51,23 +51,25 @@ export function RefSelect({ entity, value, label, onChange, compact }: { entity:
 }
 
 /** One editable value, rendered by the field's type (text, number, date, reference…). */
-export function FieldInput({ f, value, label, onChange, compact }: { f: FieldDef; value: any; label?: string; onChange: (v: any) => void; compact?: boolean }) {
+export function FieldInput({ f, value, label, onChange, compact, id }: { f: FieldDef; value: any; label?: string; onChange: (v: any) => void; compact?: boolean; id?: string }) {
+  // inside a labelled Field the <label for=id> names the control; in grid cells the column name does
+  const a = id ? { id } : { "aria-label": fieldLabel(f.name) };
   const cls = `mx-input w-full ${compact ? "!h-7 !text-[12px] !px-1.5" : ""}`;
-  if (f.readonly) return <div className="text-slate-600 tabular">{String(value ?? "—")}</div>;
-  if (f.type === "boolean") return <input type="checkbox" checked={!!value} onChange={(e) => onChange(e.target.checked)} aria-label={f.name} />;
+  if (f.readonly) return <div className="text-slate-600 tabular" id={id}>{String(value ?? "—")}</div>;
+  if (f.type === "boolean") return <input type="checkbox" checked={!!value} onChange={(e) => onChange(e.target.checked)} {...a} />;
   if (f.type === "integer" || f.type === "number")
-    return <input className={`${cls} tabular`} type="number" step={f.type === "integer" ? 1 : "any"} value={value ?? ""} onChange={(e) => onChange(e.target.value === "" ? null : Number(e.target.value))} aria-label={f.name} />;
-  if (f.type === "datetime") return <input className={cls} type="datetime-local" value={value ? isoToLocalInput(String(value)) : ""} onChange={(e) => onChange(e.target.value ? localInputToIso(e.target.value) : null)} aria-label={f.name} />;
-  if (f.type === "date") return <input className={cls} type="date" value={value ? String(value).slice(0, 10) : ""} onChange={(e) => onChange(e.target.value || null)} aria-label={f.name} />;
-  if (f.type === "time") return <input className={cls} type="time" value={value ? String(value).slice(0, 5) : ""} onChange={(e) => onChange(e.target.value || null)} aria-label={f.name} />;
+    return <input className={`${cls} tabular`} type="number" step={f.type === "integer" ? 1 : "any"} value={value ?? ""} onChange={(e) => onChange(e.target.value === "" ? null : Number(e.target.value))} {...a} />;
+  if (f.type === "datetime") return <input className={cls} type="datetime-local" value={value ? isoToLocalInput(String(value)) : ""} onChange={(e) => onChange(e.target.value ? localInputToIso(e.target.value) : null)} {...a} />;
+  if (f.type === "date") return <input className={cls} type="date" value={value ? String(value).slice(0, 10) : ""} onChange={(e) => onChange(e.target.value || null)} {...a} />;
+  if (f.type === "time") return <input className={cls} type="time" value={value ? String(value).slice(0, 5) : ""} onChange={(e) => onChange(e.target.value || null)} {...a} />;
   if (f.type === "json")
     return compact ? (
-      <input className={`${cls} code`} value={typeof value === "string" ? value : JSON.stringify(value ?? null)} onChange={(e) => onChange(e.target.value)} aria-label={f.name} />
+      <input className={`${cls} code`} value={typeof value === "string" ? value : JSON.stringify(value ?? null)} onChange={(e) => onChange(e.target.value)} {...a} />
     ) : (
-      <textarea className="mx-input w-full code" rows={3} value={typeof value === "string" ? value : JSON.stringify(value ?? {}, null, 1)} onChange={(e) => onChange(e.target.value)} aria-label={f.name} />
+      <textarea className="mx-input w-full code" rows={3} value={typeof value === "string" ? value : JSON.stringify(value ?? {}, null, 1)} onChange={(e) => onChange(e.target.value)} {...a} />
     );
-  if (f.type === "uuid" && f.ref) return <RefSelect entity={f.ref} value={value} label={label} onChange={onChange} compact={compact} />;
-  return <input className={cls} maxLength={f.max_length || undefined} value={value ?? ""} onChange={(e) => onChange(e.target.value)} aria-label={f.name} />;
+  if (f.type === "uuid" && f.ref) return <RefSelect entity={f.ref} value={value} label={label} onChange={onChange} compact={compact} id={id} name={fieldLabel(f.name)} />;
+  return <input className={cls} maxLength={f.max_length || undefined} value={value ?? ""} onChange={(e) => onChange(e.target.value)} {...a} />;
 }
 
 /** JSON fields are edited as text; parse them back before saving. */
@@ -93,3 +95,7 @@ export function parseJsonFields(fields: FieldDef[], row: Record<string, any>): {
 export function fieldLabel(name: string): string {
   return name.replace(/_id$/, "").replaceAll("_", " ");
 }
+
+// a labelled <Field> passes its id to these controls (see Field)
+(FieldInput as unknown as { acceptsId: boolean }).acceptsId = true;
+(RefSelect as unknown as { acceptsId: boolean }).acceptsId = true;

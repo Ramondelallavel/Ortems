@@ -5,6 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -188,8 +189,9 @@ def what_if(s: Session, ctx: Ctx, plant_id: uuid.UUID, kind: str, params: dict[s
     if plant is None:
         raise NotFound("Plant not found")
     base = base_scenario_id or plant.live_scenario_id
-    stamp = now().strftime("%d %b %H:%M")
-    title = name or {
+    _check_what_if_params(kind, params)
+    stamp = now().astimezone(ZoneInfo(plant.timezone or "UTC")).strftime("%d %b %H:%M")  # plant local time
+    title = {
         "NIGHT_SHIFT": "What-if: night shift",
         "ADD_MACHINE": "What-if: additional machine",
         "RUSH_ORDER": "What-if: rush order",
@@ -198,18 +200,19 @@ def what_if(s: Session, ctx: Ctx, plant_id: uuid.UUID, kind: str, params: dict[s
         "ADD_OPERATOR": "What-if: extra operator",
         "OVERTIME": "What-if: allow overtime",
     }.get(kind, f"What-if {kind}")
-    sc = create_scenario(s, ctx, plant_id, f"{title} ({stamp})", clone_from=base)
+    # a name the planner chose is kept as typed; generated names carry the time they were made
+    sc = create_scenario(s, ctx, plant_id, name.strip() if name and name.strip() else f"{title} ({stamp})", clone_from=base)
     changes: list[ScenarioChange] = []
 
     def add(t: str, p: dict, d: str) -> None:
         changes.append(add_change(s, ctx, sc.id, t, p, d))
 
     if kind == "NIGHT_SHIFT":
-        res = _resources(s, params.get("resource_ids"))
+        res = _resources(s, params.get("resource_ids"), plant.id)
         days = params.get("weekdays", [0, 1, 2, 3, 4])
         add("ADD_SHIFT", {"resource_ids": [str(r.id) for r in res], "label": "night", "shifts": [{"weekday": d, "start": params.get("start", "22:00"), "end": params.get("end", "06:00"), "kind": "REGULAR"} for d in days]}, f"+ Night shift on {', '.join(r.code for r in res)}")
     elif kind == "ADD_MACHINE":
-        src = _resources(s, [params["clone_of"]])[0]
+        src = _resources(s, [params["clone_of"]], plant.id)[0]
         new_id = str(uuid.uuid4())
         add("ADD_RESOURCE", {"clone_of": str(src.id), "id": new_id, "code": params.get("code", f"{src.code}-NEW"), "name": params.get("name"), "available_from": params.get("available_from"), "efficiency": params.get("efficiency"), "cost_per_hour": params.get("cost_per_hour")}, f"+ {params.get('code', src.code + '-NEW')} (like {src.code})")
     elif kind == "RUSH_ORDER":
@@ -218,10 +221,10 @@ def what_if(s: Session, ctx: Ctx, plant_id: uuid.UUID, kind: str, params: dict[s
         p = {k: params[k] for k in ("material_id", "supply_id", "supplier_id", "delay_minutes", "new_time") if params.get(k) is not None}
         add("MATERIAL_DELAY", p, f"Supplier delay {params.get('delay_minutes', 0) // 1440 if params.get('delay_minutes') else params.get('new_time')} ")
     elif kind == "BREAKDOWN":
-        r = _resources(s, [params["resource_id"]])[0]
+        r = _resources(s, [params["resource_id"]], plant.id)[0]
         add("ADD_DOWNTIME", {"resource_id": str(r.id), "start": params["start"], "end": params["end"], "kind": "BREAKDOWN", "reason": params.get("reason", "what-if breakdown")}, f"{r.code} breakdown {params['start']} → {params['end']}")
     elif kind == "ADD_OPERATOR":
-        r = _resources(s, [params["resource_id"]])[0]
+        r = _resources(s, [params["resource_id"]], plant.id)[0]
         add("CHANGE_CAPACITY", {"resource_id": str(r.id), "capacity": int(params.get("capacity", r.capacity + 1))}, f"{r.code} capacity {params.get('capacity')}")
     elif kind == "OVERTIME":
         add("SET_CONSTRAINTS", {"constraints": {"allow_overtime": True}}, "Overtime windows allowed")
@@ -231,20 +234,72 @@ def what_if(s: Session, ctx: Ctx, plant_id: uuid.UUID, kind: str, params: dict[s
     return sc, changes
 
 
-def _resources(s: Session, ids_or_codes: list[str] | None) -> list[Resource]:
+def _resources(s: Session, ids_or_codes: list[str] | None, plant_id: uuid.UUID) -> list[Resource]:
+    """Resources of the what-if's plant, by id or code (a resource of another plant is not found)."""
     if not ids_or_codes:
-        raise ValidationFailed("Select at least one resource")
+        raise ValidationFailed("Select at least one resource", code="WHAT_IF_PARAMS")
     out = []
     for v in ids_or_codes:
         r = None
         try:
             r = s.get(Resource, uuid.UUID(str(v)))
         except ValueError:
-            r = s.scalar(select(Resource).where(Resource.code == v))
-        if r is None:
-            raise NotFound(f"Resource {v} not found")
+            r = s.scalar(select(Resource).where(Resource.code == v, Resource.plant_id == plant_id))
+        if r is None or r.plant_id != plant_id:
+            raise NotFound(f"Resource {v} not found in this plant")
         out.append(r)
     return out
+
+
+_WHAT_IF_REQUIRED = {
+    "NIGHT_SHIFT": ("resource_ids",),
+    "ADD_MACHINE": ("clone_of",),
+    "RUSH_ORDER": ("item_code", "quantity", "due"),
+    "BREAKDOWN": ("resource_id", "start", "end"),
+    "ADD_OPERATOR": ("resource_id", "capacity"),
+}
+
+
+def _check_what_if_params(kind: str, params: dict[str, Any]) -> None:
+    """Every input of a what-if is checked before anything is created: a missing or malformed value is
+    a 422 naming the field, never a server error."""
+    missing = [k for k in _WHAT_IF_REQUIRED.get(kind, ()) if params.get(k) in (None, "", [])]
+    if kind == "MATERIAL_DELAY":
+        if not (params.get("material_id") or params.get("supply_id") or params.get("supplier_id")):
+            missing.append("material_id")
+        if not (params.get("delay_minutes") or params.get("new_time")):
+            missing.append("delay_minutes")
+    if missing:
+        raise ValidationFailed(f"Missing for this what-if: {', '.join(missing)}", code="WHAT_IF_PARAMS", context={"fields": missing})
+
+    def number(k: str, positive: bool = True) -> None:
+        try:
+            v = float(params[k])
+        except (TypeError, ValueError):
+            raise ValidationFailed(f"{k} must be a number", code="WHAT_IF_PARAMS", context={"fields": [k]}) from None
+        if positive and not v > 0:
+            raise ValidationFailed(f"{k} must be greater than zero", code="WHAT_IF_PARAMS", context={"fields": [k]})
+
+    def instant(k: str) -> datetime:
+        try:
+            d = datetime.fromisoformat(str(params[k]).replace("Z", "+00:00"))
+        except ValueError:
+            raise ValidationFailed(f"{k} must be a date and time (ISO 8601)", code="WHAT_IF_PARAMS", context={"fields": [k]}) from None
+        if d.tzinfo is None:
+            raise ValidationFailed(f"{k} needs a time zone", code="WHAT_IF_PARAMS", context={"fields": [k]})
+        return d
+
+    if kind == "RUSH_ORDER":
+        number("quantity")
+        instant("due")
+    if kind == "BREAKDOWN" and instant("end") <= instant("start"):
+        raise ValidationFailed("The breakdown must end after it starts", code="WHAT_IF_PARAMS", context={"fields": ["end"]})
+    if kind == "ADD_OPERATOR":
+        number("capacity")
+    if kind == "MATERIAL_DELAY" and params.get("delay_minutes") is not None:
+        number("delay_minutes")
+    if kind == "MATERIAL_DELAY" and params.get("new_time"):
+        instant("new_time")
 
 
 def rush_order_payload(s: Session, ctx: Ctx, plant: Plant, params: dict[str, Any]) -> dict[str, Any]:

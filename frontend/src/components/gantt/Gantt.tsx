@@ -109,7 +109,9 @@ export const Gantt = forwardRef<GanttHandle, {
   const [viewStart, setViewStart] = useState(() => Math.max(t0, nowMs - 4 * 3600e3));
   const [scrollY, setScrollY] = useState(0);
   const [hover, setHover] = useState<{ op: GOp; x: number; y: number } | null>(null);
-  const [drag, setDrag] = useState<{ op: GOp; dx: number; dy: number; x0: number; y0: number; moved: boolean } | null>(null);
+  type Drag = { op: GOp; dx: number; dy: number; x0: number; y0: number; moved: boolean };
+  const [drag, setDrag] = useState<Drag | null>(null);
+  const dragRef = useRef<Drag | null>(null);
   const hits = useRef<Hit[]>([]);
   const blockHits = useRef<BlockHit[]>([]);
   const [live, setLive] = useState("");
@@ -404,7 +406,7 @@ export const Gantt = forwardRef<GanttHandle, {
           g.restore();
         } else if (glyphs && xe - xs > 8) {
           g.fillStyle = o.late ? "#b8321f" : "#262c36";
-          g.fillText(glyphs.charAt(0), xe + 2, by + BAR_H / 2);
+          g.fillText(Array.from(glyphs)[0], xe + 2, by + BAR_H / 2); // whole characters: the lock is a surrogate pair
         }
         g.globalAlpha = 1;
         newHits.push({ op: o, x: xs, y: by, w, h: BAR_H });
@@ -682,7 +684,11 @@ export const Gantt = forwardRef<GanttHandle, {
     if (op) {
       onSelect(op);
       setLive(describe(op));
-      if (canEdit && onMove && e.button === 0) setDrag({ op, dx: 0, dy: 0, x0: x, y0: y, moved: false });
+      if (canEdit && onMove && e.button === 0) {
+        const d = { op, dx: 0, dy: 0, x0: x, y0: y, moved: false };
+        dragRef.current = d;
+        setDrag(d);
+      }
     } else {
       onSelect(null);
       // pan
@@ -715,10 +721,16 @@ export const Gantt = forwardRef<GanttHandle, {
       const srcIdx = resRowIndex.get(drag.op.resource_id)!;
       const tgtIdx = target ? resRowIndex.get(target.id)! : srcIdx;
       const dy = rowY[tgtIdx] - rowY[srcIdx];
-      setDrag((d) => (d ? { ...d, dx, dy, moved: d.moved || Math.abs(dxRaw) > 4 || Math.abs(y - d.y0) > 6 } : d));
+      setDrag((d) => {
+        const next = d ? { ...d, dx, dy, moved: d.moved || Math.abs(dxRaw) > 4 || Math.abs(y - d.y0) > 6 } : d;
+        dragRef.current = next;
+        return next;
+      });
     };
     const mu = (ev: MouseEvent) => {
-      const d = drag;
+      // the latest drag state (this effect's closure holds the state of when the drag started)
+      const d = dragRef.current;
+      dragRef.current = null;
       setDrag(null);
       if (!d || !d.moved) return;
       const { y } = local(ev);
@@ -728,7 +740,11 @@ export const Gantt = forwardRef<GanttHandle, {
       const newSetupStart = new Date(d.op.setup_start).getTime() + d.dx / pxPerMs;
       onMove?.(d.op, target.id, new Date(newSetupStart).toISOString());
     };
-    const key = (ev: KeyboardEvent) => ev.key === "Escape" && setDrag(null);
+    const key = (ev: KeyboardEvent) => {
+      if (ev.key !== "Escape") return;
+      dragRef.current = null;
+      setDrag(null);
+    };
     window.addEventListener("mousemove", mm);
     window.addEventListener("mouseup", mu);
     window.addEventListener("keydown", key);

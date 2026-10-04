@@ -2,7 +2,7 @@
 import { useEffect, useState } from "react";
 import { Badge, Button, Dialog, Field, Select, useConfirm, useToast } from "@/components/ui";
 import { api } from "@/lib/api";
-import { LOCALES, type Locale } from "@/lib/i18n";
+import { LOCALES, translate, type Locale } from "@/lib/i18n";
 import { loc } from "@/lib/loc";
 import { useSession } from "@/lib/session";
 
@@ -35,7 +35,7 @@ export function AccountDialog({ open, onClose }: { open: boolean; onClose: () =>
       await api("/auth/me", { method: "PATCH", body: { locale: lang, default_plant_id: plantId || undefined } });
       setLocale(lang as Locale);
       await refresh();
-      toast.ok(t("acct.saved"));
+      toast.ok(translate(lang, "acct.saved")); // confirmed in the language just chosen
     } catch (e) {
       toast.error(e);
     } finally {

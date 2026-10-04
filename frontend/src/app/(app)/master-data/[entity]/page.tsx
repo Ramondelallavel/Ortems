@@ -1,7 +1,7 @@
 "use client";
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useState } from "react";
 import { Badge, Button, DataTable, Dialog, Drawer, ErrorState, Field, Loading, PageHeader, Tabs, useConfirm, useToast, type Column } from "@/components/ui";
 import { ChildGrid, EditableGrid } from "@/components/data/EditableGrid";
 import { FieldInput, fieldLabel, invalidateRefOptions, parseJsonFields, type FieldDef } from "@/components/data/FieldInput";
@@ -183,7 +183,7 @@ function Editor({ entity, schema, id, onSaved, onError, onDirty }: { entity: str
   const children: any[] = schema.children || [];
   const dirty = dirtyKids.size > 0 || JSON.stringify(form) !== base;
   useUnsavedWarning(dirty);
-  useEffect(() => onDirty(dirty), [dirty, onDirty]);
+  useLayoutEffect(() => onDirty(dirty), [dirty, onDirty]); // before the next key press (Escape closes)
   useEffect(() => {
     if (row.data) {
       setForm(row.data);

@@ -81,8 +81,8 @@ export function ImportWizard({ choices, initialEntity, onImported, compact }: { 
     <div className={compact ? "space-y-3" : "max-w-5xl space-y-3"}>
       <ol className="flex gap-1" aria-label={t("imp.steps")}>
         {steps.map((s, i) => (
-          <li key={s} aria-current={i === step ? "step" : undefined} className={`flex-1 h-8 flex items-center justify-center text-[12px] rounded-[3px] border ${i === step ? "bg-navy-700 text-white border-navy-700" : i < step ? "bg-green-100 border-green-600/30 text-green-600" : "bg-white border-gray-200 text-slate-600"}`}>
-            {i < step ? "✓ " : `${i + 1}. `}
+          <li key={s} aria-current={i === step ? "step" : undefined} className={`flex-1 h-8 flex items-center justify-center gap-1 text-[12px] rounded-[3px] border ${i === step ? "bg-navy-700 text-white border-navy-700" : i < step ? "bg-green-100 border-green-600/30 text-green-600" : "bg-white border-gray-200 text-slate-600"}`}>
+            {i < step ? "✓" : `${i + 1}.`}
             <span className="hidden sm:inline">{s}</span>
           </li>
         ))}

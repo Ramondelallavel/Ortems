@@ -91,14 +91,14 @@ def test_delivery_to_a_refused_destination_fails_without_retry(deliveries, monke
 
 def test_pause_resume_and_test_delivery(client, monkeypatch):
     """A webhook can be paused and resumed; "send test" queues one signed delivery to it alone."""
+    import socket
+
     from conftest import Api
     from sqlalchemy import update
 
     from monxuplan.core.db import new_session
     from monxuplan.models import WebhookDelivery
     from monxuplan.services import webhooks
-
-    import socket
 
     real = socket.getaddrinfo
     # the sandbox has no DNS: hooks.example.com resolves to a public documentation address
