@@ -56,15 +56,24 @@ def run_plan(time_limit: float) -> str:
         plant = s.scalar(select(M.Plant).where(M.Plant.code == "SCL"))
         tid, scid = plant.tenant_id, plant.live_scenario_id
     ctx = system_ctx(tid, "planner")
+    from monxuplan.core.errors import Conflict
+
     with new_session(tid, "planner") as s:
-        run = planning.enqueue_run(s, ctx, scid, "OPTIMIZE", {"solver": {"provider": "heuristic", "profile": "QUICK", "time_limit_s": time_limit}})
+        try:
+            run = planning.enqueue_run(s, ctx, scid, "OPTIMIZE", {"solver": {"provider": "heuristic", "profile": "QUICK", "time_limit_s": time_limit}})
+        except Conflict as exc:
+            raise SystemExit(f"cannot start the benchmark: {exc.message} (wait for it or cancel it first)") from None
         s.commit()
         rid = run.id
     from monxuplan.worker import claim_next
 
     with timed("execute_run_total"):
-        job = claim_next()  # the same claim as the worker (a run is only promoted by its owner)
-        assert job is not None and job[0] == rid, "another queued run was claimed first"
+        job = claim_next(rid)  # the same claim as the worker, for this run (a run is only promoted by its owner)
+        if job is None:
+            with new_session(tid, "planner") as s:  # do not leave the benchmark's run queued behind
+                planning.cancel_run(s, ctx, rid)
+                s.commit()
+            raise SystemExit("the benchmark run was claimed by a running worker: stop the workers of this database first")
         planning.execute_run(*job)
     with new_session(tid, "planner") as s:
         run = s.get(M.PlanningRun, rid)

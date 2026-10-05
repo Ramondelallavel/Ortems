@@ -3,6 +3,7 @@
 // dropping a bar never changes the plan by itself — it asks the backend for an impact preview.
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { dt, duration, localParts } from "@/lib/format";
+import { useSession } from "@/lib/session";
 import { SERIES } from "../charts/Chart";
 
 export type GRes = { id: string; code: string; name: string; kind: string; area: string | null; area_name: string | null; groups: string[]; status: string | null; non_working: [string, string][]; unavailability: { start: string; end: string; kind: string; reason: string | null }[]; utilization: number | null };
@@ -99,6 +100,7 @@ export const Gantt = forwardRef<GanttHandle, {
   onLegend?: (items: { label: string; color: string }[]) => void;
   onViewport?: (v: GanttViewport) => void;
 }>(function Gantt({ data, zoom, onZoom, colorBy, selectedId, highlightOps, deps, onSelect, onOpen, onMove, canEdit, height, onLegend, onViewport }, ref) {
+  const { t, locale } = useSession();
   const wrap = useRef<HTMLDivElement>(null);
   const canvas = useRef<HTMLCanvasElement>(null);
   const [width, setWidth] = useState(1000);
@@ -140,7 +142,7 @@ export const Gantt = forwardRef<GanttHandle, {
     const out: Row[] = [];
     let last: string | null | undefined;
     for (const r of data.resources) {
-      const g = r.area_name || r.area || (r.kind === "SUBCONTRACTOR" ? "Subcontracting" : "Other");
+      const g = r.area_name || r.area || (r.kind === "SUBCONTRACTOR" ? t("Subcontracting") : t("Other"));
       if (g !== last) {
         out.push({ type: "group", label: g });
         last = g;
@@ -304,7 +306,7 @@ export const Gantt = forwardRef<GanttHandle, {
         hatch(x, y + 1, w, ROW_H - 2, "rgba(184,50,31,0.35)", 6);
         if (w > 60) {
           g.fillStyle = "#b8321f";
-          g.fillText(`✕ ${u.kind.toLowerCase()}`, x + 4, y + 7);
+          g.fillText(`✕ ${t(`status.${u.kind}`).startsWith("status.") ? u.kind.toLowerCase() : t(`status.${u.kind}`).toLowerCase()}`, x + 4, y + 7);
         }
       }
       g.strokeStyle = "#eef1f4";
@@ -333,7 +335,7 @@ export const Gantt = forwardRef<GanttHandle, {
             g.rect(xa, by, w, BAR_H);
             g.clip();
             g.fillStyle = "#ffffff";
-            g.fillText(`${locked ? "🔒︎ " : ""}${n} op${n === 1 ? "" : "s"}${late ? ` · ${late} ▲` : ""}`, xa + 4, by + BAR_H / 2 + 0.5);
+            g.fillText(`${locked ? "🔒︎ " : ""}${t(n === 1 ? "{n} op" : "{n} ops", { n })}${late ? ` · ${late} ▲` : ""}`, xa + 4, by + BAR_H / 2 + 0.5);
             g.restore();
           }
           newBlocks.push({ res: res.id, a, b, x: xa, y: by, w, h: BAR_H });
@@ -619,13 +621,13 @@ export const Gantt = forwardRef<GanttHandle, {
       const xf = xOf(new Date(data.frozen_until).getTime());
       if (xf > LABEL_W + 40 && xf < width) {
         g.fillStyle = "#1f3a64";
-        g.fillText("🔒︎ frozen", xf - 58, 30);
+        g.fillText(`🔒︎ ${t("frozen")}`, xf - 58, 30);
       }
     }
     g.restore();
     hits.current = newHits;
     blockHits.current = newBlocks;
-  }, [data, rows, rowY, width, height, viewStart, scrollY, z.pxPerMin, xOf, msOf, opsByRes, resTimes, colorBy, families, selectedId, highlightOps, deps, drag, nowMs, t0]);
+  }, [data, rows, rowY, width, height, viewStart, scrollY, z.pxPerMin, xOf, msOf, opsByRes, resTimes, colorBy, families, selectedId, highlightOps, deps, drag, nowMs, t0, t, locale]);
 
   // tell the page what is on screen (debounced): large plans load the operations of the viewport only
   useEffect(() => {
@@ -683,7 +685,7 @@ export const Gantt = forwardRef<GanttHandle, {
     }
     if (op) {
       onSelect(op);
-      setLive(describe(op));
+      setLive(describe(op, t));
       if (canEdit && onMove && e.button === 0) {
         const d = { op, dx: 0, dy: 0, x0: x, y0: y, moved: false };
         dragRef.current = d;
@@ -826,7 +828,7 @@ export const Gantt = forwardRef<GanttHandle, {
     e.preventDefault();
     if (next) {
       onSelect(next);
-      setLive(describe(next));
+      setLive(describe(next, t));
       const xs = xOf(new Date(next.setup_start).getTime());
       if (xs < LABEL_W + 20 || xs > width - 40) setViewStart(clampX(new Date(next.setup_start).getTime() - visibleSpan * 0.3));
       const ri = resRowIndex.get(next.resource_id);
@@ -844,7 +846,7 @@ export const Gantt = forwardRef<GanttHandle, {
         tabIndex={0}
         role="application"
         aria-roledescription="Gantt chart"
-        aria-label={`Gantt chart of ${data.plan.number}: ${data.operations.length} operations on ${data.resources.length} resources. Arrow keys move between operations, Enter opens the detail, Escape clears the selection.`}
+        aria-label={t("Gantt chart of {plan}: {n} operations on {r} resources. Arrow keys move between operations, Enter opens the detail, Escape clears the selection.", { plan: data.plan.number, n: data.operations.length, r: data.resources.length })}
         onMouseDown={onMouseDown}
         onMouseMove={onMouseMove}
         onMouseLeave={() => setHover(null)}
@@ -865,34 +867,34 @@ export const Gantt = forwardRef<GanttHandle, {
             {hover.op.item} {hover.op.item_name ? `· ${hover.op.item_name}` : ""}
           </div>
           <div className="grid grid-cols-[70px_1fr] gap-x-2 mt-1 tabular">
-            <span className="text-slate-600">Qty</span>
+            <span className="text-slate-600">{t("Qty")}</span>
             <span>{hover.op.quantity}</span>
-            <span className="text-slate-600">Setup</span>
+            <span className="text-slate-600">{t("Setup")}</span>
             <span>
               {dt(hover.op.setup_start)} · {duration(hover.op.setup_minutes)}
             </span>
-            <span className="text-slate-600">Run</span>
+            <span className="text-slate-600">{t("Run")}</span>
             <span>
               {dt(hover.op.start)} → {dt(hover.op.end)}
             </span>
-            <span className="text-slate-600">Due</span>
+            <span className="text-slate-600">{t("common.due")}</span>
             <span className={hover.op.late ? "text-red-600 font-semibold" : ""}>
-              {dt(hover.op.due)} {hover.op.late ? "▲ late" : ""}
+              {dt(hover.op.due)} {hover.op.late ? `▲ ${t("late")}` : ""}
             </span>
             {hover.op.customer && (
               <>
-                <span className="text-slate-600">Customer</span>
+                <span className="text-slate-600">{t("common.customer")}</span>
                 <span className="truncate">{hover.op.customer}</span>
               </>
             )}
             {hover.op.binding?.type && (
               <>
-                <span className="text-slate-600">Bound by</span>
+                <span className="text-slate-600">{t("Bound by")}</span>
                 <span className="truncate">{hover.op.binding.detail || hover.op.binding.type}</span>
               </>
             )}
           </div>
-          {(hover.op.locked || hover.op.fixed) && <div className="mt-1 text-navy-700">🔒︎ {hover.op.fixed_reason || "locked"}</div>}
+          {(hover.op.locked || hover.op.fixed) && <div className="mt-1 text-navy-700">🔒︎ {hover.op.fixed_reason || t("locked")}</div>}
         </div>
       )}
 
@@ -900,6 +902,6 @@ export const Gantt = forwardRef<GanttHandle, {
   );
 });
 
-function describe(o: GOp): string {
-  return `${o.id}, ${o.item || ""}, ${dt(o.start)} to ${dt(o.end)}${o.late ? ", late" : ""}${o.locked ? ", locked" : ""}`;
+function describe(o: GOp, t: (k: string, v?: Record<string, string | number>) => string): string {
+  return `${o.id}, ${o.item || ""}, ${t("{from} to {to}", { from: dt(o.start), to: dt(o.end) })}${o.late ? `, ${t("late")}` : ""}${o.locked ? `, ${t("locked")}` : ""}`;
 }

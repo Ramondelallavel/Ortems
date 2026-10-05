@@ -115,10 +115,10 @@ export function AppShell({ children }: { children: ReactNode }) {
   return (
     <div className="h-screen flex flex-col overflow-hidden">
       <a href="#main" className="sr-only-focusable absolute z-[70] bg-white p-2">
-        Skip to content
+        {t("Skip to content")}
       </a>
       <header className="h-11 bg-navy-950 text-white flex items-center gap-2 sm:gap-3 px-2 sm:px-3 shrink-0 border-b border-black/30">
-        <button className="md:hidden mx-btn mx-btn-ghost mx-btn-sm text-white" aria-label="Menu" onClick={() => setMobileNav((m) => !m)}>
+        <button className="md:hidden mx-btn mx-btn-ghost mx-btn-sm text-white" aria-label={t("Menu")} onClick={() => setMobileNav((m) => !m)}>
           <Icon name="menu" />
         </button>
         <Link href="/dashboard" className="flex items-center gap-2 font-semibold tracking-tight shrink-0" aria-label="MonxuPlan">
@@ -160,7 +160,7 @@ export function AppShell({ children }: { children: ReactNode }) {
       <div className="flex flex-1 min-h-0">
         <aside className={`${mobileNav ? "flex fixed inset-y-11 left-0 z-40 w-56" : "hidden"} md:flex md:static flex-col bg-navy-950 text-white shrink-0 ${collapsed ? "md:w-[52px]" : "md:w-[208px]"}`}>
           {nav}
-          <button className="h-8 text-white/50 hover:text-white text-[11px] border-t border-white/10 hidden md:flex items-center justify-center gap-1" onClick={() => setCollapsed((c) => !c)} aria-label={collapsed ? "Expand navigation" : "Collapse navigation"}>
+          <button className="h-8 text-white/50 hover:text-white text-[11px] border-t border-white/10 hidden md:flex items-center justify-center gap-1" onClick={() => setCollapsed((c) => !c)} aria-label={collapsed ? t("Expand navigation") : t("Collapse navigation")}>
             <Icon name={collapsed ? "chevronRight" : "chevronLeft"} size={14} />
           </button>
         </aside>
@@ -174,16 +174,16 @@ export function AppShell({ children }: { children: ReactNode }) {
         <table className="mx-table">
           <tbody>
             {[
-              [["Alt", "1…6"], "Command Center, Planning Board, Orders, Capacity, Materials, Scenarios"],
-              [["Ctrl/⌘", "J"], "Planning assistant"],
-              [["Ctrl/⌘", "Z"], "Undo last plan change (Planning Board)"],
-              [["Ctrl/⌘", "Y"], "Redo (Planning Board)"],
-              [["Ctrl/⌘", "F"], "Find order or operation (Planning Board)"],
-              [["+", "−"], "Zoom Gantt in / out"],
-              [["←", "→"], "Scroll Gantt in time"],
-              [["Enter"], "Open selected row / operation"],
-              [["Esc"], "Close panel or dialog, cancel drag"],
-              [["?"], "This help"],
+              [["Alt", "1…6"], t("Command Center, Planning Board, Orders, Capacity, Materials, Scenarios")],
+              [["Ctrl/⌘", "J"], t("Planning assistant")],
+              [["Ctrl/⌘", "Z"], t("Undo last plan change (Planning Board)")],
+              [["Ctrl/⌘", "Y"], t("Redo (Planning Board)")],
+              [["Ctrl/⌘", "F"], t("Find order or operation (Planning Board)")],
+              [["+", "−"], t("Zoom Gantt in / out")],
+              [["←", "→"], t("Scroll Gantt in time")],
+              [["Enter"], t("Open selected row / operation")],
+              [["Esc"], t("Close panel or dialog, cancel drag")],
+              [["?"], t("This help")],
             ].map(([keys, desc], i) => (
               <tr key={i}>
                 <td className="w-[170px]">

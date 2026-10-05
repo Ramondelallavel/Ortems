@@ -44,8 +44,8 @@ export default function LoginPage() {
           <Logo /> MonxuPlan
         </div>
         <div className="max-w-lg">
-          <p className="text-[26px] leading-tight font-semibold text-white">Finite-capacity planning you can explain.</p>
-          <p className="mt-3 text-white/70 text-[14px]">Machines, people, tools and materials in one feasible schedule — with the reason behind every position, and scenarios before every decision.</p>
+          <p className="text-[26px] leading-tight font-semibold text-white">{t("Finite-capacity planning you can explain.")}</p>
+          <p className="mt-3 text-white/70 text-[14px]">{t("Machines, people, tools and materials in one feasible schedule — with the reason behind every position, and scenarios before every decision.")}</p>
         </div>
         <div className="text-[11px] text-white/50">© MonxuPlan</div>
       </section>

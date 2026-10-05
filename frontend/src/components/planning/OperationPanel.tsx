@@ -28,11 +28,11 @@ export function OperationPanel({ planId, opId, resCodes, onClose, onHighlightOrd
           <Button size="sm" variant="ghost" icon={sch.is_locked ? "unlock" : "lock"} onClick={async () => {
               await onLock(opId, !sch.is_locked);
               detail.reload(); // the lock state shown here comes from the stored plan
-            }} title={sch.is_locked ? "Unlock" : "Lock position (kept by the next runs)"}>
-            {sch.is_locked ? "Unlock" : "Lock"}
+            }} title={sch.is_locked ? t("Unlock") : t("Lock position (kept by the next runs)")}>
+            {sch.is_locked ? t("Unlock") : t("Lock")}
           </Button>
         )}
-        <button className="mx-btn mx-btn-ghost mx-btn-sm" aria-label="Close" onClick={onClose}>
+        <button className="mx-btn mx-btn-ghost mx-btn-sm" aria-label={t("Close")} onClick={onClose}>
           <Icon name="x" />
         </button>
       </div>
@@ -59,26 +59,26 @@ export function OperationPanel({ planId, opId, resCodes, onClose, onHighlightOrd
                 <div className="text-slate-600 truncate">{d.order.item_name}</div>
                 <div className="flex flex-wrap gap-1 mt-1">
                   <Badge tone="neutral" glyph={false}>
-                    qty {d.order.quantity}
+                    {t("qty {n}", { n: d.order.quantity })}
                   </Badge>
                   <Badge tone="neutral" glyph={false}>
-                    due {dt(d.order.due)}
+                    {t("due {at}", { at: dt(d.order.due) })}
                   </Badge>
                   <Badge tone="neutral" glyph={false}>
-                    prio {d.order.priority}
+                    {t("prio {n}", { n: d.order.priority })}
                   </Badge>
-                  {d.order.expedite && <Badge tone="warn">expedite</Badge>}
+                  {d.order.expedite && <Badge tone="warn">{t("expedite")}</Badge>}
                   {d.operation && <StatusPill status={d.operation.status} />}
                 </div>
               </div>
             )}
             {d.unscheduled && (
               <div className="border border-red-600/40 bg-red-100 rounded-[3px] p-2">
-                <div className="font-semibold text-red-600">▲ Not scheduled — {d.unscheduled.reason}</div>
+                <div className="font-semibold text-red-600">▲ {t("Not scheduled — {reason}", { reason: t(`reason.${d.unscheduled.reason}`).startsWith("reason.") ? d.unscheduled.reason : t(`reason.${d.unscheduled.reason}`) })}</div>
                 <div>{d.unscheduled.message}</div>
                 {(d.unscheduled.details?.materials || []).map((m: any) => (
                   <div key={m.material_id} className="text-[12px] mt-1">
-                    ◆ <span className="code">{m.material}</span>: need {m.required}, available {m.available ?? "—"}, shortfall {m.shortfall} {m.uom}
+                    ◆ <span className="code">{m.material}</span>: {t("need {need}, available {avail}, shortfall {short} {uom}", { need: m.required, avail: m.available ?? "—", short: m.shortfall, uom: m.uom || "" })}
                   </div>
                 ))}
               </div>
@@ -87,11 +87,11 @@ export function OperationPanel({ planId, opId, resCodes, onClose, onHighlightOrd
               <table className="w-full text-[12px] tabular">
                 <tbody>
                   {[
-                    ["Resource", rc(sch.resource_key)],
-                    ["Setup", `${dt(sch.setup_start)} · ${duration(sch.setup_minutes)}`],
-                    ["Run", `${dt(sch.start)} → ${dt(sch.end)} (${duration(sch.run_minutes)} working time)`],
-                    ["Zone", sch.zone],
-                    ["Secondary", (sch.secondary || []).map((x: any) => `${rc(x.resource_id)}×${x.units}`).join(", ") || "—"],
+                    [t("common.resource"), rc(sch.resource_key)],
+                    [t("Setup"), `${dt(sch.setup_start)} · ${duration(sch.setup_minutes)}`],
+                    [t("Run"), `${dt(sch.start)} → ${dt(sch.end)} (${t("{d} working time", { d: duration(sch.run_minutes) })})`],
+                    [t("Zone"), t(`zone.${sch.zone}`).startsWith("zone.") ? sch.zone : t(`zone.${sch.zone}`)],
+                    [t("Secondary"), (sch.secondary || []).map((x: any) => `${rc(x.resource_id)}×${x.units}`).join(", ") || "—"],
                   ].map(([k, v]) => (
                     <tr key={k as string}>
                       <td className="text-slate-600 py-0.5 pr-2 w-[80px] align-top">{k}</td>
@@ -103,15 +103,15 @@ export function OperationPanel({ planId, opId, resCodes, onClose, onHighlightOrd
             )}
             {sch?.binding?.type && sch.binding.type !== "NONE" && (
               <div className="border-l-2 border-navy-700 pl-2">
-                <div className="text-[11px] uppercase text-slate-600 font-semibold">Binding constraint</div>
+                <div className="text-[11px] uppercase text-slate-600 font-semibold">{t("Binding constraint")}</div>
                 <div className="font-semibold">{sch.binding.type}</div>
                 <div>{sch.binding.detail}</div>
-                {!!sch.binding.wait_minutes && <div className="text-slate-600">waited {duration(sch.binding.wait_minutes)} (working time)</div>}
+                {!!sch.binding.wait_minutes && <div className="text-slate-600">{t("waited {d} (working time)", { d: duration(sch.binding.wait_minutes) })}</div>}
               </div>
             )}
             {ex?.reasons?.length > 0 && (
               <div>
-                <div className="text-[11px] uppercase text-slate-600 font-semibold mb-1">Why it starts here</div>
+                <div className="text-[11px] uppercase text-slate-600 font-semibold mb-1">{t("Why it starts here")}</div>
                 <ul className="space-y-1">
                   {ex.reasons.map((r: any, i: number) => (
                     <li key={i} className="flex gap-1.5">
@@ -124,12 +124,12 @@ export function OperationPanel({ planId, opId, resCodes, onClose, onHighlightOrd
             )}
             {ex?.alternatives?.length > 0 && (
               <div>
-                <div className="text-[11px] uppercase text-slate-600 font-semibold mb-1">Alternatives considered</div>
+                <div className="text-[11px] uppercase text-slate-600 font-semibold mb-1">{t("Alternatives considered")}</div>
                 <table className="mx-table">
                   <thead>
                     <tr>
-                      <th>Resource</th>
-                      <th>Finish</th>
+                      <th>{t("common.resource")}</th>
+                      <th>{t("Finish")}</th>
                       <th className="!text-right">Δ</th>
                     </tr>
                   </thead>
@@ -140,7 +140,7 @@ export function OperationPanel({ planId, opId, resCodes, onClose, onHighlightOrd
                           {a.chosen ? "✓ " : ""}
                           <span className="code">{rc(a.resource_id)}</span>
                         </td>
-                        <td>{a.feasible ? dt(a.end) : <span className="text-red-600">▲ {a.blocking?.[0]?.text || "not feasible"}</span>}</td>
+                        <td>{a.feasible ? dt(a.end) : <span className="text-red-600">▲ {a.blocking?.[0]?.text || t("not feasible")}</span>}</td>
                         <td className="num">{a.delta_finish_minutes !== null && a.delta_finish_minutes !== undefined ? duration(a.delta_finish_minutes) : ""}</td>
                       </tr>
                     ))}
@@ -148,10 +148,10 @@ export function OperationPanel({ planId, opId, resCodes, onClose, onHighlightOrd
                 </table>
               </div>
             )}
-            {ex?.rules_applied?.length > 0 && <div className="text-[11.5px] text-slate-600">Rules applied: {ex.rules_applied.join(", ")}</div>}
+            {ex?.rules_applied?.length > 0 && <div className="text-[11.5px] text-slate-600">{t("Rules applied: {rules}", { rules: ex.rules_applied.join(", ") })}</div>}
             {d.violations?.length > 0 && (
               <div>
-                <div className="text-[11px] uppercase text-slate-600 font-semibold mb-1">Deviations</div>
+                <div className="text-[11px] uppercase text-slate-600 font-semibold mb-1">{t("Deviations")}</div>
                 {d.violations.map((v: any) => (
                   <div key={v.id} className={v.hardness === "HARD" ? "text-red-600" : "text-amber-600"}>
                     {v.hardness === "HARD" ? "▲" : "◆"} {v.message}
@@ -164,25 +164,25 @@ export function OperationPanel({ planId, opId, resCodes, onClose, onHighlightOrd
         )}
         {tab === "explore" && (
           <div>
-            {explore.loading && <Loading label="Re-evaluating every alternative against the rest of the schedule…" />}
+            {explore.loading && <Loading label={t("Re-evaluating every alternative against the rest of the schedule…")} />}
             <ErrorState error={explore.error} onRetry={explore.reload} />
             {explore.data && (
               <div className="space-y-2">
                 <div className="text-slate-600">
-                  Earliest start from predecessors/release: <b className="text-graphite-800">{dt(explore.data.earliest_start_from_predecessors)}</b> ({explore.data.lower_bound?.type}
+                  {t("Earliest start from predecessors/release:")} <b className="text-graphite-800">{dt(explore.data.earliest_start_from_predecessors)}</b> ({explore.data.lower_bound?.type}
                   {explore.data.lower_bound?.detail ? ` — ${explore.data.lower_bound.detail}` : ""})
                 </div>
                 {explore.data.alternatives.map((a: any) => (
                   <div key={a.resource_id} className={`border rounded-[3px] p-2 ${a.resource_id === explore.data.recommended ? "border-green-600" : "border-gray-200"}`}>
                     <div className="flex items-center gap-2">
                       <span className="code font-semibold">{a.resource}</span>
-                      {a.resource_id === explore.data.current_resource && <Badge tone="info">current</Badge>}
-                      {a.resource_id === explore.data.recommended && <Badge tone="ok">earliest finish</Badge>}
-                      {!a.feasible && <Badge tone="bad">not possible</Badge>}
+                      {a.resource_id === explore.data.current_resource && <Badge tone="info">{t("current")}</Badge>}
+                      {a.resource_id === explore.data.recommended && <Badge tone="ok">{t("earliest finish")}</Badge>}
+                      {!a.feasible && <Badge tone="bad">{t("not possible")}</Badge>}
                     </div>
                     {a.feasible && (
                       <div className="tabular text-[12px]">
-                        {dt(a.start)} → {dt(a.end)} · setup {duration(a.setup_minutes)}
+                        {dt(a.start)} → {dt(a.end)} · {t("setup")} {duration(a.setup_minutes)}
                       </div>
                     )}
                     {a.reasons?.map((r: any, i: number) => (
@@ -205,15 +205,15 @@ export function OperationPanel({ planId, opId, resCodes, onClose, onHighlightOrd
                 <div className="flex items-center gap-2">
                   <StatusPill status={order.data.result?.status} />
                   <span className="tabular">
-                    end {dt(order.data.result?.end)} · due {dt(order.data.result?.due)}
+                    {t("end {end} · due {due}", { end: dt(order.data.result?.end), due: dt(order.data.result?.due) })}
                   </span>
                 </div>
                 <Button size="sm" icon="eye" onClick={() => onHighlightOrder(orderKey)}>
-                  Highlight order chain in Gantt
+                  {t("Highlight order chain in Gantt")}
                 </Button>
                 {order.data.root_cause?.length > 0 && (
                   <div>
-                    <div className="text-[11px] uppercase text-slate-600 font-semibold mt-2 mb-1">Root-cause chain</div>
+                    <div className="text-[11px] uppercase text-slate-600 font-semibold mt-2 mb-1">{t("Root-cause chain")}</div>
                     <ol className="space-y-1 border-l-2 border-gray-300 pl-2">
                       {order.data.root_cause.map((s: any, i: number) => (
                         <li key={i}>
@@ -225,16 +225,16 @@ export function OperationPanel({ planId, opId, resCodes, onClose, onHighlightOrd
                 )}
                 {order.data.deadline && (
                   <div className="text-[12px] text-slate-600">
-                    Earliest possible with unlimited capacity: <b>{dt(order.data.deadline.earliest_possible_infinite_capacity)}</b>
-                    {order.data.deadline.required_additional_capacity_h ? ` · extra capacity needed ≈ ${order.data.deadline.required_additional_capacity_h} h` : ""}
+                    {t("Earliest possible with unlimited capacity:")} <b>{dt(order.data.deadline.earliest_possible_infinite_capacity)}</b>
+                    {order.data.deadline.required_additional_capacity_h ? ` · ${t("extra capacity needed ≈ {h} h", { h: order.data.deadline.required_additional_capacity_h })}` : ""}
                   </div>
                 )}
                 <table className="mx-table mt-2">
                   <thead>
                     <tr>
-                      <th>Operation</th>
-                      <th>Resource</th>
-                      <th>Start</th>
+                      <th>{t("Operation")}</th>
+                      <th>{t("common.resource")}</th>
+                      <th>{t("common.start")}</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -253,7 +253,7 @@ export function OperationPanel({ planId, opId, resCodes, onClose, onHighlightOrd
         )}
         {tab === "peg" && d && (
           <div className="space-y-1">
-            {!d.pegging?.length && <div className="text-slate-600">This operation consumes no tracked material.</div>}
+            {!d.pegging?.length && <div className="text-slate-600">{t("This operation consumes no tracked material.")}</div>}
             {d.pegging?.map((p: any, i: number) => {
               const late = p.supply_time && p.need_time && p.supply_time > p.need_time;
               return (
@@ -264,7 +264,7 @@ export function OperationPanel({ planId, opId, resCodes, onClose, onHighlightOrd
                     <span className="tabular">{p.quantity}</span>
                   </div>
                   <div className="text-[12px] text-slate-600">
-                    {p.supply_ref || p.supply_order_id || ""} · available {dt(p.supply_time)} · needed {dt(p.need_time)}
+                    {p.supply_ref || p.supply_order_id || ""} · {t("available {a} · needed {n}", { a: dt(p.supply_time), n: dt(p.need_time) })}
                   </div>
                 </div>
               );

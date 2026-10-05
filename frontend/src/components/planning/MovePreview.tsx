@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
-import { Badge, Button, Dialog, ErrorState, Field, Loading, Select, useToast } from "@/components/ui";
+import { Button, Dialog, ErrorState, Field, Loading, Select, StatusPill, useToast } from "@/components/ui";
 import { api, ApiError } from "@/lib/api";
 import { dt, duration } from "@/lib/format";
 import { useSession } from "@/lib/session";
@@ -41,7 +41,7 @@ export function MovePreview({ planId, planVersion, move, resCodes, onClose, onAp
     setBusy(true);
     try {
       const p = await api(`/plans/${planId}/moves`, { body: { op_id: move.opId, resource_id: move.resourceId, start: move.start, replan: mode, reason: reason || undefined, expected_version: planVersion, accept_violations: !preview?.feasible, allow_frozen: allowFrozen } });
-      toast.ok(`${p.number} created (manual edit). Undo with Ctrl+Z.`);
+      toast.ok(t("{plan} created (manual edit). Undo with Ctrl+Z.", { plan: p.number }));
       onApplied(p);
     } catch (e) {
       toast.error(e);
@@ -61,8 +61,8 @@ export function MovePreview({ planId, planVersion, move, resCodes, onClose, onAp
       footer={
         <>
           <Button onClick={onClose}>{t("common.cancel")}</Button>
-          <Button variant={preview && !preview.feasible ? "danger" : "primary"} busy={busy} disabled={!preview || loading || (needsReason && !reason.trim())} title={needsReason && !reason.trim() ? "Give a reason first" : undefined} onClick={apply}>
-            {preview && !preview.feasible ? "Apply with violations" : t("plan.applyMove")}
+          <Button variant={preview && !preview.feasible ? "danger" : "primary"} busy={busy} disabled={!preview || loading || (needsReason && !reason.trim())} title={needsReason && !reason.trim() ? t("Give a reason first") : undefined} onClick={apply}>
+            {preview && !preview.feasible ? t("Apply with violations") : t("plan.applyMove")}
           </Button>
         </>
       }
@@ -70,7 +70,7 @@ export function MovePreview({ planId, planVersion, move, resCodes, onClose, onAp
       {move && (
         <div className="space-y-3">
           <div className="grid grid-cols-2 gap-3">
-            <Field label="Target">
+            <Field label={t("Target")}>
               <div className="tabular">
                 <span className="code">{resCodes[move.resourceId] || move.resourceId}</span> · {dt(move.start)}
               </div>
@@ -81,20 +81,20 @@ export function MovePreview({ planId, planVersion, move, resCodes, onClose, onAp
           </div>
           {error?.code === "FROZEN_OPERATION" && can("plan:frozen") && (
             <label className="flex gap-2 items-center text-amber-600">
-              <input type="checkbox" checked={allowFrozen} onChange={(e) => setAllowFrozen(e.target.checked)} /> Change the frozen zone (requires a reason; recorded in the audit log)
+              <input type="checkbox" checked={allowFrozen} onChange={(e) => setAllowFrozen(e.target.checked)} /> {t("Change the frozen zone (requires a reason; recorded in the audit log)")}
             </label>
           )}
-          {loading && <Loading label="Re-scheduling and validating every hard constraint…" />}
+          {loading && <Loading label={t("Re-scheduling and validating every hard constraint…")} />}
           <ErrorState error={error} />
           {preview && (
             <>
               <div className={`p-2 rounded-[3px] border ${preview.feasible ? "border-green-600/40 bg-green-100" : "border-red-600/40 bg-red-100"}`}>
-                <b>{preview.feasible ? "✓ Feasible" : "▲ Would violate hard constraints"}</b>
+                <b>{preview.feasible ? `✓ ${t("Feasible")}` : `▲ ${t("Would violate hard constraints")}`}</b>
                 {preview.planned && (
                   <span className="tabular">
                     {" "}
-                    — planned {dt(preview.planned.setup_start)} → {dt(preview.planned.end)} on <span className="code">{resCodes[preview.planned.resource_id] || preview.planned.resource_id}</span>
-                    {Math.abs(new Date(preview.planned.setup_start).getTime() - new Date(move.start).getTime()) > 60000 && <span className="text-slate-600"> (earliest valid position after the requested time)</span>}
+                    — {t("planned {from} → {to} on", { from: dt(preview.planned.setup_start), to: dt(preview.planned.end) })} <span className="code">{resCodes[preview.planned.resource_id] || preview.planned.resource_id}</span>
+                    {Math.abs(new Date(preview.planned.setup_start).getTime() - new Date(move.start).getTime()) > 60000 && <span className="text-slate-600"> ({t("earliest valid position after the requested time")})</span>}
                   </span>
                 )}
                 {preview.hard_violations?.slice(0, 6).map((v: any, i: number) => (
@@ -114,8 +114,8 @@ export function MovePreview({ planId, planVersion, move, resCodes, onClose, onAp
                     <thead>
                       <tr>
                         <th>KPI</th>
-                        <th className="!text-right">Before</th>
-                        <th className="!text-right">After</th>
+                        <th className="!text-right">{t("Before")}</th>
+                        <th className="!text-right">{t("After")}</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -123,7 +123,7 @@ export function MovePreview({ planId, planVersion, move, resCodes, onClose, onAp
                         const v = cmp.kpis[k];
                         return (
                           <tr key={k}>
-                            <td>{k.replaceAll("_", " ")}</td>
+                            <td>{t(`kpi.${k}`).startsWith("kpi.") ? k.replaceAll("_", " ") : t(`kpi.${k}`)}</td>
                             <td className="num">{v.before ?? "—"}</td>
                             <td className={`num ${v.better === true ? "text-green-600" : v.better === false ? "text-red-600" : ""}`}>
                               {v.after ?? "—"} {v.better === true ? "✓" : v.better === false ? "!" : ""}
@@ -135,31 +135,31 @@ export function MovePreview({ planId, planVersion, move, resCodes, onClose, onAp
                   </table>
                   <div className="text-[12.5px] space-y-1">
                     <div>
-                      Operations moved: <b className="tabular">{cmp.operations_moved}</b>
+                      {t("Operations moved:")} <b className="tabular">{cmp.operations_moved}</b>
                     </div>
                     <div>
-                      Orders delayed / advanced: <b className="tabular">{cmp.orders_delayed}</b> / <b className="tabular">{cmp.orders_advanced}</b>
+                      {t("Orders delayed / advanced:")} <b className="tabular">{cmp.orders_delayed}</b> / <b className="tabular">{cmp.orders_advanced}</b>
                     </div>
                     <div>
-                      Setup change: <b className="tabular">{duration(cmp.setup_delta_minutes)}</b>
+                      {t("Setup change:")} <b className="tabular">{duration(cmp.setup_delta_minutes)}</b>
                     </div>
                     <div>
-                      Sequence changes: <b className="tabular">{cmp.sequence_changes}</b>
+                      {t("Sequence changes:")} <b className="tabular">{cmp.sequence_changes}</b>
                     </div>
                     {cmp.orders
                       .filter((o: any) => o.delta_minutes)
                       .slice(0, 5)
                       .map((o: any) => (
                         <div key={o.order_id} className="text-[12px]">
-                          <span className="code">{o.number}</span> {o.delta_minutes > 0 ? "▼ later" : "▲ earlier"} {duration(Math.abs(o.delta_minutes))}{" "}
-                          {o.status_after !== o.status_before && <Badge tone={o.status_after === "LATE" ? "bad" : "ok"}>{o.status_after}</Badge>}
+                          <span className="code">{o.number}</span> {o.delta_minutes > 0 ? `▼ ${t("later")}` : `▲ ${t("earlier")}`} {duration(Math.abs(o.delta_minutes))}{" "}
+                          {o.status_after !== o.status_before && <StatusPill status={o.status_after} />}
                         </div>
                       ))}
                   </div>
                 </div>
               )}
-              <Field label={needsReason ? "Reason (required, audit log)" : "Reason (audit log)"} error={needsReason && !reason.trim() ? "Changing the frozen zone or accepting hard violations needs a reason." : undefined}>
-                <input className="mx-input w-full" value={reason} onChange={(e) => setReason(e.target.value)} placeholder="e.g. customer called, expedite" />
+              <Field label={needsReason ? t("Reason (required, audit log)") : t("Reason (audit log)")} error={needsReason && !reason.trim() ? t("Changing the frozen zone or accepting hard violations needs a reason.") : undefined}>
+                <input className="mx-input w-full" value={reason} onChange={(e) => setReason(e.target.value)} placeholder={t("e.g. customer called, expedite")} />
               </Field>
             </>
           )}

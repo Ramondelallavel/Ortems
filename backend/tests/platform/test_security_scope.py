@@ -247,3 +247,27 @@ def test_what_if_inputs_are_validated_and_plant_scoped(client, plants, resources
     sc = planner.ok(planner.post("/scenarios/what-if", json={"plant_id": sev["id"], "kind": "OVERTIME", "params": {}, "name": name, "run": False}), 201)
     assert sc["name"] == name
     planner.ok(planner.post(f"/scenarios/{sc['id']}/archive"))
+
+
+def test_order_book_and_operator_view_stay_in_the_users_plants(client, plants, resources):
+    sev, qro = plants
+    (_sev_id, _c), (qro_id, _q) = resources
+    sev_planner = _user(client, "sev-planner", ["PLANNER"], [sev["id"]])
+    from datetime import timedelta
+
+    from sqlalchemy import select
+
+    from monxuplan.models import Item, ProductionOrder
+
+    with _session(sev_planner) as s:  # one open order in the other plant
+        item = s.scalar(select(Item).where(Item.make_or_buy == "MAKE").order_by(Item.code))
+        if not s.scalar(select(ProductionOrder).where(ProductionOrder.plant_id == uuid.UUID(qro["id"]))):
+            s.add(ProductionOrder(tenant_id=item.tenant_id, number=f"QRO-{uuid.uuid4().hex[:6]}", plant_id=uuid.UUID(qro["id"]), item_id=item.id, quantity=1, status="CANCELLED", due_date=item.created_at + timedelta(days=30)))
+            s.commit()
+    unfiltered = sev_planner.ok(sev_planner.get("/orders", params={"all": 1, "limit": 1}))["total"]
+    own = sev_planner.ok(sev_planner.get("/orders", params={"all": 1, "limit": 1, "plant_id": sev["id"]}))["total"]
+    admin = Api(client, "admin")
+    everything = admin.ok(admin.get("/orders", params={"all": 1, "limit": 1}))["total"]
+    assert unfiltered == own < everything
+    assert sev_planner.get("/orders", params={"plant_id": qro["id"]}).status_code == 403
+    assert sev_planner.get("/operator", params={"plant_id": sev["id"], "resource_id": qro_id}).status_code == 404

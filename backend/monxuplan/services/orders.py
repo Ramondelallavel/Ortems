@@ -51,9 +51,13 @@ def list_orders(s: Session, ctx: Ctx, plant_id: uuid.UUID | None, q: str | None,
     if plant_id:
         ctx.require_plant(plant_id)
     plan = _plan_for(s, plant_id, plan_id)
+    if plan is not None:
+        ctx.require_plant(plan.plant_id)
     stmt = select(ProductionOrder)
     if plant_id:
         stmt = stmt.where(ProductionOrder.plant_id == plant_id)
+    elif ctx.plant_ids is not None:
+        stmt = stmt.where(ProductionOrder.plant_id.in_(list(ctx.plant_ids)))  # a plant-scoped user sees their plants only
     status = filters.get("status")
     if status:
         stmt = stmt.where(ProductionOrder.status.in_(status.split(",")))

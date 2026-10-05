@@ -88,8 +88,9 @@ export function AssistantDrawer({ open, onClose }: { open: boolean; onClose: () 
     }
     if (a.type === "WHAT_IF" && plant) {
       try {
-        const sc = await api("/scenarios/what-if", { body: { plant_id: plant.id, kind: a.kind, params: a.params, name: `What-if: ${a.label}`, run: true } });
-        toast.ok(`Scenario "${sc.name}" created; planning started.`);
+        const sc = await api("/scenarios/what-if", { body: { plant_id: plant.id, kind: a.kind, params: a.params, name: `${t("What-if")}: ${a.label}`, run: true } });
+        if (sc.run_blocked) toast.warn(t("run.whatIfBlocked"));
+        else toast.ok(t("Scenario “{name}” created; planning started.", { name: sc.name }));
         router.push(`/planning/scenarios?id=${sc.id}`);
       } catch (e) {
         toast.error(e);
@@ -97,7 +98,7 @@ export function AssistantDrawer({ open, onClose }: { open: boolean; onClose: () 
     }
   };
 
-  const examples = ["What is the bottleneck?", "Which orders are late?", "Which materials are short?", "How is the plan?"];
+  const examples = [t("What is the bottleneck?"), t("Which orders are late?"), t("Which materials are short?"), t("How is the plan?")];
 
   return (
     <Drawer open={open} onClose={onClose} title={t("assistant.title")} width={440}>
@@ -122,7 +123,7 @@ export function AssistantDrawer({ open, onClose }: { open: boolean; onClose: () 
               {m.meta && (
                 <div className="mt-2 pt-1.5 border-t border-gray-200 text-[11px] text-slate-600 space-y-1">
                   <div>
-                    {m.meta.plan?.number} · {m.meta.mode === "LLM" ? `LLM (${m.meta.model || "model"})` : "rule-based"} · {m.meta.intent}
+                    {m.meta.plan?.number} · {m.meta.mode === "LLM" ? `LLM (${m.meta.model || "model"})` : t("rule-based")} · {m.meta.intent}
                   </div>
                   {!!m.meta.sources?.length && (
                     <div className="flex flex-wrap gap-1">
@@ -137,7 +138,7 @@ export function AssistantDrawer({ open, onClose }: { open: boolean; onClose: () 
                     ?.filter((a: any) => a.type !== "WHAT_IF" || can("scenario:write"))
                     .map((a: any, j: number) => (
                       <Button key={j} size="sm" variant={a.type === "WHAT_IF" ? "primary" : "secondary"} icon={a.type === "WHAT_IF" ? "scenarios" : "orders"} onClick={() => runAction(a)}>
-                        {a.type === "WHAT_IF" ? `Evaluate what-if: ${a.label}` : `Open ${a.ref}`}
+                        {a.type === "WHAT_IF" ? t("Evaluate what-if: {label}", { label: a.label }) : t("Open {ref}", { ref: a.ref })}
                       </Button>
                     ))}
                 </div>
@@ -159,7 +160,7 @@ export function AssistantDrawer({ open, onClose }: { open: boolean; onClose: () 
           }}
         >
           <input className="mx-input flex-1" placeholder={t("assistant.placeholder")} aria-label={t("assistant.placeholder")} value={q} onChange={(e) => setQ(e.target.value)} maxLength={2000} />
-          <Button type="submit" variant="primary" disabled={!q.trim() || busy} aria-label="Send">
+          <Button type="submit" variant="primary" disabled={!q.trim() || busy} aria-label={t("Send")}>
             <Icon name="chevronRight" />
           </Button>
         </form>

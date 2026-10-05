@@ -1,5 +1,6 @@
 import en, { type Dict } from "./en";
 import es from "./es";
+import esPhrases from "./es-phrases";
 
 export type Locale = "en" | "es" | "fr" | "de" | "pt";
 export const LOCALES: { code: Locale; label: string; complete: boolean }[] = [
@@ -18,10 +19,14 @@ const partial: Record<string, Partial<Dict>> = {
 };
 const dicts: Record<string, Partial<Dict>> = { en, es, ...partial };
 
+// Phrase dictionaries: the English text itself is the key (t("Publish")), so a phrase without a
+// translation shows in English and `npm run i18n:check` lists it.
+const phrases: Record<string, Record<string, string>> = { es: esPhrases };
+
 export type TKey = keyof Dict;
 export function translate(locale: string, key: string, vars?: Record<string, string | number>): string {
   const d = dicts[locale] || en;
-  let s = (d as Record<string, string>)[key] ?? (en as Record<string, string>)[key] ?? key;
-  if (vars) for (const [k, v] of Object.entries(vars)) s = s.replace(`{${k}}`, String(v));
+  let s = (d as Record<string, string>)[key] ?? phrases[locale]?.[key] ?? (en as Record<string, string>)[key] ?? key;
+  if (vars) for (const [k, v] of Object.entries(vars)) s = s.replaceAll(`{${k}}`, String(v));
   return s;
 }

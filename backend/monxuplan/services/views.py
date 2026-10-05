@@ -649,8 +649,8 @@ def operator_view(s: Session, ctx: Ctx, plant_id: uuid.UUID, resource_id: str) -
     plan = _published_or_head(s, ctx, plant_id)
     t = now()
     res = s.get(Resource, uuid.UUID(resource_id))
-    if res is None:
-        raise NotFound("Resource not found")
+    if res is None or res.plant_id != plant_id:
+        raise NotFound("Resource not found in this plant")
     rows = list(s.scalars(select(ScheduledOperation).where(ScheduledOperation.plan_id == plan.id, ScheduledOperation.resource_key == resource_id, ScheduledOperation.end >= t).order_by(ScheduledOperation.setup_start).limit(6)))
     explanations = plan_store.explanations_for(s, plan, resource_id) if rows else {}
     jobs = []

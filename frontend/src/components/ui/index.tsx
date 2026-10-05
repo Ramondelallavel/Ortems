@@ -197,10 +197,15 @@ export function ComingSoon({ feature }: { feature: string }) {
   );
 }
 
+function EmptyNoData() {
+  const { t } = useSession();
+  return <Empty title={t("No data")} />;
+}
+
 export function Load<T>({ state, children, empty }: { state: { data: T | undefined; error?: ApiError; loading: boolean; reload: () => void }; children: (d: T) => ReactNode; empty?: (d: T) => boolean }) {
   if (state.error && !state.data) return <ErrorState error={state.error} onRetry={state.reload} />;
   if (state.data === undefined) return <Loading />;
-  if (empty && empty(state.data)) return <Empty title="No data" />;
+  if (empty && empty(state.data)) return <EmptyNoData />;
   return <>{children(state.data)}</>;
 }
 
@@ -283,6 +288,7 @@ export function Select({ value, onChange, options, className = "", ariaLabel, di
 const dialogStack: object[] = [];
 
 export function Dialog({ open, title, onClose, children, footer, width = 520 }: { open: boolean; title: ReactNode; onClose: () => void; children: ReactNode; footer?: ReactNode; width?: number }) {
+  const { t } = useSession();
   const ref = useRef<HTMLDivElement>(null);
   // callers often pass an inline onClose: keep the latest one without re-running the open effect
   // (re-running it would move the focus back to the first field on every keystroke)
@@ -328,7 +334,7 @@ export function Dialog({ open, title, onClose, children, footer, width = 520 }: 
       <div ref={ref} role="dialog" aria-modal="true" aria-label={typeof title === "string" ? title : undefined} tabIndex={-1} className="bg-white rounded-[4px] shadow-2xl max-h-[84vh] flex flex-col max-w-[96vw]" style={{ width }}>
         <div className="flex items-center h-10 px-3 border-b border-gray-200 font-semibold">
           <div className="flex-1 truncate">{title}</div>
-          <button data-close className="mx-btn mx-btn-ghost mx-btn-sm" aria-label="Close" onClick={onClose}>
+          <button data-close className="mx-btn mx-btn-ghost mx-btn-sm" aria-label={t("Close")} onClick={onClose}>
             <Icon name="x" />
           </button>
         </div>
@@ -340,6 +346,7 @@ export function Dialog({ open, title, onClose, children, footer, width = 520 }: 
 }
 
 export function Drawer({ open, title, onClose, children, width = 440 }: { open: boolean; title: ReactNode; onClose: () => void; children: ReactNode; width?: number }) {
+  const { t } = useSession();
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
   useEffect(() => {
@@ -354,7 +361,7 @@ export function Drawer({ open, title, onClose, children, width = 440 }: { open: 
     <aside role="complementary" aria-label={typeof title === "string" ? title : undefined} className="fixed top-11 right-0 bottom-0 z-40 bg-white border-l border-gray-200 shadow-xl flex flex-col" style={{ width, maxWidth: "100vw" }}>
       <div className="flex items-center h-9 px-3 border-b border-gray-200 bg-gray-100 font-semibold text-[12.5px]">
         <div className="flex-1 truncate">{title}</div>
-        <button className="mx-btn mx-btn-ghost mx-btn-sm" aria-label="Close" onClick={onClose}>
+        <button className="mx-btn mx-btn-ghost mx-btn-sm" aria-label={t("Close")} onClick={onClose}>
           <Icon name="x" />
         </button>
       </div>
@@ -405,7 +412,7 @@ export function useToast() {
 // ------------------------------------------------------------------ DataTable (sort, filter, virtual rows)
 export type Column<T> = { key: string; label: string; width?: number; align?: "left" | "right" | "center"; render?: (row: T) => ReactNode; value?: (row: T) => string | number | null | undefined; sortable?: boolean; mono?: boolean };
 
-export function DataTable<T extends Record<string, any>>({ rows, columns, rowKey, onRowClick, selectedKey, height, filterable = true, initialSort, emptyText = "No rows", toolbar, exportName }: {
+export function DataTable<T extends Record<string, any>>({ rows, columns, rowKey, onRowClick, selectedKey, height, filterable = true, initialSort, emptyText, toolbar, exportName }: {
   rows: T[];
   columns: Column<T>[];
   rowKey: (r: T) => string;
@@ -418,6 +425,7 @@ export function DataTable<T extends Record<string, any>>({ rows, columns, rowKey
   toolbar?: ReactNode;
   exportName?: string;
 }) {
+  const { t } = useSession();
   const [q, setQ] = useState("");
   const [sort, setSort] = useState<{ key: string; dir: 1 | -1 } | undefined>(initialSort);
   const scroller = useRef<HTMLDivElement>(null);
@@ -478,16 +486,16 @@ export function DataTable<T extends Record<string, any>>({ rows, columns, rowKey
           {filterable && (
             <div className="relative">
               <Icon name="search" size={13} className="absolute left-2 top-[7px] text-slate-400" />
-              <input className="mx-input pl-7 w-[240px]" placeholder="Filter…" aria-label="Filter rows" value={q} onChange={(e) => setQ(e.target.value)} />
+              <input className="mx-input pl-7 w-[240px]" placeholder={t("Filter…")} aria-label={t("Filter rows")} value={q} onChange={(e) => setQ(e.target.value)} />
             </div>
           )}
           <span className="text-[11.5px] text-slate-600 tabular">
-            {filtered.length === rows.length ? rows.length : `${filtered.length} / ${rows.length}`} rows
+            {t("{n} rows", { n: filtered.length === rows.length ? rows.length.toLocaleString() : `${filtered.length.toLocaleString()} / ${rows.length.toLocaleString()}` })}
           </span>
           <div className="flex-1" />
           {toolbar}
           {exportName && (
-            <Button size="sm" variant="ghost" icon="download" onClick={exportCsv} title="Export visible rows (CSV)">
+            <Button size="sm" variant="ghost" icon="download" onClick={exportCsv} title={t("Export visible rows (CSV)")}>
               CSV
             </Button>
           )}
@@ -543,7 +551,7 @@ export function DataTable<T extends Record<string, any>>({ rows, columns, rowKey
             )}
           </tbody>
         </table>
-        {!filtered.length && <div className="p-6 text-center text-slate-600">{emptyText}</div>}
+        {!filtered.length && <div className="p-6 text-center text-slate-600">{emptyText ?? t("No rows")}</div>}
       </div>
     </div>
   );
@@ -551,6 +559,7 @@ export function DataTable<T extends Record<string, any>>({ rows, columns, rowKey
 
 // ------------------------------------------------------------------ Confirm with reason
 export function useConfirm() {
+  const { t } = useSession();
   const [state, setState] = useState<{ title: string; body?: ReactNode; danger?: boolean; reason?: boolean; resolve: (r: { ok: boolean; reason?: string }) => void } | null>(null);
   const [reason, setReason] = useState("");
   const confirm = (title: string, opts: { body?: ReactNode; danger?: boolean; reason?: boolean } = {}) =>
@@ -569,9 +578,9 @@ export function useConfirm() {
       onClose={() => close(false)}
       footer={
         <>
-          <Button onClick={() => close(false)}>Cancel</Button>
+          <Button onClick={() => close(false)}>{t("common.cancel")}</Button>
           <Button variant={state?.danger ? "danger" : "primary"} onClick={() => close(true)} disabled={!!state?.reason && !reason.trim()}>
-            Confirm
+            {t("common.confirm")}
           </Button>
         </>
       }
@@ -580,7 +589,7 @@ export function useConfirm() {
       {state?.reason && (
         <div className="mt-2">
           <label className="mx-label" htmlFor="confirm-reason">
-            Reason (recorded in the audit log)
+            {t("Reason (recorded in the audit log)")}
           </label>
           <textarea id="confirm-reason" className="mx-input w-full" rows={3} value={reason} onChange={(e) => setReason(e.target.value)} />
         </div>

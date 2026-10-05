@@ -1,8 +1,9 @@
 "use client";
 import { useEffect, useState } from "react";
-import { Badge, Button, Icon, ProgressBar, statusTone, useToast } from "@/components/ui";
+import { Button, Icon, ProgressBar, StatusPill, useToast } from "@/components/ui";
 import { api, ApiError } from "@/lib/api";
 import { useEvents } from "@/lib/hooks";
+import { useSession } from "@/lib/session";
 
 /** Terminal run states. STALE: computed, but the data or the current plan changed meanwhile — the
  * result is kept as a separate version and was not applied. */
@@ -11,6 +12,7 @@ export const FINAL = ["SUCCEEDED", "FAILED", "CANCELLED", "STALE"];
 /** Live progress of a planning run: the 17 pipeline steps with their real status and details. */
 export function RunProgress({ runId, onDone, onClose }: { runId: string; onDone: (run: any) => void; onClose: () => void }) {
   const toast = useToast();
+  const { t } = useSession();
   const [run, setRun] = useState<any>(null);
   const [lost, setLost] = useState<string | null>(null);
   const [stopping, setStopping] = useState(false);
@@ -61,15 +63,15 @@ export function RunProgress({ runId, onDone, onClose }: { runId: string; onDone:
     <div className="absolute right-3 top-3 z-30 w-[380px] mx-panel shadow-xl" role="status" aria-live="polite">
       <div className="mx-panel-head">
         <Icon name="refresh" size={14} className={finished ? "" : "animate-spin"} />
-        <span className="flex-1">Planning run</span>
-        {run && <Badge tone={statusTone(run.status)}>{run.status}</Badge>}
-        <button className="mx-btn mx-btn-ghost mx-btn-sm" aria-label="Close" onClick={onClose}>
+        <span className="flex-1">{t("Planning run")}</span>
+        {run && <StatusPill status={run.status} />}
+        <button className="mx-btn mx-btn-ghost mx-btn-sm" aria-label={t("Close")} onClick={onClose}>
           <Icon name="x" />
         </button>
       </div>
       <div className="p-2.5 space-y-2">
         <div className="flex justify-between text-[11.5px] text-slate-600 tabular">
-          <span>{run?.current_step || "Queued"}</span>
+          <span>{run?.current_step ? t(run.current_step) : t("status.QUEUED")}</span>
           <span>{run?.duration_s ?? elapsed} s</span>
         </div>
         <ProgressBar value={steps.length ? done / steps.length : 0} indeterminate={!finished && !steps.length} />
@@ -80,7 +82,7 @@ export function RunProgress({ runId, onDone, onClose }: { runId: string; onDone:
                 {s.status === "DONE" ? "✓" : s.status === "RUNNING" ? "▸" : s.status === "FAILED" ? "▲" : s.status === "SKIPPED" ? "–" : "○"}
               </span>
               <span className={s.status === "PENDING" ? "text-slate-400" : ""}>
-                {s.step}
+                {t(s.step)}
                 {s.detail && <span className="text-slate-600"> — {s.detail}</span>}
               </span>
             </li>
@@ -99,8 +101,8 @@ export function RunProgress({ runId, onDone, onClose }: { runId: string; onDone:
         )}
         {run?.status === "SUCCEEDED" && run.result && (
           <div className="text-[12px]">
-            ✓ {run.result.plan_number} · solver {run.solver_status}
-            {run.gap !== null && run.gap !== undefined ? ` · gap ${(run.gap * 100).toFixed(1)} %` : ""}
+            ✓ {run.result.plan_number} · {t("solver")} {run.solver_status}
+            {run.gap !== null && run.gap !== undefined ? ` · ${t("gap")} ${(run.gap * 100).toFixed(1)} %` : ""}
             {(run.result.messages || []).slice(0, 3).map((m: string, i: number) => (
               <div key={i} className="text-slate-600">
                 {m}
@@ -127,7 +129,7 @@ export function RunProgress({ runId, onDone, onClose }: { runId: string; onDone:
               }
             }}
           >
-            {run?.cancel_requested ? "Stopping…" : run?.status === "QUEUED" ? "Cancel" : "Stop and keep best plan found"}
+            {run?.cancel_requested ? t("Stopping…") : run?.status === "QUEUED" ? t("common.cancel") : t("Stop and keep best plan found")}
           </Button>
         )}
       </div>

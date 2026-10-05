@@ -29,11 +29,13 @@ _started = False
 _claim_lock = threading.Lock()
 
 
-def claim_next() -> tuple | None:
-    """Atomically claim the oldest queued run → (run_id, tenant_id)."""
+def claim_next(run_id=None) -> tuple | None:
+    """Atomically claim the oldest queued run (or the given one) → (run_id, tenant_id)."""
     st = get_settings()
     with _claim_lock, new_session(None, "worker") as s:
         q = select(PlanningRun).where(PlanningRun.status == "QUEUED").order_by(PlanningRun.created_at).limit(1)
+        if run_id is not None:
+            q = q.where(PlanningRun.id == run_id)
         if not st.is_sqlite:
             q = q.with_for_update(skip_locked=True)
         run = s.scalar(q)
