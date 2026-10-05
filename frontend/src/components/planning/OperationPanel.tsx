@@ -14,9 +14,12 @@ export function OperationPanel({ planId, opId, resCodes, onClose, onHighlightOrd
   const [tab, setTab] = useState("why");
   const detail = useApi<any>(`/plans/${planId}/operations/${encodeURIComponent(opId)}`);
   const explore = useApi<any>(tab === "explore" ? `/plans/${planId}/operations/${encodeURIComponent(opId)}/explore` : null);
-  const orderKey = detail.data?.scheduled?.order_key || detail.data?.unscheduled?.order_id;
+  // only the selected operation's data: while another one loads, nothing of the previous one is shown
+  // (the lock button acts on what is displayed)
+  const d = detail.data && detail.data.op_id === opId ? detail.data : undefined;
+  const exd = explore.data && explore.data.op_id === opId ? explore.data : undefined;
+  const orderKey = d?.scheduled?.order_key || d?.unscheduled?.order_id;
   const order = useApi<any>(tab === "order" && orderKey ? `/plans/${planId}/order-detail/${orderKey}` : null);
-  const d = detail.data;
   const sch = d?.scheduled;
   const ex = d?.explanation;
   const rc = (id?: string | null) => (id ? resCodes[id] || id.slice(0, 8) : "—");
@@ -167,18 +170,18 @@ export function OperationPanel({ planId, opId, resCodes, onClose, onHighlightOrd
           <div>
             {explore.loading && <Loading label={t("Re-evaluating every alternative against the rest of the schedule…")} />}
             <ErrorState error={explore.error} onRetry={explore.reload} />
-            {explore.data && (
+            {exd && (
               <div className="space-y-2">
                 <div className="text-slate-600">
-                  {t("Earliest start from predecessors/release:")} <b className="text-graphite-800">{dt(explore.data.earliest_start_from_predecessors)}</b> ({explore.data.lower_bound?.type}
-                  {explore.data.lower_bound?.detail ? ` — ${explore.data.lower_bound.detail}` : ""})
+                  {t("Earliest start from predecessors/release:")} <b className="text-graphite-800">{dt(exd.earliest_start_from_predecessors)}</b> ({exd.lower_bound?.type}
+                  {exd.lower_bound?.detail ? ` — ${exd.lower_bound.detail}` : ""})
                 </div>
-                {explore.data.alternatives.map((a: any) => (
-                  <div key={a.resource_id} className={`border rounded-[3px] p-2 ${a.resource_id === explore.data.recommended ? "border-green-600" : "border-gray-200"}`}>
+                {exd.alternatives.map((a: any) => (
+                  <div key={a.resource_id} className={`border rounded-[3px] p-2 ${a.resource_id === exd.recommended ? "border-green-600" : "border-gray-200"}`}>
                     <div className="flex items-center gap-2">
                       <span className="code font-semibold">{a.resource}</span>
-                      {a.resource_id === explore.data.current_resource && <Badge tone="info">{t("current")}</Badge>}
-                      {a.resource_id === explore.data.recommended && <Badge tone="ok">{t("earliest finish")}</Badge>}
+                      {a.resource_id === exd.current_resource && <Badge tone="info">{t("current")}</Badge>}
+                      {a.resource_id === exd.recommended && <Badge tone="ok">{t("earliest finish")}</Badge>}
                       {!a.feasible && <Badge tone="bad">{t("not possible")}</Badge>}
                     </div>
                     {a.feasible && (

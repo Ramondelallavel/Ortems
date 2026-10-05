@@ -461,7 +461,9 @@ def flow_shopfloor(b, rep: Report):
         found = False
         for v in values:
             sel.select_option(v)
-            page.wait_for_timeout(900)
+            # wait for this machine's answer (its current job, or the "no job" message), not a fixed time
+            outcome = page.get_by_role("region", name="Current job").or_(page.get_by_text("No job planned on this machine."))
+            expect(outcome.first).to_be_visible(timeout=30000)
             if page.get_by_role("region", name="Current job").count():
                 found = True
                 break

@@ -17,7 +17,9 @@ export default function OperatorPage() {
   const [scrap, setScrap] = useState("");
   const [busy, setBusy] = useState(false);
   const machines = (resources.data?.items || []).filter((r: any) => ["MACHINE", "WORK_CENTER", "LINE"].includes(r.kind));
-  const cur = view.data?.current;
+  // the answer for the machine now selected — never the previous machine's while the new one loads
+  const shown = view.data && view.data.resource?.id === resId ? view.data : undefined;
+  const cur = shown?.current;
 
   const report = async (action: string) => {
     if (!cur?.order_operation_id) return;
@@ -48,14 +50,14 @@ export default function OperatorPage() {
           <Field label={t("nav.operator") + " — " + t("common.resource")}>
             <Select value={resId} onChange={setResId} className="!h-10 min-w-[220px] !text-[15px]" options={[{ value: "", label: t("Select your machine") }, ...machines.map((r: any) => ({ value: r.id, label: `${r.code} · ${r.name}` }))]} />
           </Field>
-          {view.data && (
+          {shown && (
             <div className="pb-2 text-slate-600 text-[13px]">
-              {view.data.plan_number} · <StatusPill status={view.data.resource.status} />
+              {shown.plan_number} · <StatusPill status={shown.resource.status} />
             </div>
           )}
         </div>
         <ErrorState error={view.error} onRetry={view.reload} />
-        {resId && !view.data && !view.error && <Loading />}
+        {resId && !shown && !view.error && <Loading />}
         {cur ? (
           <section className="mx-panel p-4 space-y-3" aria-label={t("Current job")}>
             <div className="flex items-center gap-3">
@@ -116,12 +118,12 @@ export default function OperatorPage() {
             )}
           </section>
         ) : (
-          view.data && <div className="mx-panel p-6 text-center text-slate-600">{t("No job planned on this machine.")}</div>
+          shown && <div className="mx-panel p-6 text-center text-slate-600">{t("No job planned on this machine.")}</div>
         )}
-        {view.data?.next?.length > 0 && (
+        {shown?.next?.length > 0 && (
           <section className="mx-panel" aria-label={t("Next jobs")}>
             <div className="mx-panel-head">{t("Next")}</div>
-            {view.data.next.map((j: any) => (
+            {shown.next.map((j: any) => (
               <div key={j.op_id} className="px-3 py-2 border-b border-gray-100 flex gap-3 tabular">
                 <span className="w-[120px]">{dt(j.setup_start)}</span>
                 <span className="code">{j.order}</span>
