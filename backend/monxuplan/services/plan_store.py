@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import gzip
 import json
+import sys
 import uuid
 from collections import defaultdict
 from collections.abc import Iterable, Iterator, Sequence
@@ -388,6 +389,10 @@ def inherit_explanations(s: Session, tenant_id: uuid.UUID, plan_id: uuid.UUID, p
     return n + write_documents(s, tenant_id, plan_id, docs)
 
 
+# WebAssembly (the browser edition) has no threads: there, compression runs in the calling thread
+_THREADS = sys.platform != "emscripten"
+
+
 def _gz(raw: bytes) -> bytes:
     return gzip.compress(raw, compresslevel=3)
 
@@ -396,7 +401,7 @@ def write_documents(s: Session, tenant_id: uuid.UUID, plan_id: uuid.UUID, docs: 
     if not docs:
         return 0
     raws = [d[3] for d in docs]
-    if len(raws) > 8:  # zlib releases the GIL: compress in parallel
+    if len(raws) > 8 and _THREADS:  # zlib releases the GIL: compress in parallel
         with ThreadPoolExecutor(max_workers=4) as pool:
             blobs = list(pool.map(_gz, raws, chunksize=16))
     else:
