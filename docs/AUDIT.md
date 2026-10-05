@@ -55,6 +55,21 @@ serious production risk · **P2** maintainability, performance, relevant UX · *
 | F-5 | P2 | webhooks | All threads of a process shared one lease identity. | One identity per delivery round. | `test_webhooks.py` | Fixed |
 | F-6 | P2 | `mrp.py`, `providers/mip.py` | Bucketed plans not labelled as such. | `planning_level`, `capacity_model`, note. | — | Fixed |
 | F-7 | P1 | `builder._commit` | The cost/overtime of a placement was not recomputed when a later insertion changed its setup (previous commit). | `_set_cost`. | `test_plan_store.py::test_incremental_storage_matches_a_full_write` | Fixed |
+| F-8 | P1 | `services/masterdata.py` | Master-data rows of another plant could be listed, read, changed and deleted by id (plant scope was only checked on create). | `_in_scope` on list/get/update/delete (404 outside scope), plant re-checked after applying fields. | `test_security_scope.py::test_master_data_rows_of_another_plant_are_out_of_reach` | Fixed |
+| F-9 | P1 | `services/orders.py`, `services/views.py` | The order book listed orders of every plant of the tenant; the operator view accepted a resource of another plant. | Plant scoping of the list and of the plan; resource must belong to the plant. | `…::test_order_book_and_operator_view_stay_in_the_users_plants` | Fixed |
+| F-10 | P1 | `services/alerts.acknowledge` | Alerts of another plant could be acknowledged by id. | 404 outside the caller's plants. | `…::test_alerts_of_another_plant_cannot_be_acknowledged` | Fixed |
+| F-11 | P1 | `routers/masterdata /resources` | Operators and supervisors got 403 on their own screens (the resource list needed master-data read). | Plan readers get identity fields of their plant's resources. | `…::test_shop_floor_roles_list_their_plant_resources` | Fixed |
+| F-12 | P1 | `services/planning.enqueue_run`, `routers/scenarios` what-if | Forcing past critical data problems needed no reason; what-ifs always forced. | Blockers always computed; `force` needs `force_reason`, stored with the overridden issues and audited (`PLANNING_RUN_FORCED`); what-ifs report `run_blocked` instead of forcing. | `test_publish_gate.py::test_planning_past_critical_data_problems_needs_a_reason_and_is_audited` | Fixed |
+| F-13 | P1 | `providers/cpsat.py` (warm start) | With a full-model warm start the heuristic's local search was skipped: CP-SAT and hybrid could return a worse plan than the heuristic. | Local search kept on the warm start. | `engine/test_optimization.py::test_exact_providers_never_return_a_worse_plan_than_the_heuristic` (failed before the fix) | Fixed |
+| F-14 | P1 | `frontend/components/gantt/Gantt.tsx` | Drag-and-drop never opened the move preview (the drag state was read from a stale closure). | Drag state in a ref. | `tests/e2e/flows.py` (drag → preview → apply) | Fixed |
+| F-15 | P2 | `services/auth.change_password` | A wrong current password answered 401: the interface signed the user out. | `422 INVALID_CURRENT_PASSWORD`. | `test_account.py::test_wrong_current_password_is_not_a_session_error` | Fixed |
+| F-16 | P2 | sessions | Changing a password, deactivating a user or "sign out everywhere" did not end existing sessions and tokens. | `user.tokens_valid_after` (migration `0005`) checked on every request. | `test_account.py` | Fixed |
+| F-17 | P2 | `services/scenarios` what-if | Missing or foreign-plant parameters answered 500. | Validated per what-if kind, plant-scoped resources (422/404). | `…::test_what_if_inputs_are_validated_and_plant_scoped` | Fixed |
+| F-18 | P2 | `services/dataquality.py` | Invalid-routing examples only carried an internal id, hidden by the interface: the routing could not be identified. | Product code and routing version in each example. | `…::test_invalid_routing_examples_name_the_routing` | Fixed |
+| F-19 | P2 | `monxuplan_engine/kpis.py` | Delay causes printed raw UTC ISO timestamps and "(start)"-style limits. | Local time and a named limiting factor; template + values for translation. | e2e language audit | Fixed |
+| F-20 | P2 | frontend | Several controls did nothing or misled: Find did not open the operation panel, Publish did not refresh the header, the run panel showed the previous run, dialogs stacked Escape/focus wrongly, unsaved master-data edits were lost on navigation, the audit filter offered actions that never occur, the sensitivity text described experiments the engine does not run, surrogate glyphs rendered as "�". | Fixed individually. | `tests/e2e/flows.py`, `tests/e2e/crawl.py` | Fixed |
+| F-22 | P2 | `services/engine_view.replay` | Rebuilding a stored plan marked every operation as merely "kept", losing that frozen, in-progress or locked work was fixed: views computed from the replay (capacity requirement) placed that work elsewhere than the views stored with the plan. | The stored `is_fixed`/`fixed_reason` are kept in the replay. | `test_plan_store.py::test_read_models_match_the_engine_replay` (was failing) | Fixed |
+| F-21 | P3 | CLIs | `python -m monxuplan_engine` printed tracebacks for bad input; `seed.acceptance --help` created a directory. | Argument validation, clean errors (exit 2), argparse. | manual runs | Fixed |
 
 ## Remaining risks (not fixed in this pass, stated plainly)
 
@@ -74,5 +89,9 @@ serious production risk · **P2** maintainability, performance, relevant UX · *
   normalised weights, exactly re-timed; it is not a proof for the unrounded weighted objective.
 * **Accessibility** of the new override dialog follows the existing dialog component; no screen-reader
   audit was run in this pass.
-* **Frontend e2e** (`tests/e2e/ui_walkthrough.py`) was not re-run in this pass (needs the full stack and a
-  browser session).
+* **Engine explanations in English.** "Why here?", the constraint explorer, the order chain and the
+  free-text part of unscheduled reasons (evaluated alternatives) are generated as English text by the
+  schedule builder; the interface states it in the account dialog. Localising them needs templates in
+  the builder.
+* **The Playwright suites** (`tests/e2e/crawl.py`, `flows.py`, `i18n_audit.py`) need a running stack
+  and are not part of CI; they are run before each delivery.

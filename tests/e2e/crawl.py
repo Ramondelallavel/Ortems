@@ -196,7 +196,7 @@ def crawl_route(page, rec: Recorder, route: str, shots: str | None, max_clicks=1
             try:
                 tag = el.evaluate("e => e.tagName.toLowerCase() + (e.getAttribute('role') ? '[' + e.getAttribute('role') + ']' : '')")
                 href = el.get_attribute("href") or ""
-                inside_nav = el.evaluate("e => !!e.closest('nav[aria-label=Main], header')")
+                inside_nav = el.evaluate("e => !!e.closest('nav[aria-label=\"Main navigation\"], nav[aria-label=\"Navegación principal\"], header')")
             except PwError:
                 continue
             key = f"{tag}|{d}|{href}"
@@ -264,18 +264,20 @@ def crawl_shell(page, rec: Recorder):
     page.goto(BASE + "/dashboard")
     settle(page, 1200)
     # every navigation link
-    links = page.locator("nav[aria-label=Main] a").all()
-    hrefs = [a.get_attribute("href") for a in links]
+    nav = page.get_by_role("navigation", name=re.compile(r"^(Main navigation|Navegación principal)$"))
+    hrefs = [a.get_attribute("href") for a in nav.locator("a").all()]
+    if len(hrefs) < 10:
+        rec.add("nav", f"main navigation has {len(hrefs)} links")
     for h in hrefs:
         rec.where = f"nav {h}"
-        page.locator(f"nav[aria-label=Main] a[href='{h}']").click()
+        nav.locator(f"a[href='{h}']").click()
         page.wait_for_url(f"**{h}", timeout=15000)
         settle(page, 600)
         for txt in ui_errors(page):
             rec.add("ui-error", txt)
     rec.where = "shell » collapse"
-    page.get_by_label("Collapse navigation").click()
-    page.get_by_label("Expand navigation").click()
+    page.get_by_label(re.compile(r"^(Collapse navigation|Contraer la navegación)$")).click()
+    page.get_by_label(re.compile(r"^(Expand navigation|Expandir la navegación)$")).click()
     rec.where = "shell » shortcuts"
     page.keyboard.press("Shift+?")
     page.wait_for_selector("[role=dialog]")

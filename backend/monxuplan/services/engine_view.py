@@ -62,14 +62,17 @@ def replay(s: Session, plan: Plan) -> tuple[CompiledProblem, BuildResult]:
         tm = compute_timing(cp)
         overrides = {}
         SO = ScheduledOperation
-        for r in s.execute(select(SO.op_key, SO.resource_key, SO.setup_start, SO.end).where(SO.plan_id == plan.id)):
+        for r in s.execute(select(SO.op_key, SO.resource_key, SO.setup_start, SO.end, SO.is_fixed, SO.fixed_reason).where(SO.plan_id == plan.id)):
             i = cp.op_index.get(r.op_key)
             if i is None:
                 continue
             mi = next((m.idx for m in cp.ops[i].modes if cp.resources[m.res].id == r.resource_key), None)
             if mi is None:
                 continue
-            overrides[i] = (mi, cp.axis.to_min(_aware(r.setup_start)), cp.axis.to_min_ceil(_aware(r.end)), "KEPT")
+            # work the plan had fixed (frozen zone, in progress, locked) keeps its reason: views treat it
+            # differently from positions that are merely kept (e.g. the capacity requirement)
+            reason = r.fixed_reason if r.is_fixed and r.fixed_reason else "KEPT"
+            overrides[i] = (mi, cp.axis.to_min(_aware(r.setup_start)), cp.axis.to_min_ceil(_aware(r.end)), reason)
         placed = set(overrides)
         # operations the plan did not schedule stay unscheduled in the view
         res = ScheduleBuilder(cp, BuildConfig(overrides=overrides, explain=False), tm)

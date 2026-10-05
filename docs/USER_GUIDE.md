@@ -2,7 +2,9 @@
 
 For production planners, plant and production managers, supervisors and operators. Screens are in
 English and Spanish (French, German and Portuguese navigation, English fallback); switch with the
-language selector in the top bar. Press **?** anywhere for keyboard shortcuts.
+language selector in the top bar or under **My account** (your name in the top bar), which also keeps
+your default plant, changes your password and signs you out on every device. The engine's detailed
+explanations ("Why here?", constraint explorer, order chain) are in English in every language. Press **?** anywhere for keyboard shortcuts.
 
 ## 1. Daily loop
 

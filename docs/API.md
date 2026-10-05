@@ -45,6 +45,12 @@ curl -s localhost:8000/api/v1/plants -H "Authorization: Bearer $TOKEN"
 | 429 | `RATE_LIMITED` (with `Retry-After`) |
 | 500 | `INTERNAL_ERROR` with an `error_id` that appears in the server log |
 
+* Generated texts (alert titles and messages, dashboard attention items, delay causes) are returned
+  in English in their usual fields (`title`, `message`, `text`). Next to them, an `i18n` object
+  (in `context.i18n` for alerts) holds the English template and its values, e.g.
+  `{"title": {"key": "{order} late by {h} h", "values": {"order": "WO-10042", "h": 181}}}`: values
+  ending in `_at` are ISO date-times in plant time, values ending in `_term` are fixed phrases. The
+  web interface uses them to show the text in the user's language.
 * Every response carries `X-Request-ID` (send your own to correlate logs).
 * Rate limits per client IP: `MONXU_RATE_LIMIT_PER_MINUTE` (default 600) and a stricter login limit.
 
@@ -67,6 +73,11 @@ curl -s "$API/plans/<plan_id>/export?format=xlsx" -H "$AUTH" -o plan.xlsx
 # 4. publish it to the shop floor
 curl -s -X POST $API/plans/<plan_id>/publish -H "$AUTH" -H 'content-type: application/json' -d '{"reason":"weekly plan"}'
 ```
+
+When critical data problems block planning (`409 DATA_QUALITY_BLOCK`, issues in `context.issues`),
+planning anyway is an explicit decision: repeat the request with `"force": true` and a
+`"force_reason"`; both, and the overridden issues, are stored on the run and in the audit log
+(`PLANNING_RUN_FORCED`). Publishing over the publication gate works the same way (`force` + `reason`).
 
 A manual move is previewed first (nothing changes), then applied as a new plan version:
 `POST /plans/{id}/moves/preview` → `POST /plans/{id}/moves` with the same body
@@ -98,7 +109,18 @@ Subscriptions (`/webhooks`) receive `POST` JSON for `plan.published, plan.create
 planning.run.finished, alert.created, order.updated, machine.down, machine.available,
 material.delayed, import.completed`. Headers: `X-Monxu-Event`, `X-Monxu-Delivery`, `X-Monxu-Timestamp`,
 `X-Monxu-Signature: sha256=HMAC(secret, timestamp + "." + body)`. Failed deliveries are retried with
-back-off (5 attempts) and listed under `/webhooks/{id}/deliveries`.
+back-off (5 attempts) and listed under `/webhooks/{id}/deliveries`. `PATCH /webhooks/{id}` with
+`{"is_active": false}` pauses a subscription (nothing is queued for it) and `true` resumes it;
+`POST /webhooks/{id}/test` queues a signed `webhook.test` delivery to check the endpoint
+(`422 WEBHOOK_PAUSED` while paused).
+
+## Own account
+
+`PATCH /auth/me` stores the language (`locale`) and default plant of the signed-in user;
+`POST /auth/password` changes the password (current password required, the session is re-issued and
+every other session and token of the user ends); `POST /auth/logout-everywhere` ends every session
+of the user on every device. Deactivating a user or resetting their password (administrators) also
+ends their sessions.
 
 ## Imports
 
@@ -152,13 +174,12 @@ Not provided in this version (REST + OpenAPI cover every use case of the UI). *C
 
 ## Endpoints
 
+Generated from the application's OpenAPI schema (interactive documentation at `/api/docs`).
+
 ### health
 
 | Method | Path |
 |---|---|
-| GET | `/health` |
-| GET | `/readiness` |
-| GET | `/metrics` |
 | GET | `/health` |
 | GET | `/readiness` |
 | GET | `/metrics` |
@@ -171,7 +192,9 @@ Not provided in this version (REST + OpenAPI cover every use case of the UI). *C
 | POST | `/api/v1/auth/token` |
 | POST | `/api/v1/auth/logout` |
 | GET | `/api/v1/auth/me` |
+| PATCH | `/api/v1/auth/me` |
 | POST | `/api/v1/auth/password` |
+| POST | `/api/v1/auth/logout-everywhere` |
 
 ### master-data
 
@@ -312,6 +335,8 @@ Not provided in this version (REST + OpenAPI cover every use case of the UI). *C
 | GET | `/api/v1/webhooks` |
 | POST | `/api/v1/webhooks` |
 | DELETE | `/api/v1/webhooks/{webhook_id}` |
+| PATCH | `/api/v1/webhooks/{webhook_id}` |
+| POST | `/api/v1/webhooks/{webhook_id}/test` |
 | GET | `/api/v1/webhooks/{webhook_id}/deliveries` |
 | GET | `/api/v1/connectors` |
 | POST | `/api/v1/connectors` |
@@ -344,6 +369,7 @@ Not provided in this version (REST + OpenAPI cover every use case of the UI). *C
 | POST | `/api/v1/api-keys` |
 | DELETE | `/api/v1/api-keys/{key_id}` |
 | GET | `/api/v1/audit` |
+| GET | `/api/v1/audit/actions` |
 | GET | `/api/v1/views` |
 | POST | `/api/v1/views` |
 | DELETE | `/api/v1/views/{view_id}` |

@@ -63,8 +63,12 @@ alembic -c monxuplan/alembic.ini check            # verify the models and the sc
 alembic -c monxuplan/alembic.ini revision --autogenerate -m "…"   # after model changes (review the file)
 ```
 
-Revisions `0001` (schema) and `0002` (circular foreign keys, PostgreSQL only) are verified on
-SQLite and PostgreSQL 16 with no drift.
+Revisions: `0001` schema, `0002` circular foreign keys (PostgreSQL only), `0003` plan result tables
+and read models, `0004` concurrency, stale results, publication overrides and webhook outbox, `0005`
+user token revocation point (`user.tokens_valid_after`: sessions issued before it are rejected).
+`upgrade head`, `downgrade` and `alembic check` are verified on PostgreSQL 16 with no drift. On SQLite,
+`alembic check` reports one known difference on `scheduled_operation` that is intentional (SQLite
+keeps the table definition of `0003`, see the comment in that revision).
 
 ## Onboarding a new company
 
