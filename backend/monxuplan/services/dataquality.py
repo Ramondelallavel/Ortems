@@ -142,18 +142,21 @@ def run_checks(s: Session, plant_id: uuid.UUID) -> dict[str, Any]:
     precs = defaultdict(list)
     for pr in s.execute(select(OperationPrecedence.routing_id, OperationPrecedence.pred_seq, OperationPrecedence.succ_seq)):
         precs[pr.routing_id].append(pr)
+    # routings are identified by product and version (the id alone tells the user nothing)
+    rlabel = {r.id: f"{items[r.item_id].code if r.item_id in items else '?'} v{r.version_code}" for r in s.execute(select(Routing.id, Routing.item_id, Routing.version_code).where(Routing.id.in_(list(by_routing))))} if by_routing else {}
     for rid, lst in by_routing.items():
+        base = {"routing_id": str(rid), "routing": rlabel.get(rid, str(rid))}
         seqs = [x.seq for x in lst]
         if len(seqs) != len(set(seqs)):
-            invalid.append({"routing_id": str(rid), "problem": "duplicate sequence numbers"})
+            invalid.append({**base, "problem": "duplicate sequence numbers"})
         for pr in precs.get(rid, []):
             if pr.pred_seq not in seqs or pr.succ_seq not in seqs:
-                invalid.append({"routing_id": str(rid), "problem": f"precedence {pr.pred_seq}->{pr.succ_seq} references a missing operation"})
+                invalid.append({**base, "operation": f"{pr.pred_seq} → {pr.succ_seq}", "problem": "precedence references a missing operation"})
         if _has_cycle([(p.pred_seq, p.succ_seq) for p in precs.get(rid, [])]):
-            invalid.append({"routing_id": str(rid), "problem": "precedence cycle"})
+            invalid.append({**base, "problem": "precedence cycle"})
         for x in lst:
             if (x.run_minutes_per_unit or 0) <= 0 and (x.fixed_minutes or 0) <= 0 and (x.minutes_per_batch or 0) <= 0:
-                invalid.append({"routing_id": str(rid), "problem": f"operation {x.seq} has no run time"})
+                invalid.append({**base, "operation": str(x.seq), "problem": "operation has no run time"})
     checks.append(_check("INVALID_ROUTING", "Invalid routings", "ERROR", invalid, "Fix sequence numbers, precedences and times."))
 
     # ---- circular BOM

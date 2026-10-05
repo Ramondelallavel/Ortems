@@ -5,6 +5,7 @@ import { Button, Dialog, useToast } from "@/components/ui";
 import { download } from "@/lib/api";
 import { useApi } from "@/lib/hooks";
 import { useSession } from "@/lib/session";
+import { entityLabel } from "@/lib/i18n";
 import { ImportWizard } from "./ImportWizard";
 
 /**
@@ -32,7 +33,7 @@ export function SectionData({ tables, onChanged, label }: { tables: string[]; on
       <Button icon="database" onClick={() => setOpen(true)} title={t("data.title")}>
         {label || t("data.button")}
       </Button>
-      <Dialog open={open} onClose={close} title={importing ? `${t("data.import")}: ${byTable[importing]?.label || importing}` : t("data.title")} width={importing ? 900 : 640}>
+      <Dialog open={open} onClose={close} title={importing ? `${t("data.import")}: ${entityLabel(t, byTable[importing]?.label) || importing}` : t("data.title")} width={importing ? 900 : 640}>
         {importing ? (
           <div className="space-y-2">
             <button className="text-blue-500 hover:underline text-[12.5px]" onClick={() => setImporting(null)}>
@@ -53,7 +54,7 @@ export function SectionData({ tables, onChanged, label }: { tables: string[]; on
                 {rows.map((r) => (
                   <tr key={r.table}>
                     <td>
-                      <div className="font-medium">{r.meta?.label || r.table}</div>
+                      <div className="font-medium">{entityLabel(t, r.meta?.label) || r.table}</div>
                       <div className="code text-[11px] text-slate-500">{r.table}</div>
                     </td>
                     <td className="text-right whitespace-nowrap">

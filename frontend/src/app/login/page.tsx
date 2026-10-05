@@ -2,7 +2,8 @@
 import { useEffect, useState } from "react";
 import { Logo } from "@/components/shell/Logo";
 import { Button, Icon } from "@/components/ui";
-import { api, ApiError } from "@/lib/api";
+import { api } from "@/lib/api";
+import { errorText } from "@/lib/errors";
 import { LOCALES, translate, type Locale } from "@/lib/i18n";
 import { loc } from "@/lib/loc";
 
@@ -21,7 +22,7 @@ export default function LoginPage() {
       /* storage unavailable */
     }
   }, []);
-  const t = (k: string) => translate(locale, k);
+  const t = (k: string, v?: Record<string, string | number>) => translate(locale, k, v);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -32,7 +33,7 @@ export default function LoginPage() {
       const next = new URLSearchParams(loc.search()).get("next");
       loc.go(next && next.startsWith("/") && !next.startsWith("//") ? next : "/dashboard");
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : String(err));
+      setError(errorText(t, err));
       setBusy(false);
     }
   };

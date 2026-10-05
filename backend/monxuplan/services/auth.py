@@ -37,7 +37,7 @@ def create_user(s: Session, tenant_id: uuid.UUID, username: str, email: str, ful
     if password and check_password:
         problems = password_problems(password)
         if problems:
-            raise ValidationFailed("Password needs " + ", ".join(problems), code="WEAK_PASSWORD")
+            raise ValidationFailed("Password needs " + ", ".join(problems), code="WEAK_PASSWORD", context={"problems": problems})
     dup = s.scalar(select(User).where(User.tenant_id == tenant_id, User.username == username).execution_options(skip_tenant_filter=True))
     if dup is not None:
         raise Conflict(f"User {username} already exists", code="DUPLICATE_USER")
@@ -194,7 +194,7 @@ def change_password(s: Session, ctx: Ctx, user_id: uuid.UUID, old: str | None, n
         ctx.require("admin:users")
     problems = password_problems(new)
     if problems:
-        raise ValidationFailed("Password needs " + ", ".join(problems), code="WEAK_PASSWORD")
+        raise ValidationFailed("Password needs " + ", ".join(problems), code="WEAK_PASSWORD", context={"problems": problems})
     u.password_hash = hash_password(new)
     revoke_tokens(u)  # other sessions (possibly an attacker's) end with the old password
     audit.record(s, ctx, "PASSWORD_CHANGE", "user", u.id, u.username)

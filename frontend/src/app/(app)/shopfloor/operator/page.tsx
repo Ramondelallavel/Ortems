@@ -26,11 +26,11 @@ export default function OperatorPage() {
       const g = qty(good);
       const sc = qty(scrap);
       if (Number.isNaN(g) || Number.isNaN(sc) || g < 0 || sc < 0) {
-        toast.warn("Enter quantities as positive numbers (for example 12 or 12,5).");
+        toast.warn(t("Enter quantities as positive numbers (for example 12 or 12,5)."));
         return;
       }
       await api("/execution/report", { body: { order_operation_id: cur.order_operation_id, action, resource_id: resId, good_quantity: g, scrap_quantity: sc } });
-      toast.ok(`${action.toLowerCase()} reported for ${cur.op_id}`);
+      toast.ok(t(`op.reported.${action}`, { op: cur.op_id }));
       setGood("");
       setScrap("");
       view.reload();
@@ -46,7 +46,7 @@ export default function OperatorPage() {
       <div className="max-w-3xl mx-auto space-y-4">
         <div className="flex items-end gap-3">
           <Field label={t("nav.operator") + " — " + t("common.resource")}>
-            <Select value={resId} onChange={setResId} className="!h-10 min-w-[220px] !text-[15px]" options={[{ value: "", label: "Select your machine" }, ...machines.map((r: any) => ({ value: r.id, label: `${r.code} · ${r.name}` }))]} />
+            <Select value={resId} onChange={setResId} className="!h-10 min-w-[220px] !text-[15px]" options={[{ value: "", label: t("Select your machine") }, ...machines.map((r: any) => ({ value: r.id, label: `${r.code} · ${r.name}` }))]} />
           </Field>
           {view.data && (
             <div className="pb-2 text-slate-600 text-[13px]">
@@ -57,7 +57,7 @@ export default function OperatorPage() {
         <ErrorState error={view.error} onRetry={view.reload} />
         {resId && !view.data && !view.error && <Loading />}
         {cur ? (
-          <section className="mx-panel p-4 space-y-3" aria-label="Current job">
+          <section className="mx-panel p-4 space-y-3" aria-label={t("Current job")}>
             <div className="flex items-center gap-3">
               <div className="text-[22px] font-semibold code">{cur.order}</div>
               <StatusPill status={cur.status} />
@@ -67,17 +67,17 @@ export default function OperatorPage() {
             </div>
             <div className="grid grid-cols-3 gap-3 tabular">
               <div>
-                <div className="mx-label">Quantity</div>
+                <div className="mx-label">{t("Quantity")}</div>
                 <div className="text-[20px] font-semibold">
                   {cur.completed_quantity} / {cur.quantity}
                 </div>
               </div>
               <div>
-                <div className="mx-label">Setup</div>
+                <div className="mx-label">{t("Setup")}</div>
                 {time(cur.setup_start)} · {duration(cur.setup_minutes)}
               </div>
               <div>
-                <div className="mx-label">Run</div>
+                <div className="mx-label">{t("Run")}</div>
                 {time(cur.start)} → {dt(cur.end)}
               </div>
             </div>
@@ -86,28 +86,28 @@ export default function OperatorPage() {
             {can("execution:report") && (
               <div className="space-y-3 pt-2 border-t border-gray-200">
                 <div className="grid grid-cols-2 gap-3">
-                  <Field label="Good quantity">
+                  <Field label={t("Good quantity")}>
                     <input className="mx-input w-full !h-11 !text-[17px]" inputMode="decimal" value={good} onChange={(e) => setGood(e.target.value)} />
                   </Field>
-                  <Field label="Scrap">
+                  <Field label={t("Scrap")}>
                     <input className="mx-input w-full !h-11 !text-[17px]" inputMode="decimal" value={scrap} onChange={(e) => setScrap(e.target.value)} />
                   </Field>
                 </div>
                 <div className="flex flex-wrap gap-2">
                   {cur.status !== "IN_PROGRESS" ? (
                     <Button variant="primary" className="!h-12 !px-6 !text-[15px]" busy={busy} onClick={() => report("START")}>
-                      ▶ Start
+                      ▶ {t("Start")}
                     </Button>
                   ) : (
                     <>
                       <Button className="!h-12 !px-6 !text-[15px]" busy={busy} onClick={() => report("QUANTITY")} disabled={!good && !scrap}>
-                        Report quantity
+                        {t("Report quantity")}
                       </Button>
                       <Button className="!h-12 !px-6 !text-[15px]" busy={busy} onClick={() => report("PAUSE")}>
-                        ❚❚ Pause
+                        ❚❚ {t("Pause")}
                       </Button>
                       <Button variant="primary" className="!h-12 !px-6 !text-[15px]" busy={busy} onClick={() => report("FINISH")}>
-                        ✓ Finish
+                        ✓ {t("Finish")}
                       </Button>
                     </>
                   )}
@@ -116,11 +116,11 @@ export default function OperatorPage() {
             )}
           </section>
         ) : (
-          view.data && <div className="mx-panel p-6 text-center text-slate-600">No job planned on this machine.</div>
+          view.data && <div className="mx-panel p-6 text-center text-slate-600">{t("No job planned on this machine.")}</div>
         )}
         {view.data?.next?.length > 0 && (
-          <section className="mx-panel" aria-label="Next jobs">
-            <div className="mx-panel-head">Next</div>
+          <section className="mx-panel" aria-label={t("Next jobs")}>
+            <div className="mx-panel-head">{t("Next")}</div>
             {view.data.next.map((j: any) => (
               <div key={j.op_id} className="px-3 py-2 border-b border-gray-100 flex gap-3 tabular">
                 <span className="w-[120px]">{dt(j.setup_start)}</span>

@@ -34,6 +34,7 @@ from ..models import (
     Resource,
 )
 from . import audit
+from .alerts import i18n
 from .context import Ctx
 
 log = logging.getLogger("monxuplan.events")
@@ -134,7 +135,7 @@ def _apply(s: Session, ctx: Ctx, ev: Event) -> dict[str, Any]:
         r.status = "DOWN"
         d = Downtime(tenant_id=ctx.tenant_id, resource_id=r.id, start=_dt(p.get("start") or ev.occurred_at), end=_dt(p["expected_end"]) if p.get("expected_end") else None, reason=p.get("reason"), source=ev.source)
         s.add(d)
-        s.add(Alert(tenant_id=ctx.tenant_id, plant_id=r.plant_id, type="MACHINE_BREAKDOWN", severity="CRITICAL", title=f"{r.code} down", message=p.get("reason") or "", context={"page": "resources", "resource_id": str(r.id)}))
+        s.add(Alert(tenant_id=ctx.tenant_id, plant_id=r.plant_id, type="MACHINE_BREAKDOWN", severity="CRITICAL", title=f"{r.code} down", message=p.get("reason") or "", context={"page": "resources", "resource_id": str(r.id), "i18n": i18n(("{res} down", {"res": r.code}), "")}))
         return {"plant_id": str(r.plant_id), "resource": r.code, "downtime_id": str(d.id) if d.id else None, "action": "downtime recorded"}
     if t == "MachineAvailable":
         r = _resource(s, ctx, p["resource"])
@@ -166,7 +167,7 @@ def _apply(s: Session, ctx: Ctx, ev: Event) -> dict[str, Any]:
         ln.expected_date = _dt(p["new_date"])
         po = s.get(PurchaseOrder, ln.purchase_order_id)
         it = s.get(Item, ln.item_id)
-        s.add(Alert(tenant_id=ctx.tenant_id, plant_id=po.plant_id, type="MATERIAL_LATE", severity="WARNING", title=f"{it.code}: receipt {po.number} delayed", message=f"{before.isoformat()} → {ln.expected_date.isoformat()}", context={"page": "materials", "material_id": str(it.id)}))
+        s.add(Alert(tenant_id=ctx.tenant_id, plant_id=po.plant_id, type="MATERIAL_LATE", severity="WARNING", title=f"{it.code}: receipt {po.number} delayed", message=f"{before.isoformat()} → {ln.expected_date.isoformat()}", context={"page": "materials", "material_id": str(it.id), "i18n": i18n(("{m}: receipt {po} delayed", {"m": it.code, "po": po.number}), "")}))
         return {"plant_id": str(po.plant_id) if po.plant_id else None, "purchase_order": po.number, "from": before.isoformat(), "to": ln.expected_date.isoformat()}
     if t == "InventoryChanged":
         it = s.scalar(select(Item).where(Item.code == p["item"]))

@@ -4,6 +4,7 @@ import { Badge, Button, ErrorState, Icon, Loading, StatusPill, Tabs } from "@/co
 import { dt, duration } from "@/lib/format";
 import { useApi } from "@/lib/hooks";
 import { useSession } from "@/lib/session";
+import { unscheduledText } from "@/lib/alerts";
 
 const REASON_ICON: Record<string, string> = { PREDECESSOR: "chevronRight", MATERIAL: "materials", RESOURCE: "factory", CALENDAR: "clock", SETUP: "wrench", LABOR: "user", TOOL: "wrench", RELEASE: "clock", FROZEN: "lock" };
 
@@ -75,7 +76,7 @@ export function OperationPanel({ planId, opId, resCodes, onClose, onHighlightOrd
             {d.unscheduled && (
               <div className="border border-red-600/40 bg-red-100 rounded-[3px] p-2">
                 <div className="font-semibold text-red-600">▲ {t("Not scheduled — {reason}", { reason: t(`reason.${d.unscheduled.reason}`).startsWith("reason.") ? d.unscheduled.reason : t(`reason.${d.unscheduled.reason}`) })}</div>
-                <div>{d.unscheduled.message}</div>
+                <div>{unscheduledText(t, { ...d.unscheduled, op_id: d.unscheduled.op_id || opId })}</div>
                 {(d.unscheduled.details?.materials || []).map((m: any) => (
                   <div key={m.material_id} className="text-[12px] mt-1">
                     ◆ <span className="code">{m.material}</span>: {t("need {need}, available {avail}, shortfall {short} {uom}", { need: m.required, avail: m.available ?? "—", short: m.shortfall, uom: m.uom || "" })}

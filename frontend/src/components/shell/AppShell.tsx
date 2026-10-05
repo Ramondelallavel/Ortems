@@ -87,7 +87,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   const isActive = (href: string) => (href === "/planning" ? path === "/planning" || path.startsWith("/planning/gantt") : path === href || path.startsWith(href + "/"));
 
   const nav = (
-    <nav aria-label="Main" className="flex-1 overflow-y-auto mx-scroll py-2">
+    <nav aria-label={t("Main navigation")} className="flex-1 overflow-y-auto mx-scroll py-2">
       {NAV.map((g) => {
         const items = g.items.filter((i) => !i.perm || can(i.perm));
         if (!items.length) return null;

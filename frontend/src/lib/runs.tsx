@@ -25,7 +25,7 @@ export async function startRun(body: Record<string, unknown>, confirm: Confirm, 
           <ul className="space-y-0.5">
             {issues.map((i) => (
               <li key={i.code} className="text-red-600">
-                ▲ {i.title} ({i.count})
+                ▲ {t(i.title)} ({i.count})
               </li>
             ))}
           </ul>

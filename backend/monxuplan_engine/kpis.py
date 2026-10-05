@@ -8,7 +8,9 @@ and causes behind it.
 from __future__ import annotations
 
 from collections import Counter, defaultdict
+from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from .builder import BuildResult
 from .validator import ValidationResult
@@ -194,6 +196,28 @@ def compute(result: BuildResult, validation: ValidationResult, orders: list[dict
     return k, d
 
 
+_LIMIT_TERM = {
+    "START": "the planning start",
+    "RELEASE": "the release date",
+    "MATERIAL": "material availability",
+    "FIXED": "operations already fixed or in progress",
+    "LEAD_TIME": "the lead time",
+    "NO_MODE": "no feasible resource",
+    "PREDECESSOR": "the predecessors",
+}
+_WAIT_TERM = {"RESOURCE": "the machine", "SETUP": "a changeover", "LABOR": "qualified operators", "TOOL": "a tool", "CALENDAR": "working time"}
+
+
+def _cause(category: str, code: str, tpl: str, values: dict[str, Any], **extra: Any) -> dict[str, Any]:
+    """A delay cause: English text plus its template and values (``i18n``) so the interface can show it in
+    the user's language. Values ending in "_at" are local ISO date-times, in "_term" fixed phrases."""
+
+    def show(k: str, v: Any) -> Any:
+        return datetime.fromisoformat(v).strftime("%Y-%m-%d %H:%M") if k.endswith("_at") and v else v
+
+    return {"category": category, "code": code, "text": tpl.format(**{k: show(k, v) for k, v in values.items()}), "i18n": {"text": {"key": tpl, "values": values}}, **extra}
+
+
 def _first_cause(result: BuildResult, oi: int) -> dict[str, Any]:
     """Classify the primary reason for an order's lateness: Machine, Material, Labor, Tool,
     Calendar, Capacity(infinite lower bound), Data."""
@@ -204,15 +228,30 @@ def _first_cause(result: BuildResult, oi: int) -> dict[str, Any]:
         u = result.unscheduled.get(missing[0])
         reason = u.reason if u else "UNSCHEDULED"
         cat = "Material" if reason == "MATERIAL_SHORTAGE" else "Data" if reason in ("NO_COMPATIBLE_RESOURCE", "PRECEDENCE_CYCLE") else "Capacity"
-        return {"category": cat, "code": reason, "text": u.message if u else "not scheduled"}
+        op = cp.ops[missing[0]].id
+        details = u.details if u else {}
+        if reason == "MATERIAL_SHORTAGE" and details.get("materials"):
+            tpl, values = "{op} cannot start: material shortage of {materials}", {"op": op, "materials": ", ".join(m["material"] for m in details["materials"])}
+        elif reason == "PREDECESSOR_UNSCHEDULED" and details.get("predecessor"):
+            tpl, values = "{op} waits for {predecessor}, which could not be scheduled", {"op": op, "predecessor": details["predecessor"]}
+        elif reason == "NO_COMPATIBLE_RESOURCE":
+            tpl, values = "{op} has no compatible resource (check routing / planning rules)", {"op": op}
+        elif reason == "PRECEDENCE_CYCLE":
+            tpl, values = "{op} is part of a precedence cycle", {"op": op}
+        else:  # the engine's message carries free text (evaluated alternatives)
+            return {"category": cat, "code": reason, "text": u.message if u else "not scheduled"}
+        return {"category": cat, "code": reason, "text": u.message if u else tpl.format(**values), "i18n": {"text": {"key": tpl, "values": values}}}
     eft = result.timing.order_eft[oi]
     if eft is not None and eft > o.due:
         lim = result.timing.order_limit[oi] or "LEAD_TIME"
-        return {
-            "category": "Material" if lim == "MATERIAL" else "Lead time",
-            "code": "DUE_DATE_IMPOSSIBLE",
-            "text": f"Even at infinite capacity the order cannot finish before {cp.dt(eft).isoformat()} ({lim.lower()})",
-        }
+        local = cp.dt(eft).astimezone(ZoneInfo(cp.axis.default_tz)).isoformat()
+        return _cause(
+            "Material" if lim == "MATERIAL" else "Lead time",
+            "DUE_DATE_IMPOSSIBLE",
+            "Even at infinite capacity the order cannot finish before {end_at} (limited by {limit_term})",
+            {"end_at": local, "limit_term": _LIMIT_TERM.get(lim, lim.lower())},
+            limit=lim,
+        )
     # walk the critical chain: the largest real wait along it is the primary cause
     cur = max(o.last_ops, key=lambda i: result.placements[i].end)
     best = None
@@ -236,5 +275,10 @@ def _first_cause(result: BuildResult, oi: int) -> dict[str, Any]:
         b, i = best
         cat = {"RESOURCE": "Machine", "SETUP": "Machine", "MATERIAL": "Material", "LABOR": "Labor", "TOOL": "Tool", "CALENDAR": "Calendar"}[b.type]
         res = cp.resources[result.placements[i].res]
-        return {"category": cat, "code": b.type, "text": f"{cp.ops[i].id} on {res.code}: {b.detail or b.type.lower()} ({b.wait // 60} h waiting)", "resource": res.code, "op_id": cp.ops[i].id}
-    return {"category": "Priority", "code": "SEQUENCE", "text": "sequencing decision"}
+        values = {"op": cp.ops[i].id, "res": res.code, "h": b.wait // 60}
+        if b.type == "MATERIAL":
+            tpl, values["material"] = "{op} on {res} waited {h} h for material {material}", b.ref or b.detail or ""
+        else:
+            tpl, values["wait_term"] = "{op} on {res} waited {h} h for {wait_term}", _WAIT_TERM[b.type]
+        return _cause(cat, b.type, tpl, values, resource=res.code, op_id=cp.ops[i].id, detail=b.detail)
+    return _cause("Priority", "SEQUENCE", "Sequencing decision: other orders were given priority", {})

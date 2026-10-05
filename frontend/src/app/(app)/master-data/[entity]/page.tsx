@@ -10,6 +10,7 @@ import { api, ApiError, download } from "@/lib/api";
 import { dt } from "@/lib/format";
 import { useApi, useUnsavedWarning } from "@/lib/hooks";
 import { useSession } from "@/lib/session";
+import { entityLabel } from "@/lib/i18n";
 
 const HIDDEN = new Set(["tenant_id"]);
 const LIMIT = 5000;
@@ -72,7 +73,7 @@ export default function EntityPage() {
   const defaults = plant && fields.some((f) => f.name === "plant_id") ? { plant_id: plant.id } : undefined;
   const tables = [entity, ...(schema.data?.children || []).map((c: any) => `${entity}.${c.name}`)];
   const [importTable, setImportTable] = useState(entity);
-  const title = schema.data?.label || entity;
+  const title = entityLabel(t, schema.data?.label) || entity;
   return (
     <div className="flex flex-col h-full min-h-0">
       <PageHeader
@@ -307,6 +308,7 @@ function Editor({ entity, schema, id, onSaved, onError, onDirty }: { entity: str
 }
 
 function BomTree({ itemId }: { itemId: string }) {
+  const { t } = useSession();
   const tree = useApi<any>(`/items/${itemId}/bom-tree`);
   if (!tree.data) return tree.error ? <ErrorState error={tree.error} /> : <Loading />;
   const Node = ({ n, d }: { n: any; d: number }) => (
@@ -315,7 +317,7 @@ function BomTree({ itemId }: { itemId: string }) {
         {d ? "└ " : ""}
         <span className="code">{n.code}</span> {n.name} · <span className="tabular">{n.quantity}</span> {n.uom} <Badge tone="neutral" glyph={false}>{n.make_or_buy}</Badge>
         {n.operation_seq ? <span className="text-slate-600"> @op {n.operation_seq}</span> : null}
-        {n.cycle && <span className="text-red-600"> ▲ cycle</span>}
+        {n.cycle && <span className="text-red-600"> ▲ {t("cycle")}</span>}
       </div>
       {n.children.map((c: any, i: number) => (
         <Node key={i} n={c} d={d + 1} />

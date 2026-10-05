@@ -12,6 +12,8 @@ import { startRun } from "@/lib/runs";
 import { useSession } from "@/lib/session";
 import { SectionData } from "@/components/data/SectionData";
 
+const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+
 const WHATIFS = [
   { kind: "NIGHT_SHIFT", label: "Add a night shift", desc: "22:00–06:00 on selected machines and weekdays" },
   { kind: "ADD_MACHINE", label: "Add a machine", desc: "A copy of an existing machine, available from a date" },
@@ -51,7 +53,7 @@ export default function ScenariosPage() {
   const cur = list.find((s) => s.id === sel) || list[0];
 
   const archive = async (s: ScenarioRow) => {
-    const r = await confirm(`Archive "${s.name}"?`, { danger: true, body: "The scenario and its plans stay in the history but disappear from the list." });
+    const r = await confirm(t("Archive “{name}”?", { name: s.name }), { danger: true, body: t("The scenario and its plans stay in the history but disappear from the list.") });
     if (!r.ok) return;
     try {
       await api(`/scenarios/${s.id}/archive`, { method: "POST" });
@@ -82,20 +84,20 @@ export default function ScenariosPage() {
     <div className="flex flex-col h-full min-h-0">
       <PageHeader
         title={t("nav.scenarios")}
-        subtitle="Copy-on-write copies of the live plan. Changes are recorded as a list and re-applied at every run; the live plan is never touched."
+        subtitle={t("Copy-on-write copies of the live plan. Changes are recorded as a list and re-applied at every run; the live plan is never touched.")}
         actions={
           can("scenario:write") && (
             <>
               <SectionData tables={["planning-rules", "sequence-rules", "setup-rules", "optimization-profiles"]} />
               <Button icon="plus" onClick={() => setCloneOpen(true)}>
-                New scenario
+                {t("New scenario")}
               </Button>
-              <Select ariaLabel="What-if" value="" onChange={(v) => v && setWizard(v)} options={[{ value: "", label: "What-if…" }, ...WHATIFS.map((w) => ({ value: w.kind, label: w.label }))]} />
+              <Select ariaLabel={t("What-if")} value="" onChange={(v) => v && setWizard(v)} options={[{ value: "", label: t("What-if…") }, ...WHATIFS.map((w) => ({ value: w.kind, label: t(w.label) }))]} />
             </>
           )
         }
       />
-      <Tabs value={tab} onChange={setTab} tabs={[{ id: "detail", label: "Scenarios" }, { id: "compare", label: "Compare", badge: cmpIds.length ? <Badge tone="neutral" glyph={false}>{cmpIds.length}</Badge> : undefined }]} />
+      <Tabs value={tab} onChange={setTab} tabs={[{ id: "detail", label: t("nav.scenarios") }, { id: "compare", label: t("plan.compare"), badge: cmpIds.length ? <Badge tone="neutral" glyph={false}>{cmpIds.length}</Badge> : undefined }]} />
       {scen.error && <ErrorState error={scen.error} onRetry={scen.reload} />}
       {tab === "detail" && (
         <div className="flex flex-1 min-h-0">
@@ -107,7 +109,7 @@ export default function ScenariosPage() {
                   <span className="font-semibold truncate flex-1">{s.name}</span>
                   <input
                     type="checkbox"
-                    aria-label={`Compare ${s.name}`}
+                    aria-label={t("Compare {name}", { name: s.name })}
                     disabled={!s.head_plan_id}
                     checked={!!s.head_plan_id && cmpIds.includes(s.head_plan_id)}
                     onClick={(e) => e.stopPropagation()}
@@ -115,8 +117,8 @@ export default function ScenariosPage() {
                   />
                 </div>
                 <div className="text-[11.5px] text-slate-600 mt-0.5 tabular">
-                  {s.head_plan ? `${s.head_plan.number} · OTIF ${num(s.head_plan.kpis?.otif, 1)} % · late ${num(s.head_plan.kpis?.late_orders)}` : "not planned yet"}
-                  {s.last_run && s.last_run.status !== "SUCCEEDED" && <span className="ml-1">· run {s.last_run.status.toLowerCase()}</span>}
+                  {s.head_plan ? t("{plan} · OTIF {otif} % · late {late}", { plan: s.head_plan.number, otif: num(s.head_plan.kpis?.otif, 1), late: num(s.head_plan.kpis?.late_orders) }) : t("not planned yet")}
+                  {s.last_run && s.last_run.status !== "SUCCEEDED" && <span className="ml-1">· {t("run {status}", { status: t(`status.${s.last_run.status}`).toLowerCase() })}</span>}
                 </div>
               </button>
             ))}
@@ -131,15 +133,15 @@ export default function ScenariosPage() {
                     <div className="flex gap-1.5">
                       {can("plan:run") && (
                         <Button size="sm" variant="primary" icon="play" onClick={() => runScenario(cur)}>
-                          Plan scenario
+                          {t("Plan scenario")}
                         </Button>
                       )}
                       <Button size="sm" icon="board" onClick={() => router.push(`/planning?scenario=${cur.id}`)} disabled={!cur.head_plan_id}>
-                        Open in board
+                        {t("Open in board")}
                       </Button>
                       {can("scenario:write") && !cur.is_live && (
                         <Button size="sm" variant="danger" onClick={() => archive(cur)}>
-                          Archive
+                          {t("Archive")}
                         </Button>
                       )}
                     </div>
@@ -147,25 +149,25 @@ export default function ScenariosPage() {
                 >
                   <div className="p-3 grid grid-cols-2 gap-3 text-[12.5px]">
                     <div>
-                      <div className="mx-label">Description</div>
+                      <div className="mx-label">{t("Description")}</div>
                       {cur.description || "—"}
                     </div>
                     <div>
-                      <div className="mx-label">Lineage</div>
-                      {cur.parent ? `copied from ${cur.parent.name}` : cur.is_live ? "operational plan" : "—"} · owner {cur.owner || "—"} · {cur.plans} plan versions
+                      <div className="mx-label">{t("Lineage")}</div>
+                      {cur.parent ? t("copied from {name}", { name: cur.parent.name }) : cur.is_live ? t("operational plan") : "—"} · {t("owner {o}", { o: cur.owner || "—" })} · {t("{n} plan versions", { n: cur.plans })}
                     </div>
                     <div>
-                      <div className="mx-label">Current plan</div>
+                      <div className="mx-label">{t("dash.currentPlan")}</div>
                       {cur.head_plan ? (
                         <>
-                          {cur.head_plan.number} <StatusPill status={cur.head_plan.status} /> {cur.head_plan.feasible ? <Badge tone="ok">feasible</Badge> : <Badge tone="warn">see exceptions</Badge>}
+                          {cur.head_plan.number} <StatusPill status={cur.head_plan.status} /> {cur.head_plan.feasible ? <Badge tone="ok">{t("plan.feasible")}</Badge> : <Badge tone="warn">{t("see exceptions")}</Badge>}
                         </>
                       ) : (
                         "—"
                       )}
                     </div>
                     <div>
-                      <div className="mx-label">Last run</div>
+                      <div className="mx-label">{t("dash.lastRun")}</div>
                       {cur.last_run ? (
                         <>
                           <StatusPill status={cur.last_run.status} /> {dt(cur.last_run.created_at)} {cur.last_run.error ? <span className="text-red-600">▲ {cur.last_run.error}</span> : null}
@@ -176,7 +178,7 @@ export default function ScenariosPage() {
                     </div>
                   </div>
                 </Panel>
-                <Panel title={`Changes (${cur.changes?.length || 0}) — applied in order on top of the base data`}>
+                <Panel title={t("Changes ({n}) — applied in order on top of the base data", { n: cur.changes?.length || 0 })}>
                   <table className="mx-table">
                     <tbody>
                       {(cur.changes || []).map((c) => (
@@ -190,7 +192,7 @@ export default function ScenariosPage() {
                           <td className="whitespace-normal">{c.description}</td>
                           <td className="w-10">
                             {can("scenario:write") && !cur.is_live && (
-                              <Button size="sm" variant="ghost" aria-label="Remove change" onClick={() => removeChange(cur, c.id)}>
+                              <Button size="sm" variant="ghost" aria-label={t("Remove change")} onClick={() => removeChange(cur, c.id)}>
                                 ✕
                               </Button>
                             )}
@@ -199,7 +201,7 @@ export default function ScenariosPage() {
                       ))}
                       {!cur.changes?.length && (
                         <tr>
-                          <td className="text-slate-600">No changes: this scenario plans the current data.</td>
+                          <td className="text-slate-600">{t("No changes: this scenario plans the current data.")}</td>
                         </tr>
                       )}
                     </tbody>
@@ -207,7 +209,7 @@ export default function ScenariosPage() {
                 </Panel>
               </div>
             ) : (
-              <Empty title="No scenarios" />
+              <Empty title={t("No scenarios")} />
             )}
           </div>
         </div>
@@ -231,6 +233,7 @@ export default function ScenariosPage() {
 }
 
 function Compare({ planIds }: { planIds: string[] }) {
+  const { t } = useSession();
   const cmp = useApi<any>(planIds.length >= 2 ? "/analytics/compare" : null, { plan_ids: planIds });
   const option = useMemo(() => {
     if (!cmp.data) return {};
@@ -239,21 +242,21 @@ function Compare({ planIds }: { planIds: string[] }) {
     return {
       legend: { top: 0, left: 0 },
       grid: { left: 40, right: 16, top: 32, bottom: 24, containLabel: true },
-      xAxis: { ...axisCat, data: rows.map((r: any) => `${r.label}${r.unit ? ` (${r.unit})` : ""}`) },
+      xAxis: { ...axisCat, data: rows.map((r: any) => `${t(`kpi.${r.code}`).startsWith("kpi.") ? r.label : t(`kpi.${r.code}`)}${r.unit ? ` (${r.unit})` : ""}`) },
       yAxis: { ...axisVal },
       series: cmp.data.plans.map((p: any, i: number) => ({ name: `${p.scenario_name} · ${p.number}`, type: "bar", barGap: "10%", barMaxWidth: 26, itemStyle: { color: SERIES[i % SERIES.length], borderRadius: [3, 3, 0, 0] }, data: rows.map((r: any) => r.values[i]) })),
       tooltip: { trigger: "axis" },
     };
-  }, [cmp.data]);
-  if (planIds.length < 2) return <Empty title="Select at least two scenarios (checkboxes in the list) to compare their current plans." icon="compare" />;
+  }, [cmp.data, t]);
+  if (planIds.length < 2) return <Empty title={t("Select at least two scenarios (checkboxes in the list) to compare their current plans.")} icon="compare" />;
   if (cmp.error) return <ErrorState error={cmp.error} onRetry={cmp.reload} />;
-  if (!cmp.data) return <Loading label="Comparing plans operation by operation…" />;
+  if (!cmp.data) return <Loading label={t("Comparing plans operation by operation…")} />;
   const d = cmp.data;
   return (
     <div className="flex-1 overflow-auto mx-scroll p-3 space-y-3">
-      <Panel title="KPI comparison (first column is the reference)">
+      <Panel title={t("KPI comparison (first column is the reference)")}>
         <div className="p-2">
-          <Chart option={option} height={240} ariaLabel="KPI comparison bar chart" />
+          <Chart option={option} height={240} ariaLabel={t("KPI comparison bar chart")} />
         </div>
         <table className="mx-table">
           <thead>
@@ -273,7 +276,7 @@ function Compare({ planIds }: { planIds: string[] }) {
               .map((k: any) => (
                 <tr key={k.code}>
                   <td>
-                    {k.label} {k.unit && <span className="text-slate-600">({k.unit})</span>}
+                    {t(`kpi.${k.code}`).startsWith("kpi.") ? k.label : t(`kpi.${k.code}`)} {k.unit && <span className="text-slate-600">({k.unit})</span>}
                   </td>
                   {k.values.map((v: any, i: number) => {
                     const base = k.values[0];
@@ -290,29 +293,29 @@ function Compare({ planIds }: { planIds: string[] }) {
         </table>
       </Panel>
       {d.diffs_vs_first.map((df: any) => (
-        <Panel key={df.plan_id} title={`${df.number} vs ${d.plans[0].number}: ${df.operations_moved} operations moved, ${df.orders_delayed} orders later, ${df.orders_advanced} earlier`}>
+        <Panel key={df.plan_id} title={t("{a} vs {b}: {m} operations moved, {l} orders later, {e} earlier", { a: df.number, b: d.plans[0].number, m: df.operations_moved, l: df.orders_delayed, e: df.orders_advanced })}>
           <div className="p-3 grid grid-cols-4 gap-3 text-[12.5px]">
             <div>
-              Setup change <b className="tabular">{duration(df.setup_delta_minutes)}</b>
+              {t("Setup change:")} <b className="tabular">{duration(df.setup_delta_minutes)}</b>
             </div>
             <div>
-              Overtime change <b className="tabular">{duration(df.overtime_delta_minutes)}</b>
+              {t("Overtime change:")} <b className="tabular">{duration(df.overtime_delta_minutes)}</b>
             </div>
             <div>
-              Sequence changes <b className="tabular">{df.sequence_changes}</b>
+              {t("Sequence changes:")} <b className="tabular">{df.sequence_changes}</b>
             </div>
             <div>
-              Hard violations new/resolved <b className="tabular">{df.new_hard_violation_count}</b> / <b className="tabular">{df.resolved_hard_violation_count}</b>
+              {t("Hard violations new/resolved:")} <b className="tabular">{df.new_hard_violation_count}</b> / <b className="tabular">{df.resolved_hard_violation_count}</b>
             </div>
           </div>
           <table className="mx-table">
             <thead>
               <tr>
-                <th>Order</th>
-                <th>Before</th>
-                <th>After</th>
-                <th className="!text-right">Change</th>
-                <th>Status</th>
+                <th>{t("common.order")}</th>
+                <th>{t("Before")}</th>
+                <th>{t("After")}</th>
+                <th className="!text-right">{t("Change")}</th>
+                <th>{t("common.status")}</th>
               </tr>
             </thead>
             <tbody>
@@ -343,6 +346,7 @@ function Compare({ planIds }: { planIds: string[] }) {
 
 function CloneDialog({ open, onClose, scenarios, onCreated }: { open: boolean; onClose: () => void; scenarios: ScenarioRow[]; onCreated: (s: any) => void }) {
   const toast = useToast();
+  const { t } = useSession();
   const [from, setFrom] = useState("");
   const [name, setName] = useState("");
   const [desc, setDesc] = useState("");
@@ -352,7 +356,7 @@ function CloneDialog({ open, onClose, scenarios, onCreated }: { open: boolean; o
   const save = async () => {
     try {
       const s = await api(`/scenarios/${from}/clone`, { body: { name, description: desc || null } });
-      toast.ok(`Scenario "${s.name}" created`);
+      toast.ok(t("Scenario “{name}” created", { name: s.name }));
       onCreated(s);
       onClose();
     } catch (e) {
@@ -360,15 +364,15 @@ function CloneDialog({ open, onClose, scenarios, onCreated }: { open: boolean; o
     }
   };
   return (
-    <Dialog open={open} onClose={onClose} title="New scenario" footer={<><Button onClick={onClose}>Cancel</Button><Button variant="primary" disabled={!name || !from} onClick={save}>Create</Button></>}>
+    <Dialog open={open} onClose={onClose} title={t("New scenario")} footer={<><Button onClick={onClose}>{t("common.cancel")}</Button><Button variant="primary" disabled={!name || !from} onClick={save}>{t("common.create")}</Button></>}>
       <div className="space-y-3">
-        <Field label="Copy of">
+        <Field label={t("Copy of")}>
           <Select value={from} onChange={setFrom} className="w-full" options={scenarios.map((s) => ({ value: s.id, label: s.name }))} />
         </Field>
-        <Field label="Name">
+        <Field label={t("Name")}>
           <input className="mx-input w-full" value={name} onChange={(e) => setName(e.target.value)} />
         </Field>
-        <Field label="Description">
+        <Field label={t("Description")}>
           <input className="mx-input w-full" value={desc} onChange={(e) => setDesc(e.target.value)} />
         </Field>
       </div>
@@ -377,7 +381,7 @@ function CloneDialog({ open, onClose, scenarios, onCreated }: { open: boolean; o
 }
 
 function WhatIfWizard({ kind, onClose, onCreated }: { kind: string | null; onClose: () => void; onCreated: (s: any) => void }) {
-  const { plant } = useSession();
+  const { plant, t } = useSession();
   const toast = useToast();
   const res = useApi<any>(kind ? "/resources" : null, plant ? { plant_id: plant.id } : undefined);
   const items = useApi<any>(kind === "RUSH_ORDER" ? "/master-data/products" : kind === "MATERIAL_DELAY" ? "/master-data/items" : null, { limit: 2000 });
@@ -421,7 +425,7 @@ function WhatIfWizard({ kind, onClose, onCreated }: { kind: string | null; onClo
     setBusy(true);
     try {
       const s = await api("/scenarios/what-if", { body: { plant_id: plant.id, kind, params: build(), name: p.name || undefined, run: true } });
-      if (s.run_id) toast.ok(`Scenario "${s.name}" created; planning started.`);
+      if (s.run_id) toast.ok(t("Scenario “{name}” created; planning started.", { name: s.name }));
       onCreated(s);
       onClose();
     } catch (e) {
@@ -431,12 +435,12 @@ function WhatIfWizard({ kind, onClose, onCreated }: { kind: string | null; onClo
     }
   };
   return (
-    <Dialog open={!!kind} onClose={onClose} title={`What-if: ${w?.label || ""}`} width={560} footer={<><Button onClick={onClose}>Cancel</Button><Button variant="primary" icon="play" busy={busy} disabled={!ready} title={ready ? undefined : "Fill in the fields of this what-if first"} onClick={create}>Create and plan</Button></>}>
-      <p className="text-slate-600 mb-3">{w?.desc}. A copy of the live scenario is created with this change and planned; compare it with the live plan afterwards.</p>
+    <Dialog open={!!kind} onClose={onClose} title={`${t("What-if")}: ${w ? t(w.label) : ""}`} width={560} footer={<><Button onClick={onClose}>{t("common.cancel")}</Button><Button variant="primary" icon="play" busy={busy} disabled={!ready} title={ready ? undefined : t("Fill in the fields of this what-if first")} onClick={create}>{t("Create and plan")}</Button></>}>
+      <p className="text-slate-600 mb-3">{w ? t(w.desc) : ""}. {t("A copy of the live scenario is created with this change and planned; compare it with the live plan afterwards.")}</p>
       <div className="grid grid-cols-2 gap-3">
         {kind === "NIGHT_SHIFT" && (
           <>
-            <Field label="Machines">
+            <Field label={t("Machines")}>
               <select multiple className="mx-input w-full !h-[120px]" value={p.resource_ids || []} onChange={(e) => set("resource_ids", Array.from(e.target.selectedOptions).map((o) => o.value))}>
                 {machines.map((r: any) => (
                   <option key={r.id} value={r.id}>
@@ -445,11 +449,11 @@ function WhatIfWizard({ kind, onClose, onCreated }: { kind: string | null; onClo
                 ))}
               </select>
             </Field>
-            <Field label="Weekdays">
+            <Field label={t("Weekdays")}>
               <div className="flex flex-wrap gap-2">
-                {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((d, i) => (
+                {WEEKDAYS.map((d, i) => (
                   <label key={d} className="flex gap-1 items-center">
-                    <input type="checkbox" checked={(p.weekdays || [0, 1, 2, 3, 4]).includes(i)} onChange={(e) => set("weekdays", e.target.checked ? [...(p.weekdays || [0, 1, 2, 3, 4]), i] : (p.weekdays || [0, 1, 2, 3, 4]).filter((x: number) => x !== i))} /> {d}
+                    <input type="checkbox" checked={(p.weekdays || [0, 1, 2, 3, 4]).includes(i)} onChange={(e) => set("weekdays", e.target.checked ? [...(p.weekdays || [0, 1, 2, 3, 4]), i] : (p.weekdays || [0, 1, 2, 3, 4]).filter((x: number) => x !== i))} /> {t(d)}
                   </label>
                 ))}
               </div>
@@ -458,65 +462,65 @@ function WhatIfWizard({ kind, onClose, onCreated }: { kind: string | null; onClo
         )}
         {kind === "ADD_MACHINE" && (
           <>
-            <Field label="Same as">
+            <Field label={t("Same as")}>
               <Select value={p.clone_of || ""} onChange={(v) => set("clone_of", v)} className="w-full" options={[{ value: "", label: "—" }, ...machines.map((r: any) => ({ value: r.id, label: r.code }))]} />
             </Field>
-            <Field label="New code">
+            <Field label={t("New code")}>
               <input className="mx-input w-full" value={p.code || ""} onChange={(e) => set("code", e.target.value)} />
             </Field>
-            <Field label="Available from (plant time)">
+            <Field label={t("Available from (plant time)")}>
               <input className="mx-input w-full" type="datetime-local" value={p.from || ""} onChange={(e) => set("from", e.target.value)} />
             </Field>
           </>
         )}
         {kind === "RUSH_ORDER" && (
           <>
-            <Field label="Product">
+            <Field label={t("Product")}>
               <Select value={p.item_code || ""} onChange={(v) => set("item_code", v)} className="w-full" options={[{ value: "", label: "—" }, ...(items.data?.items || []).map((i: any) => ({ value: i.code, label: `${i.code} · ${i.name}` }))]} />
             </Field>
-            <Field label="Quantity">
+            <Field label={t("common.quantity")}>
               <input className="mx-input w-full" type="number" min={1} value={p.quantity || ""} onChange={(e) => set("quantity", e.target.value)} />
             </Field>
-            <Field label="Due (plant time)">
+            <Field label={t("Due (plant time)")}>
               <input className="mx-input w-full" type="datetime-local" value={p.due || ""} onChange={(e) => set("due", e.target.value)} />
             </Field>
           </>
         )}
         {kind === "MATERIAL_DELAY" && (
           <>
-            <Field label="Material">
+            <Field label={t("Material")}>
               <Select value={p.material_id || ""} onChange={(v) => set("material_id", v)} className="w-full" options={[{ value: "", label: "—" }, ...(items.data?.items || []).filter((i: any) => i.make_or_buy === "BUY").map((i: any) => ({ value: i.id, label: i.code }))]} />
             </Field>
-            <Field label="Delay (days)">
+            <Field label={t("Delay (days)")}>
               <input className="mx-input w-full" type="number" min={0.25} step={0.25} value={p.days || ""} onChange={(e) => set("days", e.target.value)} />
             </Field>
           </>
         )}
         {kind === "BREAKDOWN" && (
           <>
-            <Field label="Resource">
+            <Field label={t("common.resource")}>
               <Select value={p.resource_id || ""} onChange={(v) => set("resource_id", v)} className="w-full" options={[{ value: "", label: "—" }, ...machines.map((r: any) => ({ value: r.id, label: r.code }))]} />
             </Field>
             <div />
-            <Field label="From (plant time)">
+            <Field label={t("From (plant time)")}>
               <input className="mx-input w-full" type="datetime-local" value={p.start || ""} onChange={(e) => set("start", e.target.value)} />
             </Field>
-            <Field label="To (plant time)">
+            <Field label={t("To (plant time)")}>
               <input className="mx-input w-full" type="datetime-local" value={p.end || ""} onChange={(e) => set("end", e.target.value)} />
             </Field>
           </>
         )}
         {kind === "ADD_OPERATOR" && (
           <>
-            <Field label="Labour pool / tool">
-              <Select value={p.resource_id || ""} onChange={(v) => set("resource_id", v)} className="w-full" options={[{ value: "", label: "—" }, ...pools.map((r: any) => ({ value: r.id, label: `${r.code} (now ${r.capacity})` }))]} />
+            <Field label={t("Labour pool / tool")}>
+              <Select value={p.resource_id || ""} onChange={(v) => set("resource_id", v)} className="w-full" options={[{ value: "", label: "—" }, ...pools.map((r: any) => ({ value: r.id, label: t("{code} (now {n})", { code: r.code, n: r.capacity }) }))]} />
             </Field>
-            <Field label="New capacity">
+            <Field label={t("New capacity")}>
               <input className="mx-input w-full" type="number" min={1} value={p.capacity || ""} onChange={(e) => set("capacity", e.target.value)} />
             </Field>
           </>
         )}
-        <Field label="Scenario name (optional)">
+        <Field label={t("Scenario name (optional)")}>
           <input className="mx-input w-full" value={p.name || ""} onChange={(e) => set("name", e.target.value)} />
         </Field>
       </div>

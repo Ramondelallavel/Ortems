@@ -4,6 +4,7 @@ import { Badge, Button, Field, Panel, Select, StatusPill, useToast } from "@/com
 import { api, download } from "@/lib/api";
 import { useApi } from "@/lib/hooks";
 import { useSession } from "@/lib/session";
+import { entityLabel } from "@/lib/i18n";
 import { invalidateRefOptions } from "./FieldInput";
 
 export type ImportChoice = { entity: string; label: string };
@@ -15,9 +16,9 @@ export function ImportWizard({ choices, initialEntity, onImported, compact }: { 
   const templates = useApi<any[]>(choices ? null : "/imports/templates");
   const tables = useApi<any[]>(choices ? null : "/imports/tables");
   const options = useMemo(() => {
-    if (choices) return choices.map((c) => ({ value: c.entity, label: c.label }));
-    const a = (templates.data || []).map((x) => ({ value: x.entity, label: `${t("imp.guided")}: ${x.label}` }));
-    const b = (tables.data || []).filter((x) => x.writable).map((x) => ({ value: x.entity, label: `${t("imp.table")}: ${x.label} (${x.table})` }));
+    if (choices) return choices.map((c) => ({ value: c.entity, label: entityLabel(t, c.label) }));
+    const a = (templates.data || []).map((x) => ({ value: x.entity, label: `${t("imp.guided")}: ${entityLabel(t, x.label)}` }));
+    const b = (tables.data || []).filter((x) => x.writable).map((x) => ({ value: x.entity, label: `${t("imp.table")}: ${entityLabel(t, x.label)} (${x.table})` }));
     return [...a, ...b];
   }, [choices, templates.data, tables.data, t]);
   const [step, setStep] = useState(0);
@@ -271,7 +272,7 @@ export function ImportWizard({ choices, initialEntity, onImported, compact }: { 
       {step === 5 && job && (
         <Panel title={`6. ${t("imp.s.report")}`}>
           <div className="p-3 space-y-2 text-[12.5px]">
-            <div className="text-green-600 font-semibold">✓ {t("imp.committed", { what: job.entity_label })}</div>
+            <div className="text-green-600 font-semibold">✓ {t("imp.committed", { what: entityLabel(t, job.entity_label) })}</div>
             <div>
               {t("imp.created")} <b>{job.stats.created ?? 0}</b> · {t("imp.updated")} <b>{job.stats.updated ?? 0}</b>
               {job.stats.unchanged ? (

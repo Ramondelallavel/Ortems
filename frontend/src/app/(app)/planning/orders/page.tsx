@@ -5,6 +5,7 @@ import { api } from "@/lib/api";
 import { date, dt, duration, localInputToIso } from "@/lib/format";
 import { useApi, useQueryParam } from "@/lib/hooks";
 import { useSession } from "@/lib/session";
+import { serverText, unscheduledText } from "@/lib/alerts";
 import { RemoteTable } from "@/components/data/RemoteTable";
 import { SectionData } from "@/components/data/SectionData";
 
@@ -57,7 +58,7 @@ export default function OrdersPage() {
     { key: "lateness_minutes", label: t("Delay"), align: "right", width: 80, render: (r) => (r.lateness_minutes > 0 ? <span className="text-red-600">{duration(r.lateness_minutes)}</span> : "—") },
     { key: "plan_status", label: t("Plan status"), width: 110, render: (r) => <StatusPill status={r.plan_status} /> },
     { key: "material_status", label: t("Material"), width: 100, render: (r) => <StatusPill status={r.material_status} /> },
-    { key: "cause", label: t("Delay cause"), value: (r) => r.cause?.category, render: (r) => (r.cause ? <span title={r.cause.text}>{t(r.cause.category)}</span> : "") },
+    { key: "cause", label: t("Delay cause"), value: (r) => r.cause?.category, render: (r) => (r.cause ? <span title={serverText(t, dt, r.cause, "text")}>{t(r.cause.category)}</span> : "") },
     { key: "status", label: t("ERP status"), width: 90, render: (r) => <StatusPill status={r.status} /> },
   ];
 
@@ -162,7 +163,7 @@ function OrderDetail({ order, planId }: { order: Row; planId: string | null }) {
                   <tr key={u.op_id}>
                     <td className="code">{u.op_id}</td>
                     <td colSpan={3} className="text-red-600 whitespace-normal">
-                      ▲ {u.message}
+                      ▲ {unscheduledText(t, u)}
                     </td>
                   </tr>
                 ))}

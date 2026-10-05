@@ -158,7 +158,7 @@ def lock(s: Session, ctx: Ctx, scenario_id: uuid.UUID, release: bool = False) ->
     sc = get_scenario(s, ctx, scenario_id)
     if release:
         if sc.locked_by and sc.locked_by != ctx.username and not ({"COMPANY_ADMIN", "SUPER_ADMIN"} & ctx.roles):
-            raise Conflict(f"Locked by {sc.locked_by}", code="SCENARIO_LOCKED")
+            raise Conflict(f"Locked by {sc.locked_by}", code="SCENARIO_LOCKED", context={"locked_by": sc.locked_by})
         sc.locked_by = None
         sc.lock_expires_at = None
     else:

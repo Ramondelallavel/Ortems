@@ -2,7 +2,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Badge, Button, Empty, ErrorState, Icon, Kpi, Loading, Panel, StatusPill, statusTone, useToast } from "@/components/ui";
-import { alertHref } from "@/lib/alerts";
+import { alertHref, alertText, serverText } from "@/lib/alerts";
 import { api } from "@/lib/api";
 import { dt, duration, num, pct } from "@/lib/format";
 import { useApi, useEvents } from "@/lib/hooks";
@@ -107,10 +107,10 @@ export default function Dashboard() {
                     <StatusPill status={a.severity} />
                     <button className="flex-1 min-w-0 text-left" onClick={() => go(a)}>
                       <div className="font-semibold truncate">
-                        {a.title}
+                        {alertText(t, dt, a, "title")}
                         {a.count > 1 ? <span className="text-slate-600 font-normal"> ×{a.count}</span> : null}
                       </div>
-                      <div className="text-slate-600 text-[12px] line-clamp-2">{a.message}</div>
+                      <div className="text-slate-600 text-[12px] line-clamp-2">{alertText(t, dt, a, "message")}</div>
                     </button>
                     <span className="text-[11px] text-slate-400 whitespace-nowrap tabular">{a.at ? dt(a.at) : ""}</span>
                     {a.source === "ALERT" && can("alerts:manage") && (
@@ -166,8 +166,8 @@ export default function Dashboard() {
                       <StatusPill status={o.status} />
                     </td>
                     <td className="num">{o.lateness_minutes ? duration(o.lateness_minutes) : "—"}</td>
-                    <td className="text-slate-600 truncate max-w-[140px]" title={o.cause_text}>
-                      {o.cause}
+                    <td className="text-slate-600 truncate max-w-[140px]" title={serverText(t, dt, o, "text", "cause_text")}>
+                      {o.cause ? t(o.cause) : ""}
                     </td>
                   </tr>
                 ))}
@@ -187,10 +187,10 @@ export default function Dashboard() {
                     <td className="num w-6">{b.rank}</td>
                     <td className="code">{b.resource || "—"}</td>
                     <td>
-                      <Badge tone={statusTone(b.kind)}>{b.kind.replaceAll("_", " ").toLowerCase()}</Badge>
+                      <Badge tone={statusTone(b.kind)}>{t(`bn.${b.kind}`)}</Badge>
                     </td>
                     <td className="num">{b.utilization ? pct(b.utilization, 0, true) : ""}</td>
-                    <td className="num text-slate-600" title="Waiting induced on other operations">
+                    <td className="num text-slate-600" title={t("Waiting induced on other operations")}>
                       {b.induced_wait_minutes ? duration(b.induced_wait_minutes) : ""}
                     </td>
                   </tr>
@@ -212,7 +212,7 @@ export default function Dashboard() {
                 {x.today.resources_down?.length > 0 && <div className="text-red-600">▲ {t("dash.down")}: {x.today.resources_down.join(", ")}</div>}
                 {x.today.maintenance_24h?.map((m: any, i: number) => (
                   <div key={i}>
-                    ✕ <span className="code">{m.resource}</span> {m.kind.toLowerCase()} {dt(m.start)}–{dt(m.end, { hour: "2-digit", minute: "2-digit" })} {m.description ? `· ${m.description}` : ""}
+                    ✕ <span className="code">{m.resource}</span> {t(`maint.${m.kind}`)} {dt(m.start)}–{dt(m.end, { hour: "2-digit", minute: "2-digit" })} {m.description ? `· ${m.description}` : ""}
                   </div>
                 ))}
                 {x.material_issues?.length > 0 && (

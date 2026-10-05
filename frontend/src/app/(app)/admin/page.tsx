@@ -19,9 +19,9 @@ export default function AdminPage() {
         value={tab}
         onChange={setTab}
         tabs={[
-          ...(can("admin:users") ? [{ id: "users", label: "Users & roles" }, { id: "keys", label: "API keys" }] : []),
-          ...(can("admin:audit") ? [{ id: "audit", label: "Audit log" }] : []),
-          ...(can("admin:config") ? [{ id: "settings", label: "Plant settings" }, { id: "config", label: "Rules & profiles" }] : []),
+          ...(can("admin:users") ? [{ id: "users", label: t("Users & roles") }, { id: "keys", label: t("API keys") }] : []),
+          ...(can("admin:audit") ? [{ id: "audit", label: t("Audit log") }] : []),
+          ...(can("admin:config") ? [{ id: "settings", label: t("Plant settings") }, { id: "config", label: t("Rules & profiles") }] : []),
         ]}
       />
       <div className="flex-1 min-h-0 overflow-auto mx-scroll p-3">
@@ -40,8 +40,8 @@ export default function AdminPage() {
               ["resources", "Resources", "Machines, lines, tools, labour pools and subcontractors."],
             ].map(([e, l, d]) => (
               <Link key={e} href={`/master-data/${e}`} className="mx-panel p-3 hover:border-navy-600">
-                <div className="font-semibold">{l}</div>
-                <div className="text-[12px] text-slate-600 mt-1">{d}</div>
+                <div className="font-semibold">{t(l)}</div>
+                <div className="text-[12px] text-slate-600 mt-1">{t(d)}</div>
               </Link>
             ))}
           </div>
@@ -53,7 +53,7 @@ export default function AdminPage() {
 
 function Users() {
   const toast = useToast();
-  const { me } = useSession();
+  const { me, t } = useSession();
   const users = useApi<any[]>("/users");
   const roles = useApi<any>("/roles");
   const [edit, setEdit] = useState<any>(null);
@@ -64,7 +64,7 @@ function Users() {
         // a new password ends the user's open sessions and tokens
         if (edit.new_password) await api(`/users/${edit.id}/password`, { body: { new_password: edit.new_password } });
       } else await api("/users", { body: { username: edit.username, email: edit.email, full_name: edit.full_name, password: edit.password, roles: edit.roles, plant_ids: edit.plant_ids || [], locale: edit.locale || "en" } });
-      toast.ok("User saved");
+      toast.ok(t("User saved"));
       setEdit(null);
       users.reload();
     } catch (e) {
@@ -83,30 +83,30 @@ function Users() {
           onRowClick={(r) => setEdit({ ...r })}
           toolbar={
             <Button size="sm" variant="primary" onClick={() => setEdit({ roles: ["PLANNER"], plant_ids: [], is_active: true })}>
-              New user
+              {t("New user")}
             </Button>
           }
           columns={[
-            { key: "username", label: "Username", mono: true },
-            { key: "full_name", label: "Name" },
-            { key: "email", label: "Email" },
-            { key: "roles", label: "Roles", value: (r) => r.roles.join(", ") },
-            { key: "plant_ids", label: "Plants", value: (r) => (r.plant_ids.length ? `${r.plant_ids.length} plants` : "all") },
-            { key: "is_active", label: "Active", render: (r) => (r.is_active ? <Badge tone="ok">active</Badge> : <Badge tone="neutral">inactive</Badge>) },
-            { key: "locked", label: "", render: (r) => (r.locked ? <Badge tone="bad">locked</Badge> : "") },
-            { key: "last_login_at", label: "Last login", render: (r) => dt(r.last_login_at) },
+            { key: "username", label: t("Username"), mono: true },
+            { key: "full_name", label: t("Name") },
+            { key: "email", label: t("Email") },
+            { key: "roles", label: t("Roles"), value: (r) => r.roles.map((c: string) => t(`role.${c}`)).join(", ") },
+            { key: "plant_ids", label: t("Plants"), value: (r) => (r.plant_ids.length ? t("{n} plants", { n: r.plant_ids.length }) : t("all")) },
+            { key: "is_active", label: t("Active"), render: (r) => (r.is_active ? <Badge tone="ok">{t("active")}</Badge> : <Badge tone="neutral">{t("inactive")}</Badge>) },
+            { key: "locked", label: "", render: (r) => (r.locked ? <Badge tone="bad">{t("locked")}</Badge> : "") },
+            { key: "last_login_at", label: t("Last login"), render: (r) => dt(r.last_login_at) },
           ]}
         />
       </div>
-      <Panel title="Roles and permissions">
+      <Panel title={t("Roles and permissions")}>
         <div className="overflow-auto">
           <table className="mx-table">
             <thead>
               <tr>
-                <th>Permission</th>
+                <th>{t("Permission")}</th>
                 {roleCodes.map((c) => (
                   <th key={c} className="!text-center">
-                    {c.replace("_", " ").toLowerCase()}
+                    {t(`role.${c}`)}
                   </th>
                 ))}
               </tr>
@@ -114,7 +114,7 @@ function Users() {
             <tbody>
               {Object.entries(roles.data.permissions).map(([p, label]: any) => (
                 <tr key={p}>
-                  <td title={p}>{label}</td>
+                  <td title={p}>{t(`perm.${p}`) === `perm.${p}` ? label : t(`perm.${p}`)}</td>
                   {roles.data.roles.map((r: any) => (
                     <td key={r.code} className="text-center">
                       {r.permissions.includes(p) ? "✓" : ""}
@@ -126,42 +126,42 @@ function Users() {
           </table>
         </div>
       </Panel>
-      <Dialog open={!!edit} onClose={() => setEdit(null)} title={edit?.id ? `User ${edit.username}` : "New user"} width={560} footer={<><Button onClick={() => setEdit(null)}>Cancel</Button><Button variant="primary" onClick={save}>Save</Button></>}>
+      <Dialog open={!!edit} onClose={() => setEdit(null)} title={edit?.id ? t("User {name}", { name: edit.username }) : t("New user")} width={560} footer={<><Button onClick={() => setEdit(null)}>{t("common.cancel")}</Button><Button variant="primary" onClick={save}>{t("common.save")}</Button></>}>
         {edit && (
           <div className="grid grid-cols-2 gap-3">
-            <Field label="Username">
+            <Field label={t("Username")}>
               <input className="mx-input w-full" disabled={!!edit.id} value={edit.username || ""} onChange={(e) => setEdit({ ...edit, username: e.target.value })} />
             </Field>
-            <Field label="Full name">
+            <Field label={t("Full name")}>
               <input className="mx-input w-full" value={edit.full_name || ""} onChange={(e) => setEdit({ ...edit, full_name: e.target.value })} />
             </Field>
-            <Field label="Email">
+            <Field label={t("Email")}>
               <input className="mx-input w-full" value={edit.email || ""} onChange={(e) => setEdit({ ...edit, email: e.target.value })} />
             </Field>
-            <Field label="Language">
+            <Field label={t("Language")}>
               <Select value={edit.locale || "en"} onChange={(v) => setEdit({ ...edit, locale: v })} className="w-full" options={LOCALES.map((l) => ({ value: l.code, label: l.label }))} />
             </Field>
             {!edit.id ? (
-              <Field label="Initial password" hint="≥ 10 characters, upper and lower case, a digit">
+              <Field label={t("Initial password")} hint={t("≥ 10 characters, upper and lower case, a digit")}>
                 <input className="mx-input w-full" type="password" autoComplete="new-password" value={edit.password || ""} onChange={(e) => setEdit({ ...edit, password: e.target.value })} />
               </Field>
             ) : edit.id !== me?.id ? (
-              <Field label="Set a new password (optional)" hint="Signs the user out everywhere. ≥ 10 characters, upper and lower case, a digit">
+              <Field label={t("Set a new password (optional)")} hint={t("Signs the user out everywhere. ≥ 10 characters, upper and lower case, a digit")}>
                 <input className="mx-input w-full" type="password" autoComplete="new-password" value={edit.new_password || ""} onChange={(e) => setEdit({ ...edit, new_password: e.target.value })} />
               </Field>
             ) : (
-              <div className="text-[12px] text-slate-600 pt-5">Change your own password under My account (your name in the top bar).</div>
+              <div className="text-[12px] text-slate-600 pt-5">{t("Change your own password under My account (your name in the top bar).")}</div>
             )}
-            <Field label="Roles">
+            <Field label={t("Roles")}>
               <div className="flex flex-col gap-1">
                 {roleCodes.map((c) => (
                   <label key={c} className="flex gap-2 items-center">
-                    <input type="checkbox" checked={(edit.roles || []).includes(c)} onChange={(e) => setEdit({ ...edit, roles: e.target.checked ? [...(edit.roles || []), c] : edit.roles.filter((x: string) => x !== c) })} /> {c}
+                    <input type="checkbox" checked={(edit.roles || []).includes(c)} onChange={(e) => setEdit({ ...edit, roles: e.target.checked ? [...(edit.roles || []), c] : edit.roles.filter((x: string) => x !== c) })} /> {t(`role.${c}`)}
                   </label>
                 ))}
               </div>
             </Field>
-            <Field label="Plants" hint="None selected = access to all plants">
+            <Field label={t("Plants")} hint={t("None selected = access to all plants")}>
               <div className="flex flex-col gap-1">
                 {(me?.plants || []).map((p) => (
                   <label key={p.id} className="flex gap-2 items-center">
@@ -173,11 +173,11 @@ function Users() {
             {edit.id && (
               <div className="flex flex-col gap-1 pt-5">
                 <label className="flex gap-2 items-center">
-                  <input type="checkbox" checked={!!edit.is_active} onChange={(e) => setEdit({ ...edit, is_active: e.target.checked })} /> Active
+                  <input type="checkbox" checked={!!edit.is_active} onChange={(e) => setEdit({ ...edit, is_active: e.target.checked })} /> {t("Active")}
                 </label>
                 {edit.locked && (
                   <label className="flex gap-2 items-center">
-                    <input type="checkbox" checked={!!edit.unlock} onChange={(e) => setEdit({ ...edit, unlock: e.target.checked })} /> Unlock (failed logins)
+                    <input type="checkbox" checked={!!edit.unlock} onChange={(e) => setEdit({ ...edit, unlock: e.target.checked })} /> {t("Unlock (failed logins)")}
                   </label>
                 )}
               </div>
@@ -190,6 +190,7 @@ function Users() {
 }
 
 function Keys() {
+  const { t } = useSession();
   const toast = useToast();
   const { confirm, node } = useConfirm();
   const keys = useApi<any[]>("/api-keys");
@@ -207,7 +208,7 @@ function Keys() {
     }
   };
   const revoke = async (k: any) => {
-    const r = await confirm(`Revoke key "${k.name}"?`, { danger: true, body: "Systems using it will be rejected immediately." });
+    const r = await confirm(t("Revoke key “{name}”?", { name: k.name }), { danger: true, body: t("Systems using it will be rejected immediately.") });
     if (!r.ok) return;
     try {
       await api(`/api-keys/${k.id}`, { method: "DELETE" });
@@ -218,21 +219,21 @@ function Keys() {
   };
   return (
     <div className="max-w-4xl space-y-3">
-      <Panel title="API keys (Authorization: Bearer mxk_…) — only a hash is stored" actions={<Button size="sm" variant="primary" onClick={() => setOpen(true)}>New key</Button>}>
+      <Panel title={t("API keys (Authorization: Bearer mxk_…) — only a hash is stored")} actions={<Button size="sm" variant="primary" onClick={() => setOpen(true)}>{t("New key")}</Button>}>
         <table className="mx-table">
           <tbody>
             {(keys.data || []).map((k) => (
               <tr key={k.id}>
                 <td>{k.name}</td>
                 <td className="code">mxk_{k.prefix}_…</td>
-                <td>{k.role_code}</td>
-                <td>{k.is_active ? <Badge tone="ok">active</Badge> : <Badge tone="neutral">revoked</Badge>}</td>
-                <td>last used {dt(k.last_used_at)}</td>
-                <td>{k.expires_at ? `expires ${dt(k.expires_at)}` : "no expiry"}</td>
+                <td>{t(`role.${k.role_code}`)}</td>
+                <td>{k.is_active ? <Badge tone="ok">{t("active")}</Badge> : <Badge tone="neutral">{t("revoked")}</Badge>}</td>
+                <td>{t("last used {when}", { when: dt(k.last_used_at) })}</td>
+                <td>{k.expires_at ? t("expires {when}", { when: dt(k.expires_at) }) : t("no expiry")}</td>
                 <td>
                   {k.is_active && (
                     <Button size="sm" variant="ghost" onClick={() => revoke(k)}>
-                      Revoke
+                      {t("Revoke")}
                     </Button>
                   )}
                 </td>
@@ -241,21 +242,21 @@ function Keys() {
           </tbody>
         </table>
       </Panel>
-      <Dialog open={open} onClose={() => setOpen(false)} title="New API key" footer={<><Button onClick={() => setOpen(false)}>Cancel</Button><Button variant="primary" disabled={!f.name} onClick={create}>Create</Button></>}>
+      <Dialog open={open} onClose={() => setOpen(false)} title={t("New API key")} footer={<><Button onClick={() => setOpen(false)}>{t("common.cancel")}</Button><Button variant="primary" disabled={!f.name} onClick={create}>{t("Create")}</Button></>}>
         <div className="grid grid-cols-3 gap-3">
-          <Field label="Name">
+          <Field label={t("Name")}>
             <input className="mx-input w-full" value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} />
           </Field>
-          <Field label="Role">
-            <Select value={f.role_code} onChange={(v) => setF({ ...f, role_code: v })} className="w-full" options={["INTEGRATION_SERVICE", "VIEWER", "SUPERVISOR", "PLANNER"].map((r) => ({ value: r, label: r }))} />
+          <Field label={t("Role")}>
+            <Select value={f.role_code} onChange={(v) => setF({ ...f, role_code: v })} className="w-full" options={["INTEGRATION_SERVICE", "VIEWER", "SUPERVISOR", "PLANNER"].map((r) => ({ value: r, label: t(`role.${r}`) }))} />
           </Field>
-          <Field label="Expires in (days)">
+          <Field label={t("Expires in (days)")}>
             <input className="mx-input w-full" type="number" min={1} value={f.days} onChange={(e) => setF({ ...f, days: e.target.value })} />
           </Field>
         </div>
       </Dialog>
-      <Dialog open={!!created} onClose={() => setCreated(null)} title="API key created" footer={<Button onClick={() => setCreated(null)}>Done</Button>}>
-        <p className="mb-2">{created?.note}</p>
+      <Dialog open={!!created} onClose={() => setCreated(null)} title={t("API key created")} footer={<Button onClick={() => setCreated(null)}>{t("Done")}</Button>}>
+        <p className="mb-2">{created?.note ? t(created.note) : ""}</p>
         <pre className="code bg-gray-50 border border-gray-200 p-2 select-all break-all whitespace-pre-wrap">{created?.key}</pre>
       </Dialog>
       {node}
@@ -264,6 +265,7 @@ function Keys() {
 }
 
 function Audit() {
+  const { t } = useSession();
   const [typed, setTyped] = useState("");
   const [q, setQ] = useState("");
   const [action, setAction] = useState("");
@@ -277,9 +279,9 @@ function Audit() {
   return (
     <div className="space-y-2">
       <div className="flex gap-2">
-        <input className="mx-input w-[240px]" placeholder="Search label / reason" value={typed} onChange={(e) => setTyped(e.target.value)} aria-label="Search audit" />
-        <Select ariaLabel="Action" value={action} onChange={setAction} options={[{ value: "", label: "All actions" }, ...(actions.data || []).map((a) => ({ value: a, label: a }))]} />
-        {log.data && <span className="self-center text-[11.5px] text-slate-600 tabular">{log.data.total > log.data.items.length ? `${log.data.items.length} most recent of ${log.data.total}` : `${log.data.total} entries`}</span>}
+        <input className="mx-input w-[240px]" placeholder={t("Search label / reason")} value={typed} onChange={(e) => setTyped(e.target.value)} aria-label={t("Search audit")} />
+        <Select ariaLabel={t("Action")} value={action} onChange={setAction} options={[{ value: "", label: t("All actions") }, ...(actions.data || []).map((a) => ({ value: a, label: a }))]} />
+        {log.data && <span className="self-center text-[11.5px] text-slate-600 tabular">{log.data.total > log.data.items.length ? t("{n} most recent of {m}", { n: log.data.items.length, m: log.data.total }) : t("{n} entries", { n: log.data.total })}</span>}
       </div>
       {log.error && <ErrorState error={log.error} />}
       <div className="h-[calc(100vh-240px)] bg-white border border-gray-200">
@@ -292,13 +294,13 @@ function Audit() {
             onRowClick={setOpen}
             exportName="audit-log"
             columns={[
-              { key: "at", label: "When", render: (r) => dt(r.at, { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit", second: "2-digit" }) },
-              { key: "user", label: "User" },
-              { key: "action", label: "Action", mono: true },
-              { key: "entity_type", label: "Entity" },
-              { key: "entity_label", label: "Record" },
-              { key: "reason", label: "Why" },
-              { key: "ip", label: "IP", mono: true },
+              { key: "at", label: t("When"), render: (r) => dt(r.at, { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit", second: "2-digit" }) },
+              { key: "user", label: t("User") },
+              { key: "action", label: t("Action"), mono: true },
+              { key: "entity_type", label: t("Entity") },
+              { key: "entity_label", label: t("Record") },
+              { key: "reason", label: t("Why") },
+              { key: "ip", label: t("IP"), mono: true },
             ]}
           />
         )}
@@ -307,11 +309,11 @@ function Audit() {
         {open && (
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <div className="mx-label">Before</div>
+              <div className="mx-label">{t("Before")}</div>
               <pre className="code text-[11px] bg-gray-50 border border-gray-200 p-2 overflow-auto max-h-[400px]">{JSON.stringify(open.before, null, 1)}</pre>
             </div>
             <div>
-              <div className="mx-label">After</div>
+              <div className="mx-label">{t("After")}</div>
               <pre className="code text-[11px] bg-gray-50 border border-gray-200 p-2 overflow-auto max-h-[400px]">{JSON.stringify(open.after, null, 1)}</pre>
             </div>
           </div>
@@ -322,7 +324,7 @@ function Audit() {
 }
 
 function Settings() {
-  const { plant } = useSession();
+  const { plant, t } = useSession();
   const toast = useToast();
   const st = useApi<any>(plant ? `/plants/${plant.id}/settings` : null);
   const types = useApi<any>("/events/types");
@@ -332,7 +334,7 @@ function Settings() {
   const save = async () => {
     try {
       await api(`/plants/${plant!.id}/settings`, { method: "PUT", body: { auto_reschedule: ar, publish_requires_validation: !!cur.publish_requires_validation } });
-      toast.ok("Settings saved");
+      toast.ok(t("Settings saved"));
       setDraft(null);
       st.reload();
     } catch (e) {
@@ -342,20 +344,20 @@ function Settings() {
   if (!st.data) return st.error ? <ErrorState error={st.error} /> : <Loading />;
   return (
     <div className="max-w-3xl space-y-3">
-      <Panel title={`Publication — ${plant?.code}`}>
+      <Panel title={`${t("Publication")} — ${plant?.code}`}>
         <div className="p-3 space-y-2 text-[12.5px]">
           <label className="flex gap-2 items-start">
             <input type="checkbox" className="mt-0.5" checked={!!cur.publish_requires_validation} onChange={(e) => setDraft({ ...cur, publish_requires_validation: e.target.checked })} />
             <span>
-              Require validation before publishing
-              <span className="block text-slate-600">A plan can only be published after “Validate” has checked it against the current data (otherwise the publication gate lists it as a blocker that needs an explicit override).</span>
+              {t("Require validation before publishing")}
+              <span className="block text-slate-600">{t("A plan can only be published after “Validate” has checked it against the current data (otherwise the publication gate lists it as a blocker that needs an explicit override).")}</span>
             </span>
           </label>
         </div>
       </Panel>
-      <Panel title={`Automatic rescheduling — ${plant?.code}`}>
+      <Panel title={`${t("Automatic rescheduling")} — ${plant?.code}`}>
         <div className="p-3 space-y-3 text-[12.5px]">
-          <p className="text-slate-600">When one of these shop-floor events arrives, MonxuPlan repairs the live plan automatically with the chosen scope (the result is a new plan version, never published automatically). Otherwise the planner gets an alert.</p>
+          <p className="text-slate-600">{t("When one of these shop-floor events arrives, MonxuPlan repairs the live plan automatically with the chosen scope (the result is a new plan version, never published automatically). Otherwise the planner gets an alert.")}</p>
           <div className="grid grid-cols-2 gap-1">
             {(types.data?.inbound || []).map((ev: string) => (
               <label key={ev} className="flex gap-2 items-center code">
@@ -363,18 +365,18 @@ function Settings() {
               </label>
             ))}
           </div>
-          <Field label="Scope">
-            <Select value={ar.scope} onChange={(v) => setDraft({ ...cur, auto_reschedule: { ...ar, scope: v } })} options={["LOCAL", "REGIONAL", "GLOBAL"].map((x) => ({ value: x, label: x.toLowerCase() }))} />
+          <Field label={t("Scope")}>
+            <Select value={ar.scope} onChange={(v) => setDraft({ ...cur, auto_reschedule: { ...ar, scope: v } })} options={["LOCAL", "REGIONAL", "GLOBAL"].map((x) => ({ value: x, label: t(`scope.${x}`) }))} />
           </Field>
         </div>
       </Panel>
       <div className="flex gap-2">
         <Button variant="primary" onClick={save} disabled={!draft}>
-          Save
+          {t("common.save")}
         </Button>
         {draft && (
           <Button variant="ghost" onClick={() => setDraft(null)}>
-            Discard changes
+            {t("Discard changes")}
           </Button>
         )}
       </div>

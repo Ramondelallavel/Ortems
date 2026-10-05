@@ -5,6 +5,7 @@ import { api } from "@/lib/api";
 import { dt } from "@/lib/format";
 import { useApi, useEvents } from "@/lib/hooks";
 import { useSession } from "@/lib/session";
+import { alertText } from "@/lib/alerts";
 
 export default function AlertsPage() {
   const { t, plant, can } = useSession();
@@ -29,8 +30,8 @@ export default function AlertsPage() {
     <div className="flex flex-col h-full min-h-0">
       <PageHeader
         title={t("nav.alerts")}
-        subtitle="Generated from each new plan and from shop-floor events. Severity is never shown by colour alone."
-        actions={<Select ariaLabel="Status" value={status} onChange={setStatus} options={["OPEN", "ACKNOWLEDGED", "RESOLVED", "ALL"].map((s) => ({ value: s, label: s.toLowerCase() }))} />}
+        subtitle={t("Generated from each new plan and from shop-floor events. Severity is never shown by colour alone.")}
+        actions={<Select ariaLabel={t("common.status")} value={status} onChange={setStatus} options={["OPEN", "ACKNOWLEDGED", "RESOLVED", "ALL"].map((s) => ({ value: s, label: s === "ALL" ? t("common.all") : t(`status.${s}`) }))} />}
       />
       <div className="flex-1 min-h-0 bg-white">
         {alerts.error ? (
@@ -44,14 +45,14 @@ export default function AlertsPage() {
             exportName="alerts"
             onRowClick={can("alerts:manage") ? setAck : undefined}
             columns={[
-              { key: "severity", label: "Severity", width: 100, render: (r) => <StatusPill status={r.severity} /> },
-              { key: "type", label: "Type", width: 170 },
-              { key: "title", label: "Title" },
-              { key: "message", label: "Message" },
-              { key: "count", label: "Count", align: "right", width: 60 },
-              { key: "created_at", label: "Created", width: 130, render: (r) => dt(r.created_at) },
-              { key: "status", label: "Status", width: 110, render: (r) => <StatusPill status={r.status} label={r.status.toLowerCase()} /> },
-              { key: "acknowledged_by", label: "By", width: 100 },
+              { key: "severity", label: t("Severity"), width: 100, render: (r) => <StatusPill status={r.severity} /> },
+              { key: "type", label: t("Type"), width: 170 },
+              { key: "title", label: t("Title"), value: (r) => alertText(t, dt, r, "title") },
+              { key: "message", label: t("Message"), value: (r) => alertText(t, dt, r, "message") },
+              { key: "count", label: t("Count"), align: "right", width: 60 },
+              { key: "created_at", label: t("Created"), width: 130, render: (r) => dt(r.created_at) },
+              { key: "status", label: t("common.status"), width: 110, render: (r) => <StatusPill status={r.status} /> },
+              { key: "acknowledged_by", label: t("By"), width: 100 },
             ]}
           />
         )}
@@ -59,19 +60,22 @@ export default function AlertsPage() {
       <Dialog
         open={!!ack}
         onClose={() => setAck(null)}
-        title={ack?.title || ""}
+        title={ack ? alertText(t, dt, ack, "title") : ""}
         footer={
           <>
-            <Button onClick={() => setAck(null)}>Cancel</Button>
-            <Button onClick={() => submit(false)}>Acknowledge</Button>
-            <Button variant="primary" onClick={() => submit(true)}>
-              Resolve
-            </Button>
+            <Button onClick={() => setAck(null)}>{t("common.cancel")}</Button>
+            {ack?.status === "OPEN" && <Button onClick={() => submit(false)}>{t("Acknowledge")}</Button>}
+            {ack?.status !== "RESOLVED" && (
+              <Button variant="primary" onClick={() => submit(true)}>
+                {t("Resolve")}
+              </Button>
+            )}
           </>
         }
       >
-        <p className="mb-2">{ack?.message}</p>
-        <Field label="Note">
+        <p className="mb-2">{ack ? alertText(t, dt, ack, "message") : ""}</p>
+        {ack?.acknowledged_by && <p className="mb-2 text-[12px] text-slate-600">{t("{status} by {who} · {at}", { status: t(`status.${ack.status}`), who: ack.acknowledged_by, at: dt(ack.acknowledged_at) })}{ack.note ? ` — ${ack.note}` : ""}</p>}
+        <Field label={t("Note")}>
           <textarea className="mx-input w-full" rows={3} value={note} onChange={(e) => setNote(e.target.value)} />
         </Field>
       </Dialog>

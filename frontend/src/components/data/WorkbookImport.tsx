@@ -3,6 +3,7 @@ import { Fragment, useState } from "react";
 import { Badge, Button, Field, Panel, StatusPill, useToast } from "@/components/ui";
 import { api, download } from "@/lib/api";
 import { useSession } from "@/lib/session";
+import { entityLabel } from "@/lib/i18n";
 import { invalidateRefOptions } from "./FieldInput";
 import { ErrorTable } from "./ImportWizard";
 
@@ -118,7 +119,7 @@ export function WorkbookImport() {
                 <Fragment key={j.id}>
                   <tr>
                     <td>
-                      <div className="font-medium">{j.entity_label}</div>
+                      <div className="font-medium">{entityLabel(t, j.entity_label)}</div>
                       <div className="code text-[11px] text-slate-500">{j.options?.sheet}</div>
                     </td>
                     <td className="num">{j.stats.rows}</td>

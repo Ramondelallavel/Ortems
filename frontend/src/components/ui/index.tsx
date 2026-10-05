@@ -2,6 +2,7 @@
 // MonxuPlan component library: dense, keyboard friendly, colour never the only status signal.
 import { cloneElement, createContext, isValidElement, useCallback, useContext, useEffect, useId, useMemo, useRef, useState, type ButtonHTMLAttributes, type ReactElement, type ReactNode } from "react";
 import { ApiError } from "@/lib/api";
+import { errorText } from "@/lib/errors";
 import { useSession } from "@/lib/session";
 import { Icon } from "./Icon";
 import { saveBlob } from "@/lib/save";
@@ -153,13 +154,13 @@ export function ErrorState({ error, onRetry }: { error: ApiError | Error | undef
   const { t } = useSession();
   if (!error) return null;
   const e = error as ApiError;
-  if (e.status === 403) return <NoPermission message={e.message} />;
+  if (e.status === 403) return <NoPermission message={errorText(t, e)} />;
   return (
     <div role="alert" className="m-3 p-3 border border-red-600/30 bg-red-100 rounded-[3px] text-[13px]">
       <div className="font-semibold text-red-600 flex items-center gap-1.5">
         <Icon name="alert" /> {e.code === "OFFLINE" ? t("common.offline") : e.code || "Error"}
       </div>
-      <div className="mt-1 text-graphite-800">{e.message}</div>
+      <div className="mt-1 text-graphite-800">{errorText(t, e)}</div>
       {onRetry && (
         <Button size="sm" className="mt-2" icon="refresh" onClick={onRetry}>
           {t("common.retry")}
@@ -398,14 +399,15 @@ export function ToastProvider({ children }: { children: ReactNode }) {
 }
 export function useToast() {
   const push = useContext(ToastCtx);
+  const { t } = useSession();
   return useMemo(
     () => ({
       ok: (s: string) => push("ok", s),
       warn: (s: string) => push("warn", s),
       info: (s: string) => push("info", s),
-      error: (e: unknown) => push("bad", e instanceof Error ? e.message : String(e)),
+      error: (e: unknown) => push("bad", errorText(t, e)),
     }),
-    [push],
+    [push, t],
   );
 }
 

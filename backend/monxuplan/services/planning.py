@@ -1036,14 +1036,14 @@ def publish(s: Session, ctx: Ctx, plan_id: uuid.UUID, reason: str | None = None,
         )
     blockers: list[dict[str, Any]] = []
     if (plant.settings or {}).get("publish_requires_validation") and plan.status != "VALIDATED":
-        blockers.append({"code": "NOT_VALIDATED", "message": "This plant requires plans to be validated against the current data before publication."})
+        blockers.append({"code": "NOT_VALIDATED", "message": "This plant requires plans to be validated against the current data before publication.", "count": None})
     fv = final_validation(s, plan)
     if fv["hard"]:
-        blockers.append({"code": "HARD_VIOLATIONS", "message": f"{len(fv['hard'])} hard constraint violation(s) in the stored schedule.", "details": fv["describe"](fv["hard"])})
+        blockers.append({"code": "HARD_VIOLATIONS", "message": f"{len(fv['hard'])} hard constraint violation(s) in the stored schedule.", "count": len(fv["hard"]), "details": fv["describe"](fv["hard"])})
     if fv["unscheduled"]:
-        blockers.append({"code": "UNSCHEDULED_OPERATIONS", "message": f"{fv['unscheduled']} operation(s) of the plan's orders are not scheduled: the plan is incomplete."})
+        blockers.append({"code": "UNSCHEDULED_OPERATIONS", "message": f"{fv['unscheduled']} operation(s) of the plan's orders are not scheduled: the plan is incomplete.", "count": fv["unscheduled"]})
     if fv["data_critical"]:
-        blockers.append({"code": "CRITICAL_DATA_ISSUES", "message": f"{len(fv['data_critical'])} critical data issue(s) in the plan's input.", "details": fv["describe"](fv["data_critical"])})
+        blockers.append({"code": "CRITICAL_DATA_ISSUES", "message": f"{len(fv['data_critical'])} critical data issue(s) in the plan's input.", "count": len(fv["data_critical"]), "details": fv["describe"](fv["data_critical"])})
     if blockers and not force:
         raise ValidationFailed(
             "The plan cannot be published: " + " ".join(b["message"] for b in blockers) + " Resolve them, or override explicitly with a reason.",

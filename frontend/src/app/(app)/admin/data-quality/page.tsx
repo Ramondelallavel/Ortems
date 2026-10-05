@@ -16,10 +16,10 @@ export default function DataQuality() {
     <div className="flex flex-col h-full min-h-0">
       <PageHeader
         title={t("nav.dataQuality")}
-        subtitle={d ? `checked ${dt(d.checked_at)} · ${d.summary.ok} OK · ${d.summary.warnings} warnings · ${d.summary.errors} errors` : undefined}
+        subtitle={d ? t("checked {when} · {ok} OK · {w} warnings · {e} errors", { when: dt(d.checked_at), ok: d.summary.ok, w: d.summary.warnings, e: d.summary.errors }) : undefined}
         actions={
           <Button icon="refresh" onClick={dq.reload} busy={dq.loading}>
-            Check again
+            {t("Check again")}
           </Button>
         }
       />
@@ -28,7 +28,7 @@ export default function DataQuality() {
         {!d && <Loading />}
         {d?.planning_blocked && (
           <div className="p-2 border border-red-600/40 bg-red-100 text-red-600 rounded-[3px]">
-            ▲ Planning is blocked until the errors below are fixed (a plan built on broken data would not be executable). Planning anyway is possible only as an explicit decision with a reason, recorded on the run and in the audit log.
+            ▲ {t("Planning is blocked until the errors below are fixed (a plan built on broken data would not be executable). Planning anyway is possible only as an explicit decision with a reason, recorded on the run and in the audit log.")}
           </div>
         )}
         {d?.checks.map((c: any) => (
@@ -36,20 +36,20 @@ export default function DataQuality() {
             key={c.code}
             title={
               <span className="flex items-center gap-2">
-                <StatusPill status={c.status === "OK" ? "OK" : c.status === "ERROR" ? "CRITICAL" : "WARNING"} label={c.status === "OK" ? "OK" : c.status.toLowerCase()} />
-                {c.title}
+                <StatusPill status={c.status === "OK" ? "OK" : c.status === "ERROR" ? "CRITICAL" : "WARNING"} label={c.status === "OK" ? "OK" : t(`status.${c.status}`).toLowerCase()} />
+                {t(c.title)}
                 {c.count > 0 && <Badge tone="neutral" glyph={false}>{c.count}</Badge>}
               </span>
             }
             actions={
               c.count > 0 && (
                 <Button size="sm" variant="ghost" onClick={() => setOpen(open === c.code ? null : c.code)}>
-                  {open === c.code ? "Hide" : "Show"}
+                  {open === c.code ? t("Hide") : t("Show")}
                 </Button>
               )
             }
           >
-            {c.count > 0 && <div className="px-3 py-1.5 text-[12px] text-slate-600">{c.hint}</div>}
+            {c.count > 0 && <div className="px-3 py-1.5 text-[12px] text-slate-600">{t(c.hint)}</div>}
             {open === c.code && <Examples check={c} />}
           </Panel>
         ))}
@@ -60,6 +60,7 @@ export default function DataQuality() {
 
 /** Examples of a check: internal identifiers are not shown (codes and numbers identify the records). */
 function Examples({ check }: { check: any }) {
+  const { t } = useSession();
   const rows: Record<string, unknown>[] = check.examples || [];
   const keys = Object.keys(rows[0] || {}).filter((k) => k !== "id" && !k.endsWith("_id"));
   return (
@@ -68,7 +69,7 @@ function Examples({ check }: { check: any }) {
         <thead>
           <tr>
             {keys.map((k) => (
-              <th key={k}>{k.replaceAll("_", " ")}</th>
+              <th key={k}>{t(k.replaceAll("_", " "))}</th>
             ))}
           </tr>
         </thead>
@@ -79,7 +80,7 @@ function Examples({ check }: { check: any }) {
                 const v = e[k];
                 return (
                   <td key={k} className="whitespace-normal">
-                    {typeof v === "boolean" ? (v ? "✓" : "—") : typeof v === "object" && v !== null ? JSON.stringify(v) : String(v ?? "")}
+                    {typeof v === "boolean" ? (v ? "✓" : "—") : typeof v === "object" && v !== null ? JSON.stringify(v) : k === "problem" ? t(String(v)) : String(v ?? "")}
                   </td>
                 );
               })}
@@ -89,7 +90,7 @@ function Examples({ check }: { check: any }) {
       </table>
       {check.count > rows.length && (
         <div className="px-3 py-1.5 text-[11.5px] text-slate-600">
-          {rows.length} of {check.count} shown
+          {t("{n} of {m} shown", { n: rows.length, m: check.count })}
         </div>
       )}
     </>

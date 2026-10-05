@@ -4,6 +4,7 @@ import { Button, ErrorState, Loading, PageHeader, Panel, useToast } from "@/comp
 import { download } from "@/lib/api";
 import { useApi } from "@/lib/hooks";
 import { useSession } from "@/lib/session";
+import { entityLabel } from "@/lib/i18n";
 
 export default function MasterDataIndex() {
   const { t, can, plant } = useSession();
@@ -41,12 +42,12 @@ export default function MasterDataIndex() {
         {!ents.data && <Loading />}
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
           {Object.entries(groups).map(([g, list]) => (
-            <Panel key={g} title={g}>
+            <Panel key={g} title={t(g)}>
               <ul className="py-1">
                 {list.map((e) => (
                   <li key={e.name}>
                     <Link className="block px-3 py-1.5 hover:bg-gray-50 text-[12.5px]" href={`/master-data/${e.name}`}>
-                      {e.label}
+                      {entityLabel(t, e.label)}
                       <span className="text-slate-400 code ml-2">{e.name}</span>
                     </Link>
                   </li>

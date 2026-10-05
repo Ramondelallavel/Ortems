@@ -7,6 +7,20 @@ import { dt, duration, num } from "@/lib/format";
 import { useApi, useQueryParam } from "@/lib/hooks";
 import { useScenarioSelection } from "@/lib/plan";
 import { useSession } from "@/lib/session";
+import { serverText } from "@/lib/alerts";
+
+const KPI_LABEL: Record<string, string> = {
+  otif: "OTIF", utilization: "Utilisation", late_orders: "Late orders", setup_h: "Setup time",
+};
+const SIM_LABEL: Record<string, string> = { late_orders: "Late orders", throughput_units: "Throughput (units)", lead_time_h: "Lead time (h)", wip_orders: "WIP (orders)" };
+
+/** Sensitivity experiments are described from their kind and reference, so the text follows the language. */
+function experimentLabel(e: any, t: (k: string, v?: Record<string, string | number>) => string): string {
+  if (e.kind === "RESOURCE") return t("+8 h/week on {ref}", { ref: e.ref });
+  if (e.kind === "MATERIAL") return t("+10 % supply of {ref}", { ref: e.ref });
+  if (e.kind === "LABOR" || e.kind === "TOOL") return t("+1 unit of {ref}", { ref: e.ref });
+  return e.label;
+}
 
 export default function AnalyticsPage() {
   const { t, plant } = useSession();
@@ -36,15 +50,16 @@ export default function AnalyticsPage() {
     if (!trends.data) return {};
     const pts: any[] = trends.data.points || [];
     const codes = ["otif", "utilization", "late_orders", "setup_h"];
+    const label = (c: string) => t(KPI_LABEL[c] || c);
     return {
       legend: { top: 0, left: 0 },
       grid: { left: 40, right: 16, top: 32, bottom: 24, containLabel: true },
       xAxis: { ...axisCat, data: pts.map((p: any) => p.number.replace("PLAN-", "")) },
       yAxis: { ...axisVal },
       tooltip: { trigger: "axis" },
-      series: codes.map((name, i) => ({ name, type: "line", symbolSize: 8, lineStyle: { width: 2, color: SERIES[i] }, itemStyle: { color: SERIES[i] }, data: pts.map((p: any) => p[name] ?? null) })),
+      series: codes.map((code, i) => ({ name: label(code), type: "line", symbolSize: 8, lineStyle: { width: 2, color: SERIES[i] }, itemStyle: { color: SERIES[i] }, data: pts.map((p: any) => p[code] ?? null) })),
     };
-  }, [trends.data]);
+  }, [trends.data, t]);
 
   const causeOption = useMemo(() => {
     const c = dd.data?.causes;
@@ -52,11 +67,11 @@ export default function AnalyticsPage() {
     return {
       grid: { left: 110, right: 30, top: 8, bottom: 8, containLabel: false },
       xAxis: { ...axisVal, show: false },
-      yAxis: { ...axisCat, type: "category", data: c.map((x: any) => x.category).reverse(), axisLabel: { color: INK.primary } },
-      tooltip: { trigger: "item", formatter: (p: any) => `${p.name}: ${p.value} orders` },
+      yAxis: { ...axisCat, type: "category", data: c.map((x: any) => t(x.category)).reverse(), axisLabel: { color: INK.primary } },
+      tooltip: { trigger: "item", formatter: (p: any) => `${p.name}: ${t("{n} orders", { n: p.value })}` },
       series: [{ type: "bar", barMaxWidth: 16, itemStyle: { color: SERIES[0], borderRadius: [0, 3, 3, 0] }, label: { show: true, position: "right", color: INK.primary }, data: c.map((x: any) => x.orders).reverse() }],
     };
-  }, [dd.data]);
+  }, [dd.data, t]);
 
   const runSim = async () => {
     if (!planId) return;
@@ -85,26 +100,26 @@ export default function AnalyticsPage() {
   const v = k.data?.values || {};
   return (
     <div className="flex flex-col h-full min-h-0">
-      <PageHeader title={t("nav.kpis")} subtitle={k.data ? `${k.data.plan.number} · every figure opens its drill-down` : undefined} />
-      <Tabs value={tab} onChange={setTab} tabs={[{ id: "kpis", label: "KPIs & root cause" }, { id: "trends", label: "Trends" }, { id: "robust", label: "Robustness" }]} />
+      <PageHeader title={t("nav.kpis")} subtitle={k.data ? `${k.data.plan.number} · ${t("every figure opens its drill-down")}` : undefined} />
+      <Tabs value={tab} onChange={setTab} tabs={[{ id: "kpis", label: t("KPIs & root cause") }, { id: "trends", label: t("Trends") }, { id: "robust", label: t("Robustness") }]} />
       <div className="flex-1 overflow-auto mx-scroll p-3 space-y-3">
-        {!planId && <div className="text-slate-600">No plan yet.</div>}
+        {!planId && <div className="text-slate-600">{t("No plan yet.")}</div>}
         <ErrorState error={k.error} onRetry={k.reload} />
         {tab === "kpis" && k.data && (
           <>
             {Object.entries(groups).map(([g, cs]) => (
               <div key={g}>
-                <h2 className="mx-label">{g}</h2>
+                <h2 className="mx-label">{t(g)}</h2>
                 <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
                   {cs.map((c: any) => (
                     <div key={c.code} className={code === c.code ? "ring-2 ring-navy-700 rounded-[3px]" : ""}>
-                      <Kpi label={c.label} value={v[c.code] === null || v[c.code] === undefined ? "—" : num(v[c.code], c.unit === "%" || c.unit === "h" ? 1 : 0)} unit={c.unit} onClick={() => setCode(c.code)} />
+                      <Kpi label={t(c.label)} value={v[c.code] === null || v[c.code] === undefined ? "—" : num(v[c.code], c.unit === "%" || c.unit === "h" ? 1 : 0)} unit={c.unit} onClick={() => setCode(c.code)} />
                     </div>
                   ))}
                 </div>
               </div>
             ))}
-            <Panel title={`Drill-down: ${code}`} id="dd">
+            <Panel title={`${t("Drill-down")}: ${t(KPI_LABEL[code] || code)}`} id="dd">
               {dd.loading && <Loading />}
               {dd.data && (
                 <div className="p-3 grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -113,19 +128,19 @@ export default function AnalyticsPage() {
                       <div className="flex gap-4 text-[12.5px]">
                         {dd.data.levels.map((l: any) => (
                           <span key={l.label}>
-                            {l.label}: <b className="tabular">{l.value}</b>
+                            {t(l.label)}: <b className="tabular">{l.value}</b>
                             {l.share !== undefined && l.share !== null ? ` (${Math.round(l.share * 100)} %)` : ""}
                           </span>
                         ))}
                       </div>
                     )}
-                    {causeOption && <Chart option={causeOption} height={Math.max(120, 28 * dd.data.causes.length)} ariaLabel="Late orders by primary cause" />}
+                    {causeOption && <Chart option={causeOption} height={Math.max(120, 28 * dd.data.causes.length)} ariaLabel={t("Late orders by primary cause")} />}
                     {dd.data.resources?.length > 0 && (
                       <table className="mx-table">
                         <thead>
                           <tr>
-                            <th>Resource</th>
-                            <th className="!text-right">{dd.data.resources[0].orders !== undefined ? "Late orders" : dd.data.resources[0].setup_h !== undefined ? "Setup h" : "Utilisation"}</th>
+                            <th>{t("Resource")}</th>
+                            <th className="!text-right">{t(dd.data.resources[0].orders !== undefined ? "Late orders" : dd.data.resources[0].setup_h !== undefined ? "Setup h" : "Utilisation")}</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -138,18 +153,18 @@ export default function AnalyticsPage() {
                         </tbody>
                       </table>
                     )}
-                    {dd.data.materials?.length > 0 && <div className="text-[12.5px]">Short materials: {dd.data.materials.length}</div>}
-                    {!dd.data.levels && !dd.data.resources && !dd.data.materials && <div className="text-slate-600">Value {dd.data.value ?? "—"}. No further breakdown for this indicator.</div>}
+                    {dd.data.materials?.length > 0 && <div className="text-[12.5px]">{t("Short materials: {n}", { n: dd.data.materials.length })}</div>}
+                    {!dd.data.levels && !dd.data.resources && !dd.data.materials && <div className="text-slate-600">{t("Value {v}. No further breakdown for this indicator.", { v: dd.data.value ?? "—" })}</div>}
                   </div>
                   {dd.data.orders && (
                     <div className="max-h-[360px] overflow-auto mx-scroll">
                       <table className="mx-table">
                         <thead>
                           <tr>
-                            <th>Order</th>
-                            <th>Status</th>
-                            <th className="!text-right">Delay</th>
-                            <th>Root cause</th>
+                            <th>{t("Order")}</th>
+                            <th>{t("Status")}</th>
+                            <th className="!text-right">{t("Delay")}</th>
+                            <th>{t("Root cause")}</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -160,11 +175,11 @@ export default function AnalyticsPage() {
                                 <StatusPill status={o.status} />
                               </td>
                               <td className="num">{o.lateness_minutes ? duration(o.lateness_minutes) : "—"}</td>
-                              <td className="truncate max-w-[280px]" title={o.cause?.text}>
+                              <td className="truncate max-w-[280px]" title={serverText(t, dt, o.cause, "text")}>
                                 <Badge tone="neutral" glyph={false}>
-                                  {o.cause?.category}
+                                  {o.cause?.category ? t(o.cause.category) : ""}
                                 </Badge>{" "}
-                                {o.cause?.text}
+                                {serverText(t, dt, o.cause, "text")}
                               </td>
                             </tr>
                           ))}
@@ -178,22 +193,22 @@ export default function AnalyticsPage() {
           </>
         )}
         {tab === "trends" && (
-          <Panel title="KPI trend across plan versions">
+          <Panel title={t("KPI trend across plan versions")}>
             {trends.error && <ErrorState error={trends.error} />}
-            {!trends.data ? <Loading /> : <div className="p-2"><Chart option={trendOption} height={300} ariaLabel="KPI trends over plan versions" /></div>}
+            {!trends.data ? <Loading /> : <div className="p-2"><Chart option={trendOption} height={300} ariaLabel={t("KPI trends over plan versions")} /></div>}
           </Panel>
         )}
         {tab === "robust" && (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-            <Panel title="Monte Carlo simulation" actions={<Button size="sm" variant="primary" busy={busy === "sim"} onClick={runSim}>Run 30 replications</Button>}>
+            <Panel title={t("Monte Carlo simulation")} actions={<Button size="sm" variant="primary" busy={busy === "sim"} onClick={runSim}>{t("Run 30 replications")}</Button>}>
               <div className="p-3 text-[12.5px] space-y-2">
-                <p className="text-slate-600">Replays the plan&apos;s sequence with random run-time variation (±10 %), supplier delays and breakdowns. Shows how fragile the delivery promises are.</p>
+                <p className="text-slate-600">{t("Replays the plan's sequence with random run-time variation (coefficient of variation 10 %), supplier delays and machine breakdowns. Shows how fragile the delivery promises are.")}</p>
                 {sim && (
                   <>
                     <div className="grid grid-cols-2 gap-2">
                       {["late_orders", "throughput_units", "lead_time_h", "wip_orders"].map((kk) => (
                         <div key={kk} className="mx-panel px-2 py-1">
-                          <div className="text-[11px] text-slate-600">{kk.replaceAll("_", " ")}</div>
+                          <div className="text-[11px] text-slate-600">{t(SIM_LABEL[kk])}</div>
                           <div className="tabular">
                             p10 {num(sim[kk]?.p10, 1)} · p50 {num(sim[kk]?.p50, 1)} · p90 {num(sim[kk]?.p90, 1)}
                           </div>
@@ -203,8 +218,8 @@ export default function AnalyticsPage() {
                     <table className="mx-table">
                       <thead>
                         <tr>
-                          <th>Order</th>
-                          <th>Planned end</th>
+                          <th>{t("Order")}</th>
+                          <th>{t("Planned end")}</th>
                           <th className="!text-right">P(on time)</th>
                         </tr>
                       </thead>
@@ -225,24 +240,24 @@ export default function AnalyticsPage() {
                 )}
               </div>
             </Panel>
-            <Panel title="Sensitivity: where does extra capacity pay off?" actions={<Button size="sm" variant="primary" busy={busy === "sens"} onClick={runSens}>Analyse</Button>}>
+            <Panel title={t("Sensitivity: where does extra capacity pay off?")} actions={<Button size="sm" variant="primary" busy={busy === "sens"} onClick={runSens}>{t("Analyse")}</Button>}>
               <div className="p-3 text-[12.5px] space-y-2">
-                <p className="text-slate-600">Re-plans with +1 shift or +10 % speed on the top bottlenecks and reports the measured effect on late orders.</p>
+                <p className="text-slate-600">{t("Re-plans with an extra 8-hour shift per week on each top bottleneck, one more unit of each limiting labour pool or tool group, and +10 % supply of each limiting material, and reports the measured effect.")}</p>
                 {sens && (
                   <table className="mx-table">
                     <thead>
                       <tr>
-                        <th>Experiment</th>
-                        <th className="!text-right">Added h</th>
-                        <th className="!text-right">Δ late orders</th>
-                        <th className="!text-right">Δ tardiness h</th>
-                        <th className="!text-right">Δ units</th>
+                        <th>{t("Experiment")}</th>
+                        <th className="!text-right">{t("Added h")}</th>
+                        <th className="!text-right">{t("Δ late orders")}</th>
+                        <th className="!text-right">{t("Δ tardiness h")}</th>
+                        <th className="!text-right">{t("Δ units")}</th>
                       </tr>
                     </thead>
                     <tbody>
                       {sens.experiments.map((e: any, i: number) => (
                         <tr key={i}>
-                          <td>{e.label}</td>
+                          <td>{experimentLabel(e, t)}</td>
                           <td className="num">{e.added_hours ?? "—"}</td>
                           <td className={`num ${e.delta_late_orders < 0 ? "text-green-600" : ""}`}>{num(e.delta_late_orders, 0)}</td>
                           <td className="num">{num(e.delta_tardiness_h, 1)}</td>

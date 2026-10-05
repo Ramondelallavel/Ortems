@@ -7,7 +7,8 @@ import { useSession } from "@/lib/session";
 import { SectionData } from "@/components/data/SectionData";
 
 function More({ shown, total }: { shown: number; total: number | undefined }) {
-  return total && total > shown ? <div className="text-slate-600 text-[11.5px]">… {total - shown} more</div> : null;
+  const { t } = useSession();
+  return total && total > shown ? <div className="text-slate-600 text-[11.5px]">… {t("{n} more", { n: total - shown })}</div> : null;
 }
 
 export default function SupervisorPage() {
@@ -21,10 +22,10 @@ export default function SupervisorPage() {
     <div className="flex flex-col h-full min-h-0">
       <PageHeader
         title={t("nav.supervisor")}
-        subtitle={d.data ? `${d.data.plan.number} · ${dt(d.data.at)} · ${d.data.resources.length} resources` : undefined}
+        subtitle={d.data ? `${d.data.plan.number} · ${dt(d.data.at)} · ${t("{n} resources", { n: d.data.resources.length })}` : undefined}
         actions={
           <>
-            <Select ariaLabel="Area" value={area} onChange={setArea} options={[{ value: "", label: "All areas" }, ...(areas.data?.items || []).map((a: any) => ({ value: a.id, label: `${a.code} · ${a.name}` }))]} />
+            <Select ariaLabel={t("Area")} value={area} onChange={setArea} options={[{ value: "", label: t("All areas") }, ...(areas.data?.items || []).map((a: any) => ({ value: a.id, label: `${a.code} · ${a.name}` }))]} />
             <SectionData tables={["actual-production", "order-operations", "downtimes", "maintenance"]} />
           </>
         }
@@ -46,35 +47,35 @@ export default function SupervisorPage() {
                   </header>
                   <div className="p-2.5 text-[12.5px] space-y-1.5">
                     <div>
-                      <span className="text-slate-600">Now: </span>
+                      <span className="text-slate-600">{t("Now:")} </span>
                       {r.now ? (
                         <>
-                          <span className="code">{r.now.op_id}</span> {r.now.operation} · until {time(r.now.end)} <StatusPill status={r.now.status} />
+                          <span className="code">{r.now.op_id}</span> {r.now.operation} · {t("until {when}", { when: time(r.now.end) })} <StatusPill status={r.now.status} />
                         </>
                       ) : (
-                        <span className="text-slate-400">idle</span>
+                        <span className="text-slate-400">{t("idle")}</span>
                       )}
                     </div>
                     {r.next.map((n: any) => (
                       <div key={n.op_id} className="text-slate-600">
-                        Next {time(n.start)} · <span className="code">{n.op_id}</span> · qty {n.quantity}
+                        {t("Next")} {time(n.start)} · <span className="code">{n.op_id}</span> · {t("qty")} {n.quantity}
                       </div>
                     ))}
                     {r.delayed.map((x: any) => (
                       <div key={x.op_id} className="text-red-600">
-                        ▲ <span className="code">{x.op_id}</span> {x.reason}
+                        ▲ <span className="code">{x.op_id}</span> {t(x.reason)}
                       </div>
                     ))}
                     <More shown={r.delayed.length} total={r.delayed_total} />
                     {r.material_issues.map((x: any) => (
                       <div key={x.op_id} className="text-amber-600">
-                        ◆ material risk <span className="code">{x.op_id}</span>
+                        ◆ {t("material risk")} <span className="code">{x.op_id}</span>
                       </div>
                     ))}
                     <More shown={r.material_issues.length} total={r.material_issues_total} />
                     {r.blocked.map((x: any) => (
                       <div key={x.op_id} className="text-red-600">
-                        ✕ blocked order <span className="code">{x.order}</span>
+                        ✕ {t("blocked order")} <span className="code">{x.order}</span>
                       </div>
                     ))}
                     <More shown={r.blocked.length} total={r.blocked_total} />

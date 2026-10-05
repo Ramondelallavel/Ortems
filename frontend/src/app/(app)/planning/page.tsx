@@ -13,6 +13,7 @@ import { dt, num, pct } from "@/lib/format";
 import { useApi, useEvents, useHotkeys, useLocalState } from "@/lib/hooks";
 import { useScenarioSelection } from "@/lib/plan";
 import { useSession } from "@/lib/session";
+import { unscheduledText } from "@/lib/alerts";
 import { SectionData } from "@/components/data/SectionData";
 
 export default function PlanningBoard() {
@@ -133,7 +134,7 @@ export default function PlanningBoard() {
         toast.error(e);
         return;
       }
-      const blockers = ((e.context as any)?.blockers || []) as { code: string; message: string }[];
+      const blockers = ((e.context as any)?.blockers || []) as { code: string; message: string; count?: number | null }[];
       const o = await confirm(t("Override the publication checks for {plan}?", { plan: header.data.number }), {
         danger: true,
         reason: true,
@@ -142,7 +143,7 @@ export default function PlanningBoard() {
             <p>{t("The publication gate refused this plan:")}</p>
             {blockers.map((b) => (
               <p key={b.code} className="text-red-600">
-                ▲ {b.message}
+                ▲ {t(`gate.${b.code}`, { n: b.count ?? "" }) === `gate.${b.code}` ? b.message : t(`gate.${b.code}`, { n: b.count ?? "" })}
               </p>
             ))}
             <p>{t("Publishing anyway records every override and your reason on the plan and in the audit log.")}</p>
@@ -368,7 +369,7 @@ export default function PlanningBoard() {
                         <td className="w-[150px]">
                           <StatusPill status="UNSCHEDULED" label={t(`reason.${u.reason}`).startsWith("reason.") ? u.reason : t(`reason.${u.reason}`)} />
                         </td>
-                        <td className="whitespace-normal">{u.message}</td>
+                        <td className="whitespace-normal">{unscheduledText(t, u)}</td>
                       </tr>
                     ))}
                     {!unscheduled.data?.length && (

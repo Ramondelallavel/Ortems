@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 from ..core.clock import now
 from ..core.errors import NotFound
 from ..models import Alert, Event, Maintenance, Plan, PlanningRun, Plant, ProductionOrder, Resource, Scenario, ScheduledOperation, User
+from .alerts import i18n
 from .context import Ctx
 from .views import _aware, plan_health, plan_summary
 
@@ -74,15 +75,15 @@ def command_center(s: Session, ctx: Ctx, plant_id: uuid.UUID) -> dict[str, Any]:
     for a in s.scalars(select(Alert).where(Alert.plant_id == plant_id, Alert.status == "OPEN").order_by(Alert.created_at.desc()).limit(40)):
         attention.append({"source": "ALERT", "id": str(a.id), "type": a.type, "severity": a.severity, "title": a.title, "message": a.message, "count": a.count, "context": a.context, "at": _aware(a.created_at).isoformat()})
     if last_run is not None and last_run.status == "FAILED":
-        attention.append({"source": "RUN", "id": str(last_run.id), "type": "PLANNING_RUN_FAILED", "severity": "CRITICAL", "title": "Last planning run failed", "message": last_run.error_message or last_run.error_code or "", "at": _aware(last_run.created_at).isoformat()})
+        attention.append({"source": "RUN", "id": str(last_run.id), "type": "PLANNING_RUN_FAILED", "severity": "CRITICAL", "title": "Last planning run failed", "message": last_run.error_message or last_run.error_code or "", "i18n": i18n(("Last planning run failed", {}), ""), "at": _aware(last_run.created_at).isoformat()})
     down = list(s.scalars(select(Resource).where(Resource.plant_id == plant_id, Resource.status.in_(["DOWN", "MAINTENANCE"]))))
     for r in down:
         if not any(x.get("context", {}) and x["context"].get("resource_id") == str(r.id) for x in attention):
-            attention.append({"source": "RESOURCE", "id": str(r.id), "type": "RESOURCE_" + r.status, "severity": "CRITICAL" if r.status == "DOWN" else "WARNING", "title": f"{r.code} is {r.status.lower()}", "message": "Reported by the shop floor. Check the plan impact and reschedule if needed.", "at": None})
+            attention.append({"source": "RESOURCE", "id": str(r.id), "type": "RESOURCE_" + r.status, "severity": "CRITICAL" if r.status == "DOWN" else "WARNING", "title": f"{r.code} is {r.status.lower()}", "message": "Reported by the shop floor. Check the plan impact and reschedule if needed.", "i18n": i18n(("{res} is down" if r.status == "DOWN" else "{res} is in maintenance" if r.status == "MAINTENANCE" else "{res} is {status}", {"res": r.code, "status": r.status.lower()}), ("Reported by the shop floor. Check the plan impact and reschedule if needed.", {})), "at": None})
     if head is not None and published is not None and published.id != head.id:
-        attention.append({"source": "PLAN", "id": str(head.id), "type": "UNPUBLISHED_CHANGES", "severity": "INFO", "title": f"{head.number} is not published", "message": f"The shop floor still works with {published.number}.", "at": _aware(head.created_at).isoformat()})
+        attention.append({"source": "PLAN", "id": str(head.id), "type": "UNPUBLISHED_CHANGES", "severity": "INFO", "title": f"{head.number} is not published", "message": f"The shop floor still works with {published.number}.", "i18n": i18n(("{plan} is not published", {"plan": head.number}), ("The shop floor still works with {plan}.", {"plan": published.number})), "at": _aware(head.created_at).isoformat()})
     if head is None:
-        attention.append({"source": "PLAN", "id": None, "type": "NO_PLAN", "severity": "WARNING", "title": "No plan yet", "message": "Run the planner to create the first plan of this plant.", "at": None})
+        attention.append({"source": "PLAN", "id": None, "type": "NO_PLAN", "severity": "WARNING", "title": "No plan yet", "message": "Run the planner to create the first plan of this plant.", "i18n": i18n(("No plan yet", {}), ("Run the planner to create the first plan of this plant.", {})), "at": None})
     attention.sort(key=lambda a: (sev_rank.get(a["severity"], 3), a.get("at") or ""), reverse=False)
 
     # today on the floor (published plan preferred — that is what is being executed)
@@ -127,7 +128,7 @@ def command_center(s: Session, ctx: Ctx, plant_id: uuid.UUID) -> dict[str, Any]:
         "attention": attention[:30],
         "today": today,
         "changes": changes,
-        "late_orders": [{"order_id": x["order_id"], "number": x["number"], "status": x["status"], "lateness_minutes": x.get("lateness_minutes"), "due": x.get("due"), "cause": (x.get("cause") or {}).get("category"), "cause_text": (x.get("cause") or {}).get("text")} for x in late],
+        "late_orders": [{"order_id": x["order_id"], "number": x["number"], "status": x["status"], "lateness_minutes": x.get("lateness_minutes"), "due": x.get("due"), "cause": (x.get("cause") or {}).get("category"), "cause_text": (x.get("cause") or {}).get("text"), "i18n": (x.get("cause") or {}).get("i18n")} for x in late],
         "bottlenecks": bottlenecks,
         "material_issues": _codes(s, ((head.kpi_details or {}).get("material_shortages", []) if head else [])[:8]),
     }

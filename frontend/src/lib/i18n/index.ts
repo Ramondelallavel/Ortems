@@ -30,3 +30,12 @@ export function translate(locale: string, key: string, vars?: Record<string, str
   if (vars) for (const [k, v] of Object.entries(vars)) s = s.replaceAll(`{${k}}`, String(v));
   return s;
 }
+
+/** Names of data tables sent by the API ("Routing — operations"): each part is translated on its own. */
+export function entityLabel(t: (k: string) => string, label: string | null | undefined): string {
+  if (!label) return "";
+  return label
+    .split(" — ")
+    .map((p) => t(p))
+    .join(" — ");
+}

@@ -96,6 +96,7 @@ export function AccountDialog({ open, onClose }: { open: boolean; onClose: () =>
                 <Select value={plantId} onChange={setPlantId} className="w-full" options={[{ value: "", label: "—" }, ...me.plants.map((p) => ({ value: p.id, label: `${p.code} · ${p.name}` }))]} />
               </Field>
             </div>
+            {lang !== "en" && <p className="text-slate-600">{translate(lang, "acct.serverEnglish")}</p>}
             <Button size="sm" variant="primary" busy={busy === "prefs"} onClick={savePrefs}>
               {t("common.save")}
             </Button>

@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ErrorState, Icon, type Column } from "@/components/ui";
 import { api, ApiError } from "@/lib/api";
+import { useSession } from "@/lib/session";
 
 export type RemotePage<T> = { items: T[]; total: number; [k: string]: any };
 
@@ -22,11 +23,11 @@ export function RemoteTable<T extends Record<string, any>>({
   sortKeys = {},
   initialSort,
   toolbar,
-  emptyText = "No rows",
+  emptyText,
   pageSize = 200,
   onMeta,
   reloadKey,
-  searchPlaceholder = "Search…",
+  searchPlaceholder,
 }: {
   path: string | null;
   query?: Record<string, any>;
@@ -43,6 +44,7 @@ export function RemoteTable<T extends Record<string, any>>({
   reloadKey?: unknown;
   searchPlaceholder?: string;
 }) {
+  const { t } = useSession();
   const [sort, setSort] = useState(initialSort);
   const [typed, setTyped] = useState("");
   const [q, setQ] = useState("");
@@ -139,10 +141,10 @@ export function RemoteTable<T extends Record<string, any>>({
       <div className="flex items-center gap-2 px-2 py-1.5 border-b border-gray-200 bg-white">
         <div className="relative">
           <Icon name="search" size={13} className="absolute left-2 top-[7px] text-slate-400" />
-          <input className="mx-input pl-7 w-[240px]" placeholder={searchPlaceholder} aria-label="Search rows" value={typed} onChange={(e) => setTyped(e.target.value)} />
+          <input className="mx-input pl-7 w-[240px]" placeholder={searchPlaceholder ?? t("Search…")} aria-label={t("Search rows")} value={typed} onChange={(e) => setTyped(e.target.value)} />
         </div>
         <span className="text-[11.5px] text-slate-600 tabular" aria-live="polite">
-          {total === null ? "…" : `${total.toLocaleString()} rows`}
+          {total === null ? "…" : t("{n} rows", { n: total.toLocaleString() })}
         </span>
         <div className="flex-1" />
         {toolbar}
@@ -207,7 +209,7 @@ export function RemoteTable<T extends Record<string, any>>({
             )}
           </tbody>
         </table>
-        {total === 0 && <div className="p-6 text-center text-slate-600">{emptyText}</div>}
+        {total === 0 && <div className="p-6 text-center text-slate-600">{emptyText ?? t("No rows")}</div>}
       </div>
     </div>
   );

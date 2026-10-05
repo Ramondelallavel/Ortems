@@ -293,7 +293,7 @@ def flow_planning(b, rep: Report):
             toast(page, r"published with \d+ override", timeout=60000)
         else:
             toast(page, r"PLAN-.* published", timeout=60000)
-        expect(page.get_by_text(re.compile(r"^\W*PUBLISHED$")).first).to_be_visible(timeout=15000)
+        expect(page.get_by_text(re.compile(r"^\W*Published$")).first).to_be_visible(timeout=15000)
 
     def compare_link():
         page.get_by_role("button", name="Compare").click()
@@ -376,7 +376,7 @@ def flow_scenarios(b, rep: Report):
         dlg.get_by_label("Name").fill(name)
         dlg.get_by_label("Description").fill("created by the e2e flows")
         dlg.get_by_role("button", name="Create").click()
-        toast(page, rf'Scenario "{name}" created')
+        toast(page, rf"Scenario “{re.escape(name)}” created")
         expect(page.get_by_role("button", name=re.compile(re.escape(name)))).to_be_visible()
 
     def plan_it():
@@ -408,7 +408,7 @@ def flow_scenarios(b, rep: Report):
             page.get_by_role("button", name=re.compile(re.escape(n))).click()
             page.get_by_role("button", name="Archive").click()
             dlg = page.get_by_role("dialog")
-            expect(dlg).to_contain_text(f'Archive "{n}')
+            expect(dlg).to_contain_text(f"Archive “{n}”")
             dlg.get_by_role("button", name="Confirm").click()
             expect(page.get_by_role("button", name=re.compile(re.escape(n)))).to_have_count(0, timeout=15000)
 
@@ -815,7 +815,7 @@ def flow_analytics_assistant(b, rep: Report):
 
     def analytics():
         page.goto(BASE + "/analytics")
-        expect(page.get_by_text(re.compile(r"Drill-down: otif"))).to_be_visible(timeout=30000)
+        expect(page.get_by_text(re.compile(r"Drill-down: OTIF"))).to_be_visible(timeout=30000)
         page.get_by_role("tab", name="Trends").click()
         page.wait_for_timeout(800)
         page.get_by_role("tab", name="Robustness").click()

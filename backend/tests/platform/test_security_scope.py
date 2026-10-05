@@ -271,3 +271,27 @@ def test_order_book_and_operator_view_stay_in_the_users_plants(client, plants, r
     assert unfiltered == own < everything
     assert sev_planner.get("/orders", params={"plant_id": qro["id"]}).status_code == 403
     assert sev_planner.get("/operator", params={"plant_id": sev["id"], "resource_id": qro_id}).status_code == 404
+
+
+def test_invalid_routing_examples_name_the_routing(planner, sevilla):
+    """The data-quality page hides internal ids, so an invalid routing must be named by product and version."""
+    from sqlalchemy import select
+
+    from monxuplan.core.db import new_session
+    from monxuplan.models import Item, Routing, RoutingOperation
+    from monxuplan.services.dataquality import run_checks
+
+    me = planner.ok(planner.get("/auth/me"))
+    with new_session(uuid.UUID(me["tenant_id"]), "tests") as s:
+        item = s.scalars(select(Item).where(Item.make_or_buy == "MAKE").order_by(Item.code)).first()
+        r = Routing(item_id=item.id, version_code="DQ-TEST", is_active=False)
+        s.add(r)
+        s.flush()
+        s.add(RoutingOperation(routing_id=r.id, seq=10, code="DQ10", name="No time", run_minutes_per_unit=0, fixed_minutes=0, minutes_per_batch=0))
+        s.flush()
+        res = run_checks(s, uuid.UUID(sevilla["id"]))
+        rid, code = str(r.id), item.code
+        s.rollback()  # nothing is kept
+    chk = next(c for c in res["checks"] if c["code"] == "INVALID_ROUTING")
+    ex = [e for e in chk["examples"] if e["routing_id"] == rid]
+    assert ex == [{"routing_id": rid, "routing": f"{code} vDQ-TEST", "operation": "10", "problem": "operation has no run time"}]

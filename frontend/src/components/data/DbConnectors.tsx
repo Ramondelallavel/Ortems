@@ -5,6 +5,7 @@ import { api } from "@/lib/api";
 import { dt } from "@/lib/format";
 import { useApi } from "@/lib/hooks";
 import { useSession } from "@/lib/session";
+import { entityLabel } from "@/lib/i18n";
 import { invalidateRefOptions } from "./FieldInput";
 
 type Source = { id?: string; entity: string; table?: string; query?: string; mapping?: Record<string, string | null>; mode?: string; date_format?: string; enabled?: boolean; auto_commit?: boolean; skip_invalid_rows?: boolean };
@@ -270,7 +271,7 @@ function SourceEditor({ conn, src, tables, open, onToggle, onChange, onRemove }:
   const [preview, setPreview] = useState<any>(null);
   const [busy, setBusy] = useState(false);
   const entityOptions = useMemo(
-    () => [...(templates.data || []).map((x) => ({ value: x.entity, label: `${t("imp.guided")}: ${x.label}` })), ...(tbls.data || []).filter((x) => x.writable).map((x) => ({ value: x.entity, label: `${t("imp.table")}: ${x.label}` }))],
+    () => [...(templates.data || []).map((x) => ({ value: x.entity, label: `${t("imp.guided")}: ${entityLabel(t, x.label)}` })), ...(tbls.data || []).filter((x) => x.writable).map((x) => ({ value: x.entity, label: `${t("imp.table")}: ${entityLabel(t, x.label)}` }))],
     [templates.data, tbls.data, t],
   );
   const useQuery = typeof src.query === "string";
