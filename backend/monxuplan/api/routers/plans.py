@@ -23,7 +23,7 @@ router = APIRouter(tags=["plans"])
 
 
 @router.get("/plans/{plan_id}")
-def plan(plan_id: uuid.UUID, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def plan(plan_id: uuid.UUID, ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     return views.plan_header(s, ctx, plan_id)
 
 
@@ -37,7 +37,7 @@ def gantt(
     operations: bool = True,
     resources: bool = True,
     ctx: Ctx = Depends(get_ctx),
-    s=Depends(get_db),
+    s=Depends(get_db, scope="function"),
 ):
     """Gantt window: resource rows (calendars, unavailability, load) and the operations inside it.
     Large plans are read window by window: rows once (``operations=false``), then the operations of
@@ -46,18 +46,18 @@ def gantt(
 
 
 @router.get("/plans/{plan_id}/operations/find")
-def find_operations(plan_id: uuid.UUID, q: str, limit: int = Query(20, ge=1, le=200), ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def find_operations(plan_id: uuid.UUID, q: str, limit: int = Query(20, ge=1, le=200), ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     return views.find_operations(s, ctx, plan_id, q, limit)
 
 
 @router.get("/plans/{plan_id}/gantt/blocks")
-def gantt_blocks(plan_id: uuid.UUID, start: datetime, end: datetime, resource_ids: list[str] | None = Query(None), resolution_minutes: int = Query(30, ge=1, le=1440), ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def gantt_blocks(plan_id: uuid.UUID, start: datetime, end: datetime, resource_ids: list[str] | None = Query(None), resolution_minutes: int = Query(30, ge=1, le=1440), ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     """Busy blocks per resource for zoomed-out views of dense plans."""
     return fast_json(views.gantt_blocks(s, ctx, plan_id, start, end, resource_ids, resolution_minutes))
 
 
 @router.get("/plans/{plan_id}/schedule")
-def schedule(plan_id: uuid.UUID, resource_id: str | None = None, order_id: str | None = None, offset: int = 0, limit: int = Query(2000, le=20000), ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def schedule(plan_id: uuid.UUID, resource_id: str | None = None, order_id: str | None = None, offset: int = Query(0, ge=0, le=100_000_000), limit: int = Query(2000, ge=1, le=20000), ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     views._get_plan(s, ctx, plan_id)
     q = select(ScheduledOperation).where(ScheduledOperation.plan_id == plan_id).order_by(ScheduledOperation.resource_key, ScheduledOperation.setup_start)
     if resource_id:
@@ -68,7 +68,7 @@ def schedule(plan_id: uuid.UUID, resource_id: str | None = None, order_id: str |
 
 
 @router.get("/plans/{plan_id}/violations")
-def violations(plan_id: uuid.UUID, hardness: str | None = None, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def violations(plan_id: uuid.UUID, hardness: str | None = None, ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     views._get_plan(s, ctx, plan_id)
     q = select(ConstraintViolation).where(ConstraintViolation.plan_id == plan_id)
     if hardness:
@@ -80,20 +80,20 @@ def violations(plan_id: uuid.UUID, hardness: str | None = None, ctx: Ctx = Depen
 
 
 @router.get("/plans/{plan_id}/unscheduled")
-def unscheduled(plan_id: uuid.UUID, reason: str | None = None, order_id: str | None = None, offset: int = 0, limit: int = Query(5000, ge=1, le=50000), ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def unscheduled(plan_id: uuid.UUID, reason: str | None = None, order_id: str | None = None, offset: int = Query(0, ge=0, le=100_000_000), limit: int = Query(5000, ge=1, le=50000), ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     p = views._get_plan(s, ctx, plan_id)
     return fast_json(plan_store.unscheduled(s, p, reason=reason, order_key=order_id, offset=offset, limit=limit))
 
 
 @router.get("/plans/{plan_id}/orders")
-def plan_orders(plan_id: uuid.UUID, status: str | None = None, sort: str = Query("lateness", pattern="^(lateness|due)$"), offset: int = 0, limit: int = Query(5000, ge=1, le=50000), ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def plan_orders(plan_id: uuid.UUID, status: str | None = None, sort: str = Query("lateness", pattern="^(lateness|due)$"), offset: int = Query(0, ge=0, le=100_000_000), limit: int = Query(5000, ge=1, le=50000), ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     """Order results of a plan, paged (a plan of a large plant holds 100 000+ of them)."""
     p = views._get_plan(s, ctx, plan_id)
     return fast_json(plan_store.order_page(s, p, status.split(",") if status else None, offset, limit, sort))
 
 
 @router.get("/plans/{plan_id}/operations/{op_key:path}/explore")
-def explore(plan_id: uuid.UUID, op_key: str, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def explore(plan_id: uuid.UUID, op_key: str, ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     return views.explore(s, ctx, plan_id, op_key)
 
 
@@ -103,22 +103,22 @@ class CheckIn(BaseModel):
 
 
 @router.post("/plans/{plan_id}/operations/{op_key:path}/check")
-def check(plan_id: uuid.UUID, op_key: str, body: CheckIn, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def check(plan_id: uuid.UUID, op_key: str, body: CheckIn, ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     return views.position_check(s, ctx, plan_id, op_key, body.resource_id, body.start)
 
 
 @router.get("/plans/{plan_id}/operations/{op_key:path}")
-def operation(plan_id: uuid.UUID, op_key: str, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def operation(plan_id: uuid.UUID, op_key: str, ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     return views.operation_detail(s, ctx, plan_id, op_key)
 
 
 @router.get("/plans/{plan_id}/order-detail/{order_key}")
-def order_detail(plan_id: uuid.UUID, order_key: str, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def order_detail(plan_id: uuid.UUID, order_key: str, ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     return views.order_detail(s, ctx, plan_id, order_key)
 
 
 @router.get("/plans/{plan_id}/order-chain/{order_key}")
-def order_chain(plan_id: uuid.UUID, order_key: str, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def order_chain(plan_id: uuid.UUID, order_key: str, ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     return views.order_chain(s, ctx, plan_id, order_key)
 
 
@@ -134,12 +134,12 @@ class MoveIn(BaseModel):
 
 
 @router.post("/plans/{plan_id}/moves/preview")
-def preview(plan_id: uuid.UUID, body: MoveIn, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def preview(plan_id: uuid.UUID, body: MoveIn, ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     return planning_svc.preview_move(s, ctx, plan_id, body.op_id, body.resource_id, body.start, body.replan, body.allow_frozen)
 
 
 @router.post("/plans/{plan_id}/moves")
-def apply_move(plan_id: uuid.UUID, body: MoveIn, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def apply_move(plan_id: uuid.UUID, body: MoveIn, ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     p = planning_svc.apply_move(s, ctx, plan_id, body.op_id, body.resource_id, body.start, body.replan, body.reason, body.allow_frozen, body.expected_version, body.accept_violations)
     return views.plan_summary(p)
 
@@ -150,7 +150,7 @@ class LocksIn(BaseModel):
 
 
 @router.post("/plans/{plan_id}/locks")
-def locks(plan_id: uuid.UUID, body: LocksIn, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def locks(plan_id: uuid.UUID, body: LocksIn, ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     return {"updated": planning_svc.set_locks(s, ctx, plan_id, body.op_ids, body.locked)}
 
 
@@ -160,7 +160,7 @@ class LockSeqIn(BaseModel):
 
 
 @router.post("/plans/{plan_id}/lock-sequence")
-def lock_sequence(plan_id: uuid.UUID, body: LockSeqIn, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def lock_sequence(plan_id: uuid.UUID, body: LockSeqIn, ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     from ...services.scenarios import add_change
 
     p = views._get_plan(s, ctx, plan_id)
@@ -169,7 +169,7 @@ def lock_sequence(plan_id: uuid.UUID, body: LockSeqIn, ctx: Ctx = Depends(get_ct
 
 
 @router.post("/plans/{plan_id}/validate")
-def validate(plan_id: uuid.UUID, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def validate(plan_id: uuid.UUID, ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     return planning_svc.validate_plan(s, ctx, plan_id)
 
 
@@ -179,7 +179,7 @@ class PublishIn(BaseModel):
 
 
 @router.post("/plans/{plan_id}/publish")
-def publish(plan_id: uuid.UUID, body: PublishIn, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def publish(plan_id: uuid.UUID, body: PublishIn, ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     return views.plan_summary(planning_svc.publish(s, ctx, plan_id, body.reason, body.force))
 
 
@@ -188,12 +188,12 @@ class RestoreIn(BaseModel):
 
 
 @router.post("/plans/{plan_id}/restore")
-def restore(plan_id: uuid.UUID, body: RestoreIn, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def restore(plan_id: uuid.UUID, body: RestoreIn, ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     return views.plan_summary(planning_svc.restore(s, ctx, plan_id, body.reason))
 
 
 @router.get("/plans/{plan_id}/export")
-def export(plan_id: uuid.UUID, format: str = Query("xlsx", pattern="^(xlsx|csv|json)$"), sheet: str | None = None, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def export(plan_id: uuid.UUID, format: str = Query("xlsx", pattern="^(xlsx|csv|json)$"), sheet: str | None = None, ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     from ...services.exports import export_plan
 
     ctx.require("integration:export")
@@ -212,7 +212,7 @@ class SimIn(BaseModel):
 
 
 @router.post("/plans/{plan_id}/simulate")
-def simulate(plan_id: uuid.UUID, body: SimIn, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def simulate(plan_id: uuid.UUID, body: SimIn, ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     from monxuplan_engine.simulation import monte_carlo
 
     ctx.require("analytics:read")
@@ -222,7 +222,7 @@ def simulate(plan_id: uuid.UUID, body: SimIn, ctx: Ctx = Depends(get_ctx), s=Dep
 
 
 @router.post("/plans/{plan_id}/sensitivity")
-def sensitivity(plan_id: uuid.UUID, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def sensitivity(plan_id: uuid.UUID, ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     from monxuplan_engine.contract import Bottleneck
     from monxuplan_engine.sensitivity import analyse
 
@@ -235,7 +235,7 @@ def sensitivity(plan_id: uuid.UUID, ctx: Ctx = Depends(get_ctx), s=Depends(get_d
 
 
 @router.get("/plans/{plan_id}/diff/{other_id}")
-def diff(plan_id: uuid.UUID, other_id: uuid.UUID, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def diff(plan_id: uuid.UUID, other_id: uuid.UUID, ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     from monxuplan_engine.diff import compare_solutions
 
     a = views._get_plan(s, ctx, plan_id)

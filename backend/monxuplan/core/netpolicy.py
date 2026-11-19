@@ -82,6 +82,8 @@ def check_host(host: str, port: int, purpose: str) -> Destination:
     names, nets = _allow_list()
     try:
         infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except UnicodeError as exc:  # characters a host name cannot contain (IDNA encoding fails)
+        raise ValidationFailed(f"{purpose}: the host name is not valid.", code="EGRESS_UNRESOLVED") from exc
     except socket.gaierror as exc:
         raise ValidationFailed(f"{purpose}: the host {host} could not be resolved.", code="EGRESS_UNRESOLVED") from exc
     addrs = []

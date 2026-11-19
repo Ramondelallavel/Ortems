@@ -25,14 +25,14 @@ router = APIRouter(tags=["admin"])
 
 # ------------------------------------------------------------------ command center
 @router.get("/plants")
-def plants(ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def plants(ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     from ...services.overview import plants_overview
 
     return plants_overview(s, ctx)
 
 
 @router.get("/dashboard")
-def dashboard(plant_id: uuid.UUID, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def dashboard(plant_id: uuid.UUID, ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     from ...services.overview import command_center
 
     return command_center(s, ctx, plant_id)
@@ -40,7 +40,7 @@ def dashboard(plant_id: uuid.UUID, ctx: Ctx = Depends(get_ctx), s=Depends(get_db
 
 # ------------------------------------------------------------------ alerts
 @router.get("/alerts")
-def alerts(plant_id: uuid.UUID, status: str = Query("OPEN", pattern="^(OPEN|ACKNOWLEDGED|RESOLVED|ALL)$"), limit: int = Query(200, le=1000), ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def alerts(plant_id: uuid.UUID, status: str = Query("OPEN", pattern="^(OPEN|ACKNOWLEDGED|RESOLVED|ALL)$"), limit: int = Query(200, ge=1, le=1000), ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     ctx.require("plan:read")
     ctx.require_plant(plant_id)
     q = select(Alert).where(Alert.plant_id == plant_id).order_by(Alert.created_at.desc()).limit(limit)
@@ -58,7 +58,7 @@ class AckIn(BaseModel):
 
 
 @router.post("/alerts/{alert_id}/acknowledge")
-def acknowledge(alert_id: uuid.UUID, body: AckIn, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def acknowledge(alert_id: uuid.UUID, body: AckIn, ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     from ...services.alerts import acknowledge as ack
 
     return row_dict(ack(s, ctx, alert_id, body.note, body.resolve))
@@ -66,7 +66,7 @@ def acknowledge(alert_id: uuid.UUID, body: AckIn, ctx: Ctx = Depends(get_ctx), s
 
 # ------------------------------------------------------------------ data quality
 @router.get("/data-quality")
-def data_quality(plant_id: uuid.UUID, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def data_quality(plant_id: uuid.UUID, ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     from ...services.dataquality import run_checks
 
     ctx.require("masterdata:read")
@@ -83,7 +83,7 @@ class AskIn(BaseModel):
 
 
 @router.post("/assistant/ask")
-def ask(body: AskIn, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def ask(body: AskIn, ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     from ...services.assistant import ask as _ask
 
     return _ask(s, ctx, body.question, body.plant_id, body.plan_id, body.history)
@@ -99,7 +99,7 @@ def assistant_status(ctx: Ctx = Depends(get_ctx)):
 
 # ------------------------------------------------------------------ users & roles
 @router.get("/roles")
-def roles(ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def roles(ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     ctx.require("admin:users")
     return {"permissions": PERMISSIONS, "roles": [row_dict(r) for r in s.scalars(select(Role).order_by(Role.code))]}
 
@@ -114,7 +114,7 @@ def _user_out(s, u: User) -> dict[str, Any]:
 
 
 @router.get("/users")
-def users(ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def users(ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     ctx.require("admin:users")
     return [_user_out(s, u) for u in s.scalars(select(User).order_by(User.username))]
 
@@ -175,7 +175,7 @@ def _set_roles(s, ctx: Ctx, u: User, roles: list[str], plant_ids: list[uuid.UUID
 
 
 @router.post("/users", status_code=201)
-def create_user(body: UserIn, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def create_user(body: UserIn, ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     from ...services.auth import create_user as _create
 
     ctx.require("admin:users")
@@ -199,7 +199,7 @@ class UserPatch(BaseModel):
 
 
 @router.patch("/users/{user_id}")
-def update_user(user_id: uuid.UUID, body: UserPatch, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def update_user(user_id: uuid.UUID, body: UserPatch, ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     ctx.require("admin:users")
     u = s.get(User, user_id)
     if u is None:
@@ -240,7 +240,7 @@ class PasswordReset(BaseModel):
 
 
 @router.post("/users/{user_id}/password")
-def reset_password(user_id: uuid.UUID, body: PasswordReset, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def reset_password(user_id: uuid.UUID, body: PasswordReset, ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     from ...services.auth import change_password
 
     ctx.require("admin:users")
@@ -254,7 +254,7 @@ def reset_password(user_id: uuid.UUID, body: PasswordReset, ctx: Ctx = Depends(g
 
 # ------------------------------------------------------------------ API keys
 @router.get("/api-keys")
-def api_keys(ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def api_keys(ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     ctx.require("admin:users")
     return [row_dict(k) for k in s.scalars(select(ApiKey).order_by(ApiKey.created_at.desc()))]
 
@@ -266,7 +266,7 @@ class ApiKeyIn(BaseModel):
 
 
 @router.post("/api-keys", status_code=201)
-def create_api_key(body: ApiKeyIn, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def create_api_key(body: ApiKeyIn, ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     from ...services.auth import create_api_key as _create
 
     ctx.require("admin:users")
@@ -280,7 +280,7 @@ def create_api_key(body: ApiKeyIn, ctx: Ctx = Depends(get_ctx), s=Depends(get_db
 
 
 @router.delete("/api-keys/{key_id}")
-def revoke_api_key(key_id: uuid.UUID, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def revoke_api_key(key_id: uuid.UUID, ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     ctx.require("admin:users")
     ak = s.get(ApiKey, key_id)
     if ak is None:
@@ -300,10 +300,10 @@ def audit_log(
     q: str | None = None,
     date_from: datetime | None = None,
     date_to: datetime | None = None,
-    offset: int = Query(0, ge=0),
+    offset: int = Query(0, ge=0, le=100_000_000),
     limit: int = Query(100, ge=1, le=1000),
     ctx: Ctx = Depends(get_ctx),
-    s=Depends(get_db),
+    s=Depends(get_db, scope="function"),
 ):
     ctx.require("admin:audit")
     stmt = select(AuditLog)
@@ -331,7 +331,7 @@ def audit_log(
 
 
 @router.get("/audit/actions")
-def audit_actions(ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def audit_actions(ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     """The action codes present in this tenant's audit log (filter values of the audit screen)."""
     ctx.require("admin:audit")
     return sorted(a for a in s.scalars(select(AuditLog.action).distinct()) if a)
@@ -347,13 +347,13 @@ class ViewIn(BaseModel):
 
 
 @router.get("/views")
-def views(page: str, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def views(page: str, ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     rows = s.scalars(select(SavedView).where(SavedView.page == page, or_(SavedView.owner == ctx.username, SavedView.is_shared.is_(True))).order_by(SavedView.name))
     return [row_dict(v) for v in rows]
 
 
 @router.post("/views", status_code=201)
-def create_view(body: ViewIn, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def create_view(body: ViewIn, ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     v = SavedView(tenant_id=ctx.tenant_id, owner=ctx.username, **body.model_dump())
     s.add(v)
     s.flush()
@@ -361,7 +361,7 @@ def create_view(body: ViewIn, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
 
 
 @router.delete("/views/{view_id}")
-def delete_view(view_id: uuid.UUID, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def delete_view(view_id: uuid.UUID, ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     v = s.get(SavedView, view_id)
     if v is None:
         raise NotFound("View not found")
@@ -376,7 +376,7 @@ SETTINGS_KEYS = {"auto_reschedule", "default_profile", "units", "shift_handover_
 
 
 @router.get("/plants/{plant_id}/settings")
-def plant_settings(plant_id: uuid.UUID, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def plant_settings(plant_id: uuid.UUID, ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     ctx.require("plan:read")
     ctx.require_plant(plant_id)
     p = s.get(Plant, plant_id)
@@ -386,7 +386,7 @@ def plant_settings(plant_id: uuid.UUID, ctx: Ctx = Depends(get_ctx), s=Depends(g
 
 
 @router.put("/plants/{plant_id}/settings")
-def update_plant_settings(plant_id: uuid.UUID, body: dict[str, Any], ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def update_plant_settings(plant_id: uuid.UUID, body: dict[str, Any], ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     from ...services.events_in import EVENT_TYPES
 
     ctx.require("admin:config")

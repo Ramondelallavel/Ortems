@@ -60,7 +60,7 @@ def create_scenario(s: Session, ctx: Ctx, plant_id: uuid.UUID, name: str, descri
     if not name.strip():
         raise ValidationFailed("Scenario name is required")
     if s.scalar(select(Scenario).where(Scenario.plant_id == plant_id, Scenario.name == name)):
-        raise Conflict(f"A scenario named '{name}' already exists", code="DUPLICATE_SCENARIO")
+        raise Conflict(f"A scenario named '{name}' already exists", code="DUPLICATE_SCENARIO", context={"name": name})
     src = get_scenario(s, ctx, clone_from) if clone_from else None
     cfg = dict(src.config if src else DEFAULT_CONFIG)
     if config:

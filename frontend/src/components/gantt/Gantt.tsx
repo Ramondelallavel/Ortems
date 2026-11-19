@@ -150,7 +150,7 @@ export const Gantt = forwardRef<GanttHandle, {
       out.push({ type: "res", res: r });
     }
     return out;
-  }, [data.resources]);
+  }, [data.resources, t]);
   const rowY = useMemo(() => {
     const ys: number[] = [];
     let y = 0;

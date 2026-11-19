@@ -6,8 +6,8 @@ import uuid
 from datetime import date
 from typing import Any
 
-from fastapi import APIRouter, Depends
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Depends, Query
+from pydantic import BaseModel, ConfigDict, Field
 
 from monxuplan_engine.contract import Problem
 from monxuplan_engine.objectives import PRESETS
@@ -38,14 +38,14 @@ class RunIn(BaseModel):
 
 
 @router.post("/planning/run", status_code=202)
-def run(body: RunIn, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def run(body: RunIn, ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     params = {k: v for k, v in body.model_dump().items() if k not in ("scenario_id", "mode") and v is not None}
     r = planning_svc.enqueue_run(s, ctx, body.scenario_id, body.mode, params)
     return {"run_id": str(r.id), "status": r.status, "steps": PIPELINE_STEPS}
 
 
 @router.get("/planning/runs/{run_id}")
-def get_run(run_id: uuid.UUID, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def get_run(run_id: uuid.UUID, ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     ctx.require("plan:read")
     r = s.get(PlanningRun, run_id)
     if r is None:
@@ -58,7 +58,7 @@ def get_run(run_id: uuid.UUID, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
 
 
 @router.get("/planning/runs")
-def list_runs(scenario_id: uuid.UUID, limit: int = 20, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def list_runs(scenario_id: uuid.UUID, limit: int = Query(20, ge=1, le=200), ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     from sqlalchemy import select
 
     ctx.require("plan:read")
@@ -68,7 +68,7 @@ def list_runs(scenario_id: uuid.UUID, limit: int = 20, ctx: Ctx = Depends(get_ct
 
 
 @router.post("/planning/runs/{run_id}/cancel")
-def cancel(run_id: uuid.UUID, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def cancel(run_id: uuid.UUID, ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     return row_dict(planning_svc.cancel_run(s, ctx, run_id))
 
 
@@ -77,7 +77,7 @@ class FeasIn(BaseModel):
 
 
 @router.post("/planning/feasibility")
-def feasibility(body: FeasIn, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def feasibility(body: FeasIn, ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     from monxuplan_engine.compile import compile_problem
     from monxuplan_engine.feasibility import check
 
@@ -118,22 +118,32 @@ class MpsIn(BaseModel):
 
 
 @router.post("/planning/mrp")
-def mrp(body: MpsIn, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def mrp(body: MpsIn, ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     from ...services.mps import run_mps
 
     return run_mps(s, ctx, body.plant_id, body.weeks, body.start)
 
 
+class PlannedOrderIn(BaseModel):
+    """One MRP proposal to firm (the planned-order rows of `POST /planning/mrp`; other fields are ignored)."""
+
+    model_config = ConfigDict(extra="ignore")
+    item_id: uuid.UUID
+    quantity: float = Field(gt=0, allow_inf_nan=False, le=1e12)
+    due_date: date
+    release_date: date | None = None
+
+
 class FirmIn(BaseModel):
     plant_id: uuid.UUID
-    planned_orders: list[dict[str, Any]]
+    planned_orders: list[PlannedOrderIn] = Field(max_length=5000)
 
 
 @router.post("/planning/mrp/firm")
-def firm(body: FirmIn, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def firm(body: FirmIn, ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     from ...services.mps import firm_planned_orders
 
-    return firm_planned_orders(s, ctx, body.plant_id, body.planned_orders)
+    return firm_planned_orders(s, ctx, body.plant_id, [p.model_dump(mode="json") for p in body.planned_orders])
 
 
 class AggIn(BaseModel):
@@ -143,7 +153,7 @@ class AggIn(BaseModel):
 
 
 @router.post("/planning/aggregate")
-def aggregate(body: AggIn, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def aggregate(body: AggIn, ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     from ...services.mps import aggregate_plan
 
     return aggregate_plan(s, ctx, body.plant_id, body.weeks, body.integer)

@@ -513,6 +513,10 @@ const en = {
   "err.RATE_LIMITED": "Too many requests. Please wait a moment.",
   "err.PAYLOAD_TOO_LARGE": "The file or request is too large.",
   "acct.serverEnglish": "The planning engine's detailed explanations (why an operation is where it is, constraint checks, order chains) and some server messages are shown in English.",
+  "err.INTEGRITY_ERROR": "The change conflicts with existing data: a record with the same name or code exists, or a reference is invalid.",
+  "err.VALUE_NOT_ALLOWED": "A value is out of range or contains characters that cannot be stored.",
+  "err.DUPLICATE_SCENARIO": "A scenario named “{name}” already exists.",
+  "err.INVALID_SCENARIO_CHANGE": "A change of this scenario cannot be applied: {detail}. Remove or correct it.",
 };
 export default en;
 export type Dict = Record<keyof typeof en, string>;

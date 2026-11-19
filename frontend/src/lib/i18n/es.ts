@@ -506,5 +506,9 @@ const es: Dict = {
   "err.RATE_LIMITED": "Demasiadas solicitudes. Espera un momento.",
   "err.PAYLOAD_TOO_LARGE": "El fichero o la solicitud es demasiado grande.",
   "acct.serverEnglish": "Las explicaciones detalladas del motor de planificación (por qué una operación está donde está, comprobaciones de restricciones, cadenas de órdenes) y algunos mensajes del servidor se muestran en inglés.",
+  "err.INTEGRITY_ERROR": "El cambio entra en conflicto con datos existentes: ya hay un registro con el mismo nombre o código, o una referencia no es válida.",
+  "err.VALUE_NOT_ALLOWED": "Un valor está fuera de rango o contiene caracteres que no se pueden guardar.",
+  "err.DUPLICATE_SCENARIO": "Ya existe un escenario llamado «{name}».",
+  "err.INVALID_SCENARIO_CHANGE": "Un cambio de este escenario no se puede aplicar: {detail}. Elimínalo o corrígelo.",
 };
 export default es;

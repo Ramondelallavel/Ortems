@@ -68,6 +68,9 @@ def get_ctx(request: Request) -> Ctx:
 
 
 def get_db(ctx: Ctx = Depends(get_ctx)) -> Iterator[Session]:
+    """One session per request. Routes declare it with ``Depends(get_db, scope="function")``: the commit
+    below then runs *before* the response is sent, so a failing commit (a constraint, an audit row…)
+    reaches the client as an error instead of a success whose change was rolled back."""
     s = new_session(ctx.tenant_id, ctx.username)
     try:
         yield s

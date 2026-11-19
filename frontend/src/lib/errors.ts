@@ -14,6 +14,8 @@ export function errorText(t: T, e: unknown): string {
     vars.permission = label === `perm.${c.permission}` ? c.permission : label;
   }
   if (typeof c.locked_by === "string") vars.who = c.locked_by;
+  if (typeof c.name === "string") vars.name = c.name;
+  if (typeof c.detail === "string") vars.detail = c.detail;
   if (Array.isArray(c.problems)) vars.problems = c.problems.map((p) => t(String(p))).join(", ");
   const key = `err.${e.code}`;
   const tr = t(key, vars);

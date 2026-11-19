@@ -67,7 +67,7 @@ def logout(response: Response):
 
 
 @router.get("/auth/me")
-def me(ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def me(ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     user = s.get(User, ctx.user_id) if ctx.user_id else None
     return _me(s, user, ctx)
 
@@ -78,7 +78,7 @@ class PasswordIn(BaseModel):
 
 
 @router.post("/auth/password")
-def change_password(body: PasswordIn, response: Response, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def change_password(body: PasswordIn, response: Response, ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     """Changes the caller's password. Every other session and token of the user ends; this browser
     receives a fresh session."""
     if ctx.user_id is None:
@@ -96,7 +96,7 @@ class MeIn(BaseModel):
 
 
 @router.patch("/auth/me")
-def update_me(body: MeIn, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def update_me(body: MeIn, ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     """The caller's own preferences: language and default plant."""
     user = s.get(User, ctx.user_id) if ctx.user_id else None
     if user is None:
@@ -110,7 +110,7 @@ def update_me(body: MeIn, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
 
 
 @router.post("/auth/logout-everywhere")
-def logout_everywhere(response: Response, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def logout_everywhere(response: Response, ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     """Ends every session and bearer token of the caller, on every device."""
     user = s.get(User, ctx.user_id) if ctx.user_id else None
     if user is None:

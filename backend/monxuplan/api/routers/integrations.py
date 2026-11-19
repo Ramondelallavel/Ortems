@@ -68,7 +68,7 @@ class BatchIn(BaseModel):
 
 
 @router.post("/imports/workbook", status_code=201)
-async def upload_workbook(file: UploadFile = File(...), plant_id: uuid.UUID | None = Form(None), ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+async def upload_workbook(file: UploadFile = File(...), plant_id: uuid.UUID | None = Form(None), ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     data = await file.read()
     if len(data) > get_settings().max_upload_mb * 1024 * 1024:
         raise ValidationFailed("File too large", code="PAYLOAD_TOO_LARGE")
@@ -76,12 +76,12 @@ async def upload_workbook(file: UploadFile = File(...), plant_id: uuid.UUID | No
 
 
 @router.post("/imports/batch/validate")
-def validate_batch(body: BatchIn, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def validate_batch(body: BatchIn, ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     return imports.validate_batch(s, ctx, body.job_ids, body.options)
 
 
 @router.post("/imports/batch/commit")
-def commit_batch(body: BatchIn, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def commit_batch(body: BatchIn, ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     return imports.commit_batch(s, ctx, body.job_ids, body.options)
 
 
@@ -98,7 +98,7 @@ async def upload(
     plant_id: uuid.UUID | None = Form(None),
     sheet: str | None = Form(None),
     ctx: Ctx = Depends(get_ctx),
-    s=Depends(get_db),
+    s=Depends(get_db, scope="function"),
 ):
     data = await file.read()
     if len(data) > get_settings().max_upload_mb * 1024 * 1024:
@@ -110,12 +110,12 @@ async def upload(
 
 
 @router.get("/imports")
-def list_imports(limit: int = Query(50, le=200), ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def list_imports(limit: int = Query(50, ge=1, le=200), ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     return imports.list_jobs(s, ctx, limit)
 
 
 @router.get("/imports/{job_id}")
-def get_import(job_id: uuid.UUID, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def get_import(job_id: uuid.UUID, ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     return imports.get_job(s, ctx, job_id)
 
 
@@ -125,7 +125,7 @@ class MappingIn(BaseModel):
 
 
 @router.put("/imports/{job_id}/mapping")
-def set_mapping(job_id: uuid.UUID, body: MappingIn, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def set_mapping(job_id: uuid.UUID, body: MappingIn, ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     opts = body.options or {}
     if "mode" in opts and opts["mode"] not in ("UPSERT", "CREATE_ONLY", "UPDATE_ONLY"):
         raise ValidationFailed("mode must be UPSERT, CREATE_ONLY or UPDATE_ONLY")
@@ -135,12 +135,12 @@ def set_mapping(job_id: uuid.UUID, body: MappingIn, ctx: Ctx = Depends(get_ctx),
 
 
 @router.post("/imports/{job_id}/validate")
-def validate(job_id: uuid.UUID, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def validate(job_id: uuid.UUID, ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     return imports.validate(s, ctx, job_id)
 
 
 @router.post("/imports/{job_id}/commit")
-def commit(job_id: uuid.UUID, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def commit(job_id: uuid.UUID, ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     out = imports.commit(s, ctx, job_id)
     from ...services.webhooks import emit
 
@@ -150,7 +150,7 @@ def commit(job_id: uuid.UUID, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
 
 # ------------------------------------------------------------------ exports
 @router.get("/exports/workbook")
-def export_workbook(plant_id: uuid.UUID | None = None, entities: list[str] | None = Query(None), ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def export_workbook(plant_id: uuid.UUID | None = None, entities: list[str] | None = Query(None), ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     """Whole data set as one Excel workbook (one sheet per table), to edit and import back."""
     from ...services.exports import export_workbook as ex
 
@@ -159,7 +159,7 @@ def export_workbook(plant_id: uuid.UUID | None = None, entities: list[str] | Non
 
 
 @router.get("/exports/{entity}")
-def export_entity(entity: str, format: str = Query("csv", pattern="^(xlsx|csv|json)$"), plant_id: uuid.UUID | None = None, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def export_entity(entity: str, format: str = Query("csv", pattern="^(xlsx|csv|json)$"), plant_id: uuid.UUID | None = None, ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     from ...services.exports import export_entity as ex
 
     ctx.require("integration:export")
@@ -176,14 +176,14 @@ class EventIn(BaseModel):
 
 
 @router.post("/events", status_code=202)
-def post_event(body: EventIn, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def post_event(body: EventIn, ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     from ...services.events_in import ingest
 
     return ingest(s, ctx, body.type, body.payload, body.source, body.correlation_id, body.occurred_at)
 
 
 @router.get("/events")
-def list_events(plant_id: uuid.UUID | None = None, type: str | None = None, limit: int = Query(100, le=1000), ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def list_events(plant_id: uuid.UUID | None = None, type: str | None = None, limit: int = Query(100, ge=1, le=1000), ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     ctx.require("plan:read")
     q = select(Event).order_by(Event.received_at.desc()).limit(limit)
     if plant_id:
@@ -211,13 +211,13 @@ class WebhookIn(BaseModel):
 
 
 @router.get("/webhooks")
-def list_webhooks(ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def list_webhooks(ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     ctx.require("integration:manage")
     return [row_dict(w) for w in s.scalars(select(WebhookSubscription).order_by(WebhookSubscription.name))]
 
 
 @router.post("/webhooks", status_code=201)
-def create_webhook(body: WebhookIn, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def create_webhook(body: WebhookIn, ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     import secrets as _secrets
 
     from ...services.webhooks import EVENT_TYPES as OUT
@@ -238,7 +238,7 @@ def create_webhook(body: WebhookIn, ctx: Ctx = Depends(get_ctx), s=Depends(get_d
 
 
 @router.delete("/webhooks/{webhook_id}")
-def delete_webhook(webhook_id: uuid.UUID, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def delete_webhook(webhook_id: uuid.UUID, ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     ctx.require("integration:manage")
     w = s.get(WebhookSubscription, webhook_id)
     if w is None:
@@ -256,7 +256,7 @@ class WebhookPatch(BaseModel):
 
 
 @router.patch("/webhooks/{webhook_id}")
-def update_webhook(webhook_id: uuid.UUID, body: WebhookPatch, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def update_webhook(webhook_id: uuid.UUID, body: WebhookPatch, ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     """Pause / resume a subscription or change its name, destination or events (the secret stays)."""
     from ...core.netpolicy import check_url
     from ...services.webhooks import EVENT_TYPES as OUT
@@ -281,7 +281,7 @@ def update_webhook(webhook_id: uuid.UUID, body: WebhookPatch, ctx: Ctx = Depends
 
 
 @router.post("/webhooks/{webhook_id}/test", status_code=202)
-def test_webhook(webhook_id: uuid.UUID, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def test_webhook(webhook_id: uuid.UUID, ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     """Queues a signed ``webhook.test`` delivery to this subscription only (sent like any other
     delivery; its result appears under Deliveries)."""
     from ...core.clock import now as _now
@@ -300,7 +300,7 @@ def test_webhook(webhook_id: uuid.UUID, ctx: Ctx = Depends(get_ctx), s=Depends(g
 
 
 @router.get("/webhooks/{webhook_id}/deliveries")
-def deliveries(webhook_id: uuid.UUID, limit: int = Query(50, le=500), ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def deliveries(webhook_id: uuid.UUID, limit: int = Query(50, ge=1, le=500), ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     ctx.require("integration:manage")
     return [row_dict(d) for d in s.scalars(select(WebhookDelivery).where(WebhookDelivery.subscription_id == webhook_id).order_by(WebhookDelivery.created_at.desc()).limit(limit))]
 
@@ -322,7 +322,7 @@ AVAILABLE_SYSTEMS = {"DATABASE", "FILE", "GENERIC_REST"}
 
 
 @router.get("/connectors")
-def connectors(ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def connectors(ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     ctx.require("integration:manage")
     return {
         "systems": [{"code": k, "label": v, "status": "AVAILABLE" if k in AVAILABLE_SYSTEMS else "COMING_SOON"} for k, v in CONNECTOR_SYSTEMS.items()],
@@ -341,7 +341,7 @@ class ConnectorIn(BaseModel):
 
 
 @router.post("/connectors", status_code=201)
-def create_connector(body: ConnectorIn, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def create_connector(body: ConnectorIn, ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     ctx.require("integration:manage")
     if body.system == "DATABASE":
         from ...services import dbconnect
@@ -395,7 +395,7 @@ def db_drivers(ctx: Ctx = Depends(get_ctx)):
 
 
 @router.post("/connectors/database/test")
-def db_test(body: DbTestIn, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def db_test(body: DbTestIn, ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     from ...services import dbconnect
 
     ctx.require("integration:manage")
@@ -407,21 +407,21 @@ def db_test(body: DbTestIn, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
 
 
 @router.post("/connectors/database", status_code=201)
-def db_create(body: DbConnectorIn, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def db_create(body: DbConnectorIn, ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     from ...services import dbconnect
 
     return dbconnect.save(s, ctx, body.model_dump())
 
 
 @router.put("/connectors/database/{cid}")
-def db_update(cid: uuid.UUID, body: DbConnectorIn, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def db_update(cid: uuid.UUID, body: DbConnectorIn, ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     from ...services import dbconnect
 
     return dbconnect.save(s, ctx, body.model_dump(), cid)
 
 
 @router.delete("/connectors/database/{cid}", status_code=204)
-def db_delete(cid: uuid.UUID, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def db_delete(cid: uuid.UUID, ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     from ...services import dbconnect
 
     dbconnect.delete(s, ctx, cid)
@@ -429,21 +429,21 @@ def db_delete(cid: uuid.UUID, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
 
 
 @router.get("/connectors/database/{cid}/objects")
-def db_objects(cid: uuid.UUID, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def db_objects(cid: uuid.UUID, ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     from ...services import dbconnect
 
     return dbconnect.objects(s, ctx, cid)
 
 
 @router.post("/connectors/database/{cid}/preview")
-def db_preview(cid: uuid.UUID, body: DbPreviewIn, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def db_preview(cid: uuid.UUID, body: DbPreviewIn, ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     from ...services import dbconnect
 
     return dbconnect.preview(s, ctx, cid, body.source, body.entity)
 
 
 @router.post("/connectors/database/{cid}/sync")
-def db_sync(cid: uuid.UUID, body: DbSyncIn, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def db_sync(cid: uuid.UUID, body: DbSyncIn, ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     from ...services import dbconnect
 
     return dbconnect.sync(s, ctx, cid, body.source_ids, body.plant_id, body.commit)

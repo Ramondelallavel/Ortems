@@ -26,11 +26,11 @@ def list_entity(
     request: Request,
     q: str | None = None,
     sort: str | None = None,
-    offset: int = Query(0, ge=0),
+    offset: int = Query(0, ge=0, le=100_000_000),
     limit: int = Query(200, ge=1, le=5000),
     plant_id: uuid.UUID | None = None,
     ctx: Ctx = Depends(get_ctx),
-    s=Depends(get_db),
+    s=Depends(get_db, scope="function"),
 ):
     reserved = {"q", "sort", "offset", "limit", "plant_id"}
     filters = {k: v for k, v in request.query_params.items() if k not in reserved}
@@ -44,29 +44,29 @@ def entity_schema(entity: str, ctx: Ctx = Depends(get_ctx)):
 
 
 @router.get("/master-data/{entity}/{id_}")
-def get_entity(entity: str, id_: uuid.UUID, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def get_entity(entity: str, id_: uuid.UUID, ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     return md.get_row(s, ctx, entity, id_)
 
 
 @router.post("/master-data/{entity}", status_code=201)
-def create_entity(entity: str, body: dict[str, Any] = Body(...), reason: str | None = None, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def create_entity(entity: str, body: dict[str, Any] = Body(...), reason: str | None = None, ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     return md.create_row(s, ctx, entity, body, reason)
 
 
 @router.put("/master-data/{entity}/{id_}")
 @router.patch("/master-data/{entity}/{id_}")
-def update_entity(entity: str, id_: uuid.UUID, body: dict[str, Any] = Body(...), reason: str | None = None, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def update_entity(entity: str, id_: uuid.UUID, body: dict[str, Any] = Body(...), reason: str | None = None, ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     return md.update_row(s, ctx, entity, id_, body, reason)
 
 
 @router.delete("/master-data/{entity}/{id_}")
-def delete_entity(entity: str, id_: uuid.UUID, reason: str | None = None, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def delete_entity(entity: str, id_: uuid.UUID, reason: str | None = None, ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     return md.delete_row(s, ctx, entity, id_, reason)
 
 
 # convenience aliases from the API contract of the brief
 @router.get("/orders")
-def orders(request: Request, plant_id: uuid.UUID | None = None, q: str | None = None, offset: int = 0, limit: int = 500, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def orders(request: Request, plant_id: uuid.UUID | None = None, q: str | None = None, offset: int = Query(0, ge=0, le=100_000_000), limit: int = Query(500, ge=1, le=5000), ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     from ...services.orders import list_orders
 
     filters = {k: v for k, v in request.query_params.items() if k not in {"plant_id", "q", "offset", "limit", "plan_id"}}
@@ -75,17 +75,17 @@ def orders(request: Request, plant_id: uuid.UUID | None = None, q: str | None = 
 
 
 @router.post("/orders", status_code=201)
-def create_order(body: dict[str, Any] = Body(...), ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def create_order(body: dict[str, Any] = Body(...), ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     return md.create_row(s, ctx, "production-orders", body)
 
 
 @router.put("/orders/{id_}")
-def update_order(id_: uuid.UUID, body: dict[str, Any] = Body(...), ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def update_order(id_: uuid.UUID, body: dict[str, Any] = Body(...), ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     return md.update_row(s, ctx, "production-orders", id_, body)
 
 
 @router.get("/resources")
-def resources(plant_id: uuid.UUID | None = None, q: str | None = None, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def resources(plant_id: uuid.UUID | None = None, q: str | None = None, ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     """The plant's resources. Master-data readers get the full records; shop-floor and planning roles
     (plan:read) get what the planning board already shows them: identity, kind, capacity, status."""
     if ctx.has("masterdata:read") or not ctx.has("plan:read"):
@@ -97,7 +97,7 @@ def resources(plant_id: uuid.UUID | None = None, q: str | None = None, ctx: Ctx 
 
 
 @router.get("/items/{id_}/bom-tree")
-def bom_tree(id_: uuid.UUID, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def bom_tree(id_: uuid.UUID, ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     from ...services.orders import bom_tree as tree
 
     ctx.require("masterdata:read")

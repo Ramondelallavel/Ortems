@@ -20,7 +20,7 @@ from sqlalchemy import Text, cast, select
 from sqlalchemy.orm import Session
 
 from monxuplan_engine.calendars import TimeAxis, expand_calendar
-from monxuplan_engine.changes import apply_changes
+from monxuplan_engine.changes import ChangeError, apply_changes
 from monxuplan_engine.contract import (
     BaselineOpSpec,
     CalendarSpec,
@@ -34,6 +34,7 @@ from monxuplan_engine.contract import (
 )
 
 from ..core.clock import now
+from ..core.errors import ValidationFailed
 from ..models import (
     Bom,
     BomLine,
@@ -821,5 +822,8 @@ def build_problem(
         chain: list[ScenarioChange] = []
         all_changes = [{"type": c.type, "payload": c.payload} for c in chain + changes]
         if all_changes:
-            problem, info.change_log = apply_changes(problem, all_changes)
+            try:
+                problem, info.change_log = apply_changes(problem, all_changes)
+            except ChangeError as exc:  # a stored change refers to something that no longer exists
+                raise ValidationFailed(f"A change of this scenario cannot be applied: {exc}. Remove or correct it.", code="INVALID_SCENARIO_CHANGE", context={"detail": str(exc)}) from exc
     return problem, info

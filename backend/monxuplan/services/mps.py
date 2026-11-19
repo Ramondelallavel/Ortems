@@ -179,7 +179,10 @@ def rough_cut(s: Session, plant: Plant, mrp: dict[str, Any], pb: MrpProblem) -> 
 def firm_planned_orders(s: Session, ctx: Ctx, plant_id: uuid.UUID, planned: list[dict[str, Any]]) -> dict[str, Any]:
     """Planner decision: turn MRP proposals into firm production orders (make items only)."""
     ctx.require("orders:write")
+    ctx.require_plant(plant_id)
     plant = s.get(Plant, plant_id)
+    if plant is None:
+        raise NotFound("Plant not found")
     created = []
     tz = ZoneInfo(plant.timezone or "UTC")
     for p in planned:

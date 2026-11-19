@@ -14,6 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse
 from prometheus_client import generate_latest
 from sqlalchemy import text
+from sqlalchemy.exc import DataError, DBAPIError, IntegrityError
 from sqlalchemy.orm.exc import StaleDataError
 
 from .. import __version__
@@ -111,6 +112,27 @@ def create_app() -> FastAPI:
     async def validation(request: Request, exc: RequestValidationError):
         errs = [{"field": ".".join(str(x) for x in e.get("loc", [])[1:]), "message": e.get("msg")} for e in exc.errors()]
         return JSONResponse({"error": {"code": "VALIDATION_FAILED", "message": "Some fields are invalid.", "context": {"fields": errs}}}, status_code=422)
+
+    # Last line of defence for values the schemas did not stop: they are the caller's fault (4xx), not a
+    # server error, and the response says what kind of problem it is.
+    @app.exception_handler(IntegrityError)
+    async def integrity(request: Request, exc: IntegrityError):
+        log.info("integrity error: %s", str(exc.orig)[:300], extra={"extra_data": {"path": request.url.path}})
+        return JSONResponse(
+            {"error": {"code": "INTEGRITY_ERROR", "message": "The change conflicts with existing data: a record with the same name or code exists, or a reference is invalid.", "context": {}}},
+            status_code=409,
+        )
+
+    @app.exception_handler(DBAPIError)
+    async def db_value(request: Request, exc: DBAPIError):
+        if not isinstance(exc, DataError):
+            return await unhandled(request, exc)
+        log.info("value not accepted by the database: %s", str(exc.orig)[:300], extra={"extra_data": {"path": request.url.path}})
+        return JSONResponse({"error": {"code": "VALUE_NOT_ALLOWED", "message": "A value is out of range or contains characters that cannot be stored.", "context": {}}}, status_code=422)
+
+    @app.exception_handler(UnicodeError)
+    async def unicode_value(request: Request, exc: UnicodeError):
+        return JSONResponse({"error": {"code": "VALUE_NOT_ALLOWED", "message": "A value contains characters that cannot be processed.", "context": {}}}, status_code=422)
 
     @app.exception_handler(Exception)
     async def unhandled(request: Request, exc: Exception):

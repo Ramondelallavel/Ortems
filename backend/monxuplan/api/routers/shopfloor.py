@@ -17,18 +17,18 @@ router = APIRouter(tags=["shop-floor"])
 
 
 @router.get("/dispatch")
-def dispatch(plant_id: uuid.UUID, resource_id: str | None = None, date_from: datetime | None = None, hours: int = Query(24, ge=1, le=24 * 14), ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def dispatch(plant_id: uuid.UUID, resource_id: str | None = None, date_from: datetime | None = None, hours: int = Query(24, ge=1, le=24 * 14), ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     return fast_json(views.dispatch_list(s, ctx, plant_id, resource_id, date_from, hours))
 
 
 @router.get("/supervisor")
-def supervisor(plant_id: uuid.UUID, area_id: uuid.UUID | None = None, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def supervisor(plant_id: uuid.UUID, area_id: uuid.UUID | None = None, ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     return fast_json(views.supervisor_view(s, ctx, plant_id, area_id))
 
 
 @router.get("/operator")
-def operator(plant_id: uuid.UUID, resource_id: str, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
-    return views.operator_view(s, ctx, plant_id, resource_id)
+def operator(plant_id: uuid.UUID, resource_id: uuid.UUID, ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
+    return views.operator_view(s, ctx, plant_id, str(resource_id))
 
 
 class ReportIn(BaseModel):
@@ -42,7 +42,7 @@ class ReportIn(BaseModel):
 
 
 @router.post("/execution/report")
-def report(body: ReportIn, ctx: Ctx = Depends(get_ctx), s=Depends(get_db)):
+def report(body: ReportIn, ctx: Ctx = Depends(get_ctx), s=Depends(get_db, scope="function")):
     from ...services.events_in import report_execution
 
     return report_execution(s, ctx, body.model_dump())
