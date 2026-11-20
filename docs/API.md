@@ -38,6 +38,8 @@ curl -s localhost:8000/api/v1/plants -H "Authorization: Bearer $TOKEN"
 | Status | Typical codes |
 |---|---|
 | 400/422 | `VALIDATION_FAILED` (with `context.fields`), `INVALID_MOVE`, `IMPORT_BLOCKED` |
+| 422 | `VALUE_NOT_ALLOWED` (text or number the database cannot store), `INVALID_SCENARIO_CHANGE` (a stored change refers to something that no longer exists; `context.detail` names it), `BAD_FILE` (unreadable CSV/XLSX/zip) |
+| 409 | `INTEGRITY_ERROR` (a uniqueness or reference rule lost a race), `DUPLICATE_SCENARIO` |
 | 401 | `NOT_AUTHENTICATED`, `SESSION_EXPIRED`, `INVALID_TOKEN`, `INVALID_API_KEY` |
 | 403 | `NO_PERMISSION`, `NO_PLANT_ACCESS`, `CSRF`, `FROZEN_OPERATION` |
 | 404 | `NOT_FOUND`, `PLAN_NOT_FOUND` |
@@ -52,6 +54,7 @@ curl -s localhost:8000/api/v1/plants -H "Authorization: Bearer $TOKEN"
   ending in `_at` are ISO date-times in plant time, values ending in `_term` are fixed phrases. The
   web interface uses them to show the text in the user's language.
 * Every response carries `X-Request-ID` (send your own to correlate logs).
+* List endpoints take `limit` (1…, capped per endpoint) and `offset` (0…100 000 000); out-of-range values are `VALIDATION_FAILED`, never a server error.
 * Rate limits per client IP: `MONXU_RATE_LIMIT_PER_MINUTE` (default 600) and a stricter login limit.
 
 ## Planning in four calls
