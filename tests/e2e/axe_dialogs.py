@@ -10,7 +10,7 @@ def axe(page, name):
     for v in res["violations"]:
         out.append((name, v["impact"], v["id"], v["help"], [n["target"][0] for n in v["nodes"][:2]]))
 with sync_playwright() as p:
-    b = p.chromium.launch(executable_path=os.environ["CHROMIUM_PATH"])
+    b = p.chromium.launch(executable_path=os.environ.get("CHROMIUM_PATH") or None)
     page = b.new_context(viewport={"width": 1400, "height": 900}).new_page(); login(page, "admin")
     def step(name, route, action):
         page.goto(BASE + route); settle(page, 1200)

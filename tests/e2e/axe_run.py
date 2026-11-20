@@ -7,7 +7,7 @@ width = int(sys.argv[1]) if len(sys.argv) > 1 else 1400
 theme = sys.argv[2] if len(sys.argv) > 2 else "light"
 agg = {}
 with sync_playwright() as p:
-    b = p.chromium.launch(executable_path=os.environ["CHROMIUM_PATH"])
+    b = p.chromium.launch(executable_path=os.environ.get("CHROMIUM_PATH") or None)
     ctx = b.new_context(viewport={"width": width, "height": 900}, color_scheme=theme)
     page = ctx.new_page(); login(page, "admin")
     for r in ROUTES + ["/master-data/items", "/integrations?tab=webhooks", "/integrations?tab=database"]:

@@ -19,7 +19,7 @@ KEEP = ("/auth/", "/plants", "/events/stream")
 only = sys.argv[1].split(",") if len(sys.argv) > 1 else list(MODES)
 bad = []
 with sync_playwright() as p:
-    b = p.chromium.launch(executable_path=os.environ.get("CHROMIUM_PATH"))
+    b = p.chromium.launch(executable_path=os.environ.get("CHROMIUM_PATH") or None)
     for mode in only:
         ctx = b.new_context(viewport={"width": 1400, "height": 900})
         page = ctx.new_page()
