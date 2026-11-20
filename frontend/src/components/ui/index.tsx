@@ -1,6 +1,7 @@
 "use client";
 // MonxuPlan component library: dense, keyboard friendly, colour never the only status signal.
 import { cloneElement, createContext, isValidElement, useCallback, useContext, useEffect, useId, useMemo, useRef, useState, type ButtonHTMLAttributes, type ReactElement, type ReactNode } from "react";
+import Link from "next/link";
 import { ApiError } from "@/lib/api";
 import { errorText } from "@/lib/errors";
 import { useSession } from "@/lib/session";
@@ -42,7 +43,10 @@ export function Panel({ title, actions, children, className = "", bodyClass = ""
           {actions}
         </header>
       )}
-      <div className={`min-h-0 ${bodyClass}`}>{children}</div>
+      {/* a scrolling body must be reachable with the keyboard, or its content is unreadable without a mouse */}
+      <div className={`min-h-0 ${bodyClass}`} {...(/overflow-(auto|y-auto|scroll)/.test(bodyClass) ? { tabIndex: 0 } : {})}>
+        {children}
+      </div>
     </section>
   );
 }
@@ -52,7 +56,7 @@ const TONES = {
   ok: "bg-green-100 text-green-600 border-green-600/30",
   warn: "bg-amber-100 text-amber-600 border-amber-500/40",
   bad: "bg-red-100 text-red-600 border-red-600/30",
-  info: "bg-blue-100 text-blue-500 border-blue-500/30",
+  info: "bg-blue-100 text-blue-600 border-blue-500/30",
   neutral: "bg-gray-100 text-slate-600 border-gray-300",
   dark: "bg-navy-900 text-white border-navy-900",
 } as const;
@@ -155,6 +159,15 @@ export function ErrorState({ error, onRetry }: { error: ApiError | Error | undef
   if (!error) return null;
   const e = error as ApiError;
   if (e.status === 403) return <NoPermission message={errorText(t, e)} />;
+  // a plant that has not been planned yet is not an error: say what to do
+  if (e.code === "NO_PLAN")
+    return (
+      <Empty title={t("dash.noPlan")} icon="board">
+        <Link className="mx-btn mx-btn-primary mt-1" href="/planning">
+          {t("dash.runFirst")}
+        </Link>
+      </Empty>
+    );
   return (
     <div role="alert" className="m-3 p-3 border border-red-600/30 bg-red-100 rounded-[3px] text-[13px]">
       <div className="font-semibold text-red-600 flex items-center gap-1.5">
@@ -339,7 +352,7 @@ export function Dialog({ open, title, onClose, children, footer, width = 520 }: 
             <Icon name="x" />
           </button>
         </div>
-        <div className="p-3 overflow-auto mx-scroll">{children}</div>
+        <div tabIndex={0} className="p-3 overflow-auto mx-scroll">{children}</div>
         {footer && <div className="flex justify-end gap-2 px-3 py-2 border-t border-gray-200 bg-gray-50">{footer}</div>}
       </div>
     </div>
@@ -412,7 +425,7 @@ export function useToast() {
 }
 
 // ------------------------------------------------------------------ DataTable (sort, filter, virtual rows)
-export type Column<T> = { key: string; label: string; width?: number; align?: "left" | "right" | "center"; render?: (row: T) => ReactNode; value?: (row: T) => string | number | null | undefined; sortable?: boolean; mono?: boolean };
+export type Column<T> = { key: string; label: string; srLabel?: string; width?: number; align?: "left" | "right" | "center"; render?: (row: T) => ReactNode; value?: (row: T) => string | number | null | undefined; sortable?: boolean; mono?: boolean };
 
 export function DataTable<T extends Record<string, any>>({ rows, columns, rowKey, onRowClick, selectedKey, height, filterable = true, initialSort, emptyText, toolbar, exportName }: {
   rows: T[];
@@ -510,10 +523,10 @@ export function DataTable<T extends Record<string, any>>({ rows, columns, rowKey
               {columns.map((c) => (
                 <th key={c.key} style={{ width: c.width, textAlign: c.align || "left" }} aria-sort={sort?.key === c.key ? (sort.dir === 1 ? "ascending" : "descending") : "none"}>
                   {c.sortable === false ? (
-                    c.label
+                    c.label || <span className="sr-only">{c.srLabel || c.key}</span>
                   ) : (
                     <button className="inline-flex items-center gap-1 hover:text-graphite-800" onClick={() => setSort((s) => (s?.key === c.key ? (s.dir === 1 ? { key: c.key, dir: -1 } : undefined) : { key: c.key, dir: 1 }))}>
-                      {c.label}
+                      {c.label || <span className="sr-only">{c.srLabel || c.key}</span>}
                       {sort?.key === c.key && <span aria-hidden="true">{sort.dir === 1 ? "▲" : "▼"}</span>}
                     </button>
                   )}

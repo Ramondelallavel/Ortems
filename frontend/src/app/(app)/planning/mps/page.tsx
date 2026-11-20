@@ -164,6 +164,7 @@ export default function MpsPage() {
                 {
                   key: "sel",
                   label: "",
+                  srLabel: t("Select"),
                   sortable: false,
                   width: 30,
                   render: (r: any) =>

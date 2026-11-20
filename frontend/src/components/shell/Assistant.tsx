@@ -63,7 +63,9 @@ export function AssistantDrawer({ open, onClose }: { open: boolean; onClose: () 
   useEffect(() => {
     if (open && !status) api("/assistant/status").then(setStatus).catch(() => {});
   }, [open, status]);
-  useEffect(() => end.current?.scrollIntoView({ block: "end" }), [msgs]);
+  useEffect(() => {
+    end.current?.scrollIntoView({ block: "end" }); // (newer browsers return a Promise: it must not be the effect's return value)
+  }, [msgs]);
 
   const ask = async (question: string) => {
     if (!question.trim() || !plant) return;

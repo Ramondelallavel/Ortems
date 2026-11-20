@@ -6,6 +6,7 @@ added through hooks — never by duplicating CRUD code.
 
 from __future__ import annotations
 
+import math
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -117,7 +118,10 @@ def _coerce(col, value: Any) -> Any:
         if isinstance(t, Integer):
             return int(value)
         if isinstance(t, Float | Numeric):
-            return float(value)
+            x = float(value)
+            if not math.isfinite(x):
+                raise ValueError("not a finite number")
+            return x
         if isinstance(t, String | Text):
             s = str(value)
             if isinstance(t, String) and t.length and len(s) > t.length:

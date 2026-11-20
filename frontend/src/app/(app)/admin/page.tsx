@@ -93,13 +93,13 @@ function Users() {
             { key: "roles", label: t("Roles"), value: (r) => r.roles.map((c: string) => t(`role.${c}`)).join(", ") },
             { key: "plant_ids", label: t("Plants"), value: (r) => (r.plant_ids.length ? t("{n} plants", { n: r.plant_ids.length }) : t("all")) },
             { key: "is_active", label: t("Active"), render: (r) => (r.is_active ? <Badge tone="ok">{t("active")}</Badge> : <Badge tone="neutral">{t("inactive")}</Badge>) },
-            { key: "locked", label: "", render: (r) => (r.locked ? <Badge tone="bad">{t("locked")}</Badge> : "") },
+            { key: "locked", label: "", srLabel: t("Locked"), render: (r) => (r.locked ? <Badge tone="bad">{t("locked")}</Badge> : "") },
             { key: "last_login_at", label: t("Last login"), render: (r) => dt(r.last_login_at) },
           ]}
         />
       </div>
       <Panel title={t("Roles and permissions")}>
-        <div className="overflow-auto">
+        <div className="overflow-auto" tabIndex={0} role="region" aria-label={t("Roles and permissions")}>
           <table className="mx-table">
             <thead>
               <tr>
@@ -310,11 +310,11 @@ function Audit() {
           <div className="grid grid-cols-2 gap-3">
             <div>
               <div className="mx-label">{t("Before")}</div>
-              <pre className="code text-[11px] bg-gray-50 border border-gray-200 p-2 overflow-auto max-h-[400px]">{JSON.stringify(open.before, null, 1)}</pre>
+              <pre tabIndex={0} className="code text-[11px] bg-gray-50 border border-gray-200 p-2 overflow-auto max-h-[400px]">{JSON.stringify(open.before, null, 1)}</pre>
             </div>
             <div>
               <div className="mx-label">{t("After")}</div>
-              <pre className="code text-[11px] bg-gray-50 border border-gray-200 p-2 overflow-auto max-h-[400px]">{JSON.stringify(open.after, null, 1)}</pre>
+              <pre tabIndex={0} className="code text-[11px] bg-gray-50 border border-gray-200 p-2 overflow-auto max-h-[400px]">{JSON.stringify(open.after, null, 1)}</pre>
             </div>
           </div>
         )}

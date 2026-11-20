@@ -36,7 +36,7 @@ export function SectionData({ tables, onChanged, label }: { tables: string[]; on
       <Dialog open={open} onClose={close} title={importing ? `${t("data.import")}: ${entityLabel(t, byTable[importing]?.label) || importing}` : t("data.title")} width={importing ? 900 : 640}>
         {importing ? (
           <div className="space-y-2">
-            <button className="text-blue-500 hover:underline text-[12.5px]" onClick={() => setImporting(null)}>
+            <button className="text-blue-500 underline text-[12.5px]" onClick={() => setImporting(null)}>
               ← {t("data.back")}
             </button>
             <ImportWizard
@@ -78,7 +78,7 @@ export function SectionData({ tables, onChanged, label }: { tables: string[]; on
             </table>
             <p className="text-[12px] text-slate-600">
               {t("data.more")}{" "}
-              <Link className="text-blue-500 hover:underline" href="/integrations" onClick={close}>
+              <Link className="text-blue-500 underline" href="/integrations" onClick={close}>
                 {t("nav.integrations")}
               </Link>
             </p>

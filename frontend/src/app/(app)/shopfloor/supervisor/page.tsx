@@ -30,7 +30,7 @@ export default function SupervisorPage() {
           </>
         }
       />
-      <div className="flex-1 overflow-auto mx-scroll p-3">
+      <div className="flex-1 overflow-auto mx-scroll p-3" tabIndex={0} role="region" aria-label={t("nav.supervisor")}>
         {d.error ? (
           <ErrorState error={d.error} onRetry={d.reload} />
         ) : !d.data ? (

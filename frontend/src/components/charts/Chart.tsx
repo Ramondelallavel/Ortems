@@ -5,9 +5,9 @@
 import { useEffect, useRef } from "react";
 
 export const SERIES = ["#2a78d6", "#eb6834", "#1baf7a", "#4a3aa7", "#e87ba4"];
-export const SEQ_BLUE = ["#eef4fc", "#cde2fb", "#9ec5f4", "#6da7ec", "#3987e5", "#256abf", "#184f95", "#0d366b"];
+export const SEQ_BLUE = ["#eef4fc", "#cde2fb", "#9ec5f4", "#6da7ec", "#2d75cc", "#1f5eab", "#184f95", "#0d366b"];
 export const STATUS = { ok: "#1d7a4a", warn: "#c98a12", bad: "#b8321f", neutral: "#8a94a3" };
-export const INK = { primary: "#262c36", secondary: "#4a5565", muted: "#8a94a3", grid: "#eef1f4", axis: "#c6cdd6" };
+export const INK = { primary: "#262c36", secondary: "#4a5565", muted: "#5f6b7c", grid: "#eef1f4", axis: "#c6cdd6" };
 
 export const baseOption = {
   textStyle: { fontFamily: "Inter Variable, Inter, system-ui, sans-serif", color: INK.secondary, fontSize: 11 },

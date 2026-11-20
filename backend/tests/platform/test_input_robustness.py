@@ -132,3 +132,42 @@ def test_a_failing_commit_is_an_error_for_the_client(planner, monkeypatch):
     monkeypatch.setattr(deps, "new_session", real)
     assert r.status_code == 409 and r.json()["error"]["code"] == "INTEGRITY_ERROR", (r.status_code, r.text)
     assert name not in [v["name"] for v in planner.ok(planner.get("/views", params={"page": "orders"}))]
+
+
+def test_hostile_import_files_are_rejected_cleanly(planner, sevilla):
+    import io
+    import os
+    import zipfile
+
+    def up(name, data, entity="items"):
+        return planner.post("/imports", data={"entity": entity, "plant_id": sevilla["id"]}, files={"file": (name, data)})
+
+    # random bytes as CSV (csv.Error), empty files, damaged and exotic zip archives
+    for name, data in (("random.csv", bytes(range(256)) * 16), ("nul.csv", b"code,name\nA,\x00B\n"), ("empty.csv", b""), ("bad.xlsx", b"PK\x03\x04garbage")):
+        r = up(name, data)
+        assert r.status_code < 500, (name, r.status_code, r.text[:200])
+    b = io.BytesIO()
+    with zipfile.ZipFile(b, "w") as z:
+        z.writestr("[Content_Types].xml", "<Types/>")
+    raw = bytearray(b.getvalue())
+    raw[4] = 19  # "version needed to extract" the zip module cannot handle
+    r = up("version19.xlsx", bytes(raw))
+    assert r.status_code < 500, r.text[:200]
+    os.environ  # noqa: B018 - (kept simple: nothing else to clean up)
+
+
+def test_non_finite_numbers_are_import_errors(planner, sevilla):
+    data = "code;name;type;safety_stock\nN-1;Nan;RAW;nan\nN-2;Inf;RAW;inf\nN-3;Huge;RAW;" + "9" * 400 + "\nN-4;Fine;RAW;5\n"
+    job = planner.ok(planner.post("/imports", data={"entity": "items", "plant_id": sevilla["id"]}, files={"file": ("nf.csv", data, "text/csv")}), 201)
+    v = planner.ok(planner.post(f"/imports/{job['id']}/validate"))  # also serialises every error: it used to fail on inf
+    assert v["status"] == "INVALID"
+    assert sum("not a" in e["message"] and "number" in e["message"] for e in v["errors"]) == 3, v["errors"]
+    assert all(len(e["message"]) < 200 for e in v["errors"])
+    assert planner.post(f"/imports/{job['id']}/commit").status_code == 422
+
+
+def test_master_data_rejects_non_finite_numbers(planner):
+    row = planner.ok(planner.get("/master-data/items", params={"limit": 1}))["items"][0]
+    for bad in ("NaN", "inf", "-Infinity"):
+        r = planner.patch(f"/master-data/items/{row['id']}", json={"version": row["version"], "unit_cost": bad})
+        assert r.status_code == 422, (bad, r.status_code, r.text[:200])

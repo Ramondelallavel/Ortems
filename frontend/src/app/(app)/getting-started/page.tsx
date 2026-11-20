@@ -64,16 +64,16 @@ export default function GettingStarted() {
             <p>{t("The demo plant contains deliberate situations to explore:")}</p>
             <ul className="list-disc pl-5 space-y-1">
               <li>
-                <b>BRG-6205</b> {t("bearing shortage — orders that cannot be scheduled and why")} (<Link className="text-blue-500 hover:underline" href="/planning/materials">{t("nav.materials")}</Link>).
+                <b>BRG-6205</b> {t("bearing shortage — orders that cannot be scheduled and why")} (<Link className="text-blue-500 underline" href="/planning/materials">{t("nav.materials")}</Link>).
               </li>
               <li>
-                <b>CNC-04</b> {t("maintenance today 14:00–18:00 and")} <b>CNC-03</b> {t("ballscrew replacement next week (hatched on the")} <Link className="text-blue-500 hover:underline" href="/planning">{t("nav.planning")}</Link>).
+                <b>CNC-04</b> {t("maintenance today 14:00–18:00 and")} <b>CNC-03</b> {t("ballscrew replacement next week (hatched on the")} <Link className="text-blue-500 underline" href="/planning">{t("nav.planning")}</Link>).
               </li>
               <li>
                 <b>PAINT-01</b> {t("colour changeovers light → dark (setup matrix) and detached setups while material arrives.")}
               </li>
               <li>
-                {t("Two prepared what-ifs: a CNC night shift and buying a fifth machining centre")} (<Link className="text-blue-500 hover:underline" href="/planning/scenarios">{t("nav.scenarios")}</Link>) — {t("plan them and compare with the live plan.")}
+                {t("Two prepared what-ifs: a CNC night shift and buying a fifth machining centre")} (<Link className="text-blue-500 underline" href="/planning/scenarios">{t("nav.scenarios")}</Link>) — {t("plan them and compare with the live plan.")}
               </li>
               <li>
                 {t("Ask the assistant")} (<kbd className="mx-kbd">Ctrl</kbd>+<kbd className="mx-kbd">J</kbd>): <i>{t("why is WO-10042 late?")}</i>

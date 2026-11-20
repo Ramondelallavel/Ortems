@@ -103,24 +103,26 @@ export default function ScenariosPage() {
         <div className="flex flex-1 min-h-0">
           <div className="w-[340px] border-r border-gray-200 bg-white overflow-auto mx-scroll">
             {list.map((s) => (
-              <button key={s.id} onClick={() => setSel(s.id)} className={`w-full text-left px-3 py-2 border-b border-gray-100 ${cur?.id === s.id ? "bg-blue-100" : "hover:bg-gray-50"}`} aria-current={cur?.id === s.id}>
-                <div className="flex items-center gap-2">
-                  {s.is_live ? <Badge tone="dark">LIVE</Badge> : <Badge tone="neutral" glyph={false}>{s.kind.replace("_", "-")}</Badge>}
-                  <span className="font-semibold truncate flex-1">{s.name}</span>
-                  <input
-                    type="checkbox"
-                    aria-label={t("Compare {name}", { name: s.name })}
-                    disabled={!s.head_plan_id}
-                    checked={!!s.head_plan_id && cmpIds.includes(s.head_plan_id)}
-                    onClick={(e) => e.stopPropagation()}
-                    onChange={(e) => s.head_plan_id && setCmpIds(e.target.checked ? [...cmpIds, s.head_plan_id].slice(-6) : cmpIds.filter((x) => x !== s.head_plan_id))}
-                  />
-                </div>
-                <div className="text-[11.5px] text-slate-600 mt-0.5 tabular">
-                  {s.head_plan ? t("{plan} · OTIF {otif} % · late {late}", { plan: s.head_plan.number, otif: num(s.head_plan.kpis?.otif, 1), late: num(s.head_plan.kpis?.late_orders) }) : t("not planned yet")}
-                  {s.last_run && s.last_run.status !== "SUCCEEDED" && <span className="ml-1">· {t("run {status}", { status: t(`status.${s.last_run.status}`).toLowerCase() })}</span>}
-                </div>
-              </button>
+              <div key={s.id} className={`relative border-b border-gray-100 ${cur?.id === s.id ? "bg-blue-100" : "hover:bg-gray-50"}`}>
+                <button onClick={() => setSel(s.id)} className="w-full text-left px-3 py-2 pr-11" aria-current={cur?.id === s.id}>
+                  <div className="flex items-center gap-2">
+                    {s.is_live ? <Badge tone="dark">LIVE</Badge> : <Badge tone="neutral" glyph={false}>{s.kind.replace("_", "-")}</Badge>}
+                    <span className="font-semibold truncate flex-1">{s.name}</span>
+                  </div>
+                  <div className="text-[11.5px] text-slate-600 mt-0.5 tabular">
+                    {s.head_plan ? t("{plan} · OTIF {otif} % · late {late}", { plan: s.head_plan.number, otif: num(s.head_plan.kpis?.otif, 1), late: num(s.head_plan.kpis?.late_orders) }) : t("not planned yet")}
+                    {s.last_run && s.last_run.status !== "SUCCEEDED" && <span className="ml-1">· {t("run {status}", { status: t(`status.${s.last_run.status}`).toLowerCase() })}</span>}
+                  </div>
+                </button>
+                <input
+                  type="checkbox"
+                  className="absolute right-2 top-1.5 !h-6 !w-6 !m-0 cursor-pointer"
+                  aria-label={t("Compare {name}", { name: s.name })}
+                  disabled={!s.head_plan_id}
+                  checked={!!s.head_plan_id && cmpIds.includes(s.head_plan_id)}
+                  onChange={(e) => s.head_plan_id && setCmpIds(e.target.checked ? [...cmpIds, s.head_plan_id].slice(-6) : cmpIds.filter((x) => x !== s.head_plan_id))}
+                />
+              </div>
             ))}
           </div>
           <div className="flex-1 overflow-auto mx-scroll p-3">
@@ -387,7 +389,9 @@ function WhatIfWizard({ kind, onClose, onCreated }: { kind: string | null; onClo
   const items = useApi<any>(kind === "RUSH_ORDER" ? "/master-data/products" : kind === "MATERIAL_DELAY" ? "/master-data/items" : null, { limit: 2000 });
   const [p, setP] = useState<any>({});
   const [busy, setBusy] = useState(false);
-  useEffect(() => setP({}), [kind]);
+  useEffect(() => {
+    setP({});
+  }, [kind]);
   const w = WHATIFS.find((x) => x.kind === kind);
   const machines = (res.data?.items || []).filter((r: any) => ["MACHINE", "WORK_CENTER", "LINE"].includes(r.kind));
   const pools = (res.data?.items || []).filter((r: any) => ["LABOR_POOL", "TOOL"].includes(r.kind));

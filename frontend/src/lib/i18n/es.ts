@@ -510,5 +510,6 @@ const es: Dict = {
   "err.VALUE_NOT_ALLOWED": "Un valor está fuera de rango o contiene caracteres que no se pueden guardar.",
   "err.DUPLICATE_SCENARIO": "Ya existe un escenario llamado «{name}».",
   "err.INVALID_SCENARIO_CHANGE": "Un cambio de este escenario no se puede aplicar: {detail}. Elimínalo o corrígelo.",
+  "err.BAD_RESPONSE": "El servidor ha respondido con algo que no son datos válidos (una página de un proxy o pasarela, o una respuesta cortada).",
 };
 export default es;

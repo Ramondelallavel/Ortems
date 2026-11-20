@@ -36,7 +36,9 @@ export function EditableGrid({ entity, fields, rows, onSaved, defaults, onDirty 
   const slice = visible.slice(page * PAGE, page * PAGE + PAGE);
   const dirty = Object.keys(edits).length + added.length;
   useUnsavedWarning(dirty > 0);
-  useLayoutEffect(() => onDirty?.(dirty), [dirty, onDirty]); // before the next click (view switch)
+  useLayoutEffect(() => {
+    onDirty?.(dirty);
+  }, [dirty, onDirty]); // before the next click (view switch)
   const byId = useMemo(() => new Map(rows.map((r) => [r.id, r])), [rows]);
 
   const setCell = (id: string, name: string, v: any) => setEdits((e) => ({ ...e, [id]: { ...(e[id] || {}), [name]: v } }));

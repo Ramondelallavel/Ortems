@@ -46,6 +46,7 @@ export default function OperatorPage() {
   return (
     <div className="flex-1 overflow-auto mx-scroll p-4 text-[15px]">
       <div className="max-w-3xl mx-auto space-y-4">
+        <h1 className="sr-only">{t("nav.operator")}</h1>
         <div className="flex items-end gap-3">
           <Field label={t("nav.operator") + " — " + t("common.resource")}>
             <Select value={resId} onChange={setResId} className="!h-10 min-w-[220px] !text-[15px]" options={[{ value: "", label: t("Select your machine") }, ...machines.map((r: any) => ({ value: r.id, label: `${r.code} · ${r.name}` }))]} />

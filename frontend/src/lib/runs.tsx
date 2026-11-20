@@ -30,7 +30,7 @@ export async function startRun(body: Record<string, unknown>, confirm: Confirm, 
             ))}
           </ul>
           <p>
-            <Link className="text-blue-500 hover:underline" href="/admin/data-quality">
+            <Link className="text-blue-500 underline" href="/admin/data-quality">
               {t("nav.dataQuality")}
             </Link>
           </p>

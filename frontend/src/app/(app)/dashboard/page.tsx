@@ -156,7 +156,7 @@ export default function Dashboard() {
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-          <Panel title={t("dash.lateOrders")} actions={<Link className="text-[11.5px] text-blue-500 hover:underline" href="/planning/orders?status=LATE">{t("dash.all")}</Link>} bodyClass="max-h-[300px] overflow-auto mx-scroll" id="late">
+          <Panel title={t("dash.lateOrders")} actions={<Link className="text-[11.5px] text-blue-500 underline" href="/planning/orders?status=LATE">{t("dash.all")}</Link>} bodyClass="max-h-[300px] overflow-auto mx-scroll" id="late">
             <table className="mx-table">
               <tbody>
                 {x.late_orders.map((o: any) => (
@@ -179,7 +179,7 @@ export default function Dashboard() {
               </tbody>
             </table>
           </Panel>
-          <Panel title={t("dash.bottlenecks")} actions={<Link className="text-[11.5px] text-blue-500 hover:underline" href="/planning/capacity">{t("dash.capacity")}</Link>} bodyClass="max-h-[300px] overflow-auto mx-scroll" id="bn">
+          <Panel title={t("dash.bottlenecks")} actions={<Link className="text-[11.5px] text-blue-500 underline" href="/planning/capacity">{t("dash.capacity")}</Link>} bodyClass="max-h-[300px] overflow-auto mx-scroll" id="bn">
             <table className="mx-table">
               <tbody>
                 {x.bottlenecks.map((b: any) => (

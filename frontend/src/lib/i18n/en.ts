@@ -517,6 +517,7 @@ const en = {
   "err.VALUE_NOT_ALLOWED": "A value is out of range or contains characters that cannot be stored.",
   "err.DUPLICATE_SCENARIO": "A scenario named “{name}” already exists.",
   "err.INVALID_SCENARIO_CHANGE": "A change of this scenario cannot be applied: {detail}. Remove or correct it.",
+  "err.BAD_RESPONSE": "The server answered with something that is not valid data (a proxy or gateway page, or a response that was cut off).",
 };
 export default en;
 export type Dict = Record<keyof typeof en, string>;

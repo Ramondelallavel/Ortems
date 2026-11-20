@@ -58,7 +58,7 @@ export default function DispatchPage() {
               { key: "setup_minutes", label: t("Setup"), align: "right", width: 70, render: (r) => duration(r.setup_minutes) },
               { key: "material", label: t("Material"), width: 100, render: (r) => <StatusPill status={r.material} /> },
               { key: "status", label: t("Status"), width: 100, render: (r) => <StatusPill status={r.status} /> },
-              { key: "flags", label: "", sortable: false, width: 90, render: (r) => <>{r.late && <Badge tone="bad">{t("late")}</Badge>} {r.fixed && <Badge tone="info">🔒︎</Badge>}</> },
+              { key: "flags", label: "", srLabel: t("Flags"), sortable: false, width: 90, render: (r) => <>{r.late && <Badge tone="bad">{t("late")}</Badge>} {r.fixed && <Badge tone="info">🔒︎</Badge>}</> },
             ]}
           />
           </div>

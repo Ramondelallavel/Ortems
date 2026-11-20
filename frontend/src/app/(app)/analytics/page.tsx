@@ -102,7 +102,7 @@ export default function AnalyticsPage() {
     <div className="flex flex-col h-full min-h-0">
       <PageHeader title={t("nav.kpis")} subtitle={k.data ? `${k.data.plan.number} · ${t("every figure opens its drill-down")}` : undefined} />
       <Tabs value={tab} onChange={setTab} tabs={[{ id: "kpis", label: t("KPIs & root cause") }, { id: "trends", label: t("Trends") }, { id: "robust", label: t("Robustness") }]} />
-      <div className="flex-1 overflow-auto mx-scroll p-3 space-y-3">
+      <div className="flex-1 overflow-auto mx-scroll p-3 space-y-3" tabIndex={0} role="region" aria-label={t("nav.kpis")}>
         {!planId && <div className="text-slate-600">{t("No plan yet.")}</div>}
         <ErrorState error={k.error} onRetry={k.reload} />
         {tab === "kpis" && k.data && (
@@ -157,7 +157,7 @@ export default function AnalyticsPage() {
                     {!dd.data.levels && !dd.data.resources && !dd.data.materials && <div className="text-slate-600">{t("Value {v}. No further breakdown for this indicator.", { v: dd.data.value ?? "—" })}</div>}
                   </div>
                   {dd.data.orders && (
-                    <div className="max-h-[360px] overflow-auto mx-scroll">
+                    <div className="max-h-[360px] overflow-auto mx-scroll" tabIndex={0} role="region" aria-label={t("Late orders")}>
                       <table className="mx-table">
                         <thead>
                           <tr>

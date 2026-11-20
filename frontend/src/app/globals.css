@@ -9,8 +9,8 @@
   --color-navy-600: #2a4c80;
   --color-graphite-800: #262c36;
   --color-slate-600: #4a5565;
-  --color-slate-500: #667081;
-  --color-slate-400: #8a94a3;
+  --color-slate-500: #566170;
+  --color-slate-400: #5f6b7c;
   --color-gray-300: #c6cdd6;
   --color-gray-200: #dde2e8;
   --color-gray-100: #eef1f4;
@@ -18,11 +18,12 @@
   --color-green-600: #1d7a4a;
   --color-green-100: #e1f1e8;
   --color-amber-500: #c98a12;
-  --color-amber-600: #9e6b0a;
+  --color-amber-600: #855a07;
   --color-amber-100: #fbf0d9;
   --color-red-600: #b8321f;
   --color-red-100: #f8e3df;
   --color-blue-500: #2f6fb3;
+  --color-blue-600: #25609f;
   --color-blue-100: #e2ecf7;
 
   --font-sans: "Inter Variable", "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
@@ -296,4 +297,13 @@ textarea.mx-input {
   .mx-table tr {
     break-inside: avoid;
   }
+}
+
+/* checkboxes and radios: a target of at least 24 px counting the margin (WCAG 2.5.8) */
+input[type="checkbox"],
+input[type="radio"] {
+  width: 1.1rem;
+  height: 1.1rem;
+  margin: 0.2rem;
+  flex-shrink: 0;
 }

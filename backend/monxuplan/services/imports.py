@@ -16,6 +16,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import math
 import re
 import unicodedata
 import uuid
@@ -431,7 +432,7 @@ def _check_archive(data: bytes) -> None:
     try:
         with zipfile.ZipFile(io.BytesIO(data)) as z:
             total = sum(i.file_size for i in z.infolist())
-    except zipfile.BadZipFile as exc:
+    except (zipfile.BadZipFile, NotImplementedError, OSError, ValueError) as exc:  # damaged, or a zip feature that cannot be read
         raise ValidationFailed("The Excel file is damaged (not a valid .xlsx archive).", code="BAD_FILE") from exc
     if total > MAX_UNCOMPRESSED_BYTES or (total > 20 * 1024 * 1024 and total > MAX_COMPRESSION_RATIO * max(len(data), 1)):
         raise ValidationFailed(f"The Excel file expands to {total // (1024 * 1024)} MB when opened, which is more than allowed. Split it or export it as CSV.", code="FILE_TOO_LARGE")
@@ -503,8 +504,11 @@ def parse_file(data: bytes, filename: str, sheet: str | None = None) -> tuple[st
             delim = dialect.delimiter
         except csv.Error:
             delim = ";" if text.split("\n", 1)[0].count(";") > text.split("\n", 1)[0].count(",") else ","
-        reader = csv.reader(io.StringIO(text), delimiter=delim)
-        all_rows = [r for r in reader if any(c.strip() for c in r)]
+        reader = csv.reader(io.StringIO(text, newline=""), delimiter=delim)
+        try:
+            all_rows = [r for r in reader if any(c.strip() for c in r)]
+        except csv.Error as exc:  # binary data, NUL bytes, a field beyond the csv module's size limit…
+            raise ValidationFailed(f"The file is not a valid CSV: {exc}", code="BAD_FILE") from exc
         if not all_rows:
             raise ValidationFailed("The file is empty.", code="EMPTY_FILE")
         cols = [c.strip() or f"column_{i + 1}" for i, c in enumerate(all_rows[0])]
@@ -564,16 +568,23 @@ def _to_float(v: Any) -> float:
     if isinstance(v, bool):
         raise ConvError("not a number")
     if isinstance(v, int | float):
-        return float(v)
+        return _finite(float(v), v)
     s = str(v).strip().replace(" ", "").replace(" ", "")
     if "," in s and "." in s:
         s = s.replace(".", "").replace(",", ".") if s.rfind(",") > s.rfind(".") else s.replace(",", "")
     elif "," in s:
         s = s.replace(",", ".")
     try:
-        return float(s)
+        return _finite(float(s), v)
     except ValueError as exc:
-        raise ConvError(f"'{v}' is not a number") from exc
+        raise ConvError(f"'{str(v)[:40]}' is not a number") from exc
+
+
+def _finite(x: float, raw: Any) -> float:
+    """NaN, infinity and numbers beyond the float range ("1e999", 400 digits) are not quantities."""
+    if not math.isfinite(x):
+        raise ConvError(f"'{str(raw)[:40]}' is not a finite number")
+    return x
 
 
 def _to_bool(v: Any) -> bool:

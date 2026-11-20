@@ -210,6 +210,7 @@ export default function PlanningBoard() {
 
   return (
     <div className="flex flex-col h-full min-h-0">
+      <h1 className="sr-only">{t("nav.board")}</h1>
       {/* toolbar */}
       <div className="flex flex-wrap items-center gap-2 px-3 py-1.5 bg-white border-b border-gray-200">
         <Select ariaLabel={t("common.scenario")} value={selected?.id || ""} onChange={select} options={list.map((s) => ({ value: s.id, label: `${s.is_live ? "● " : ""}${s.name}` }))} className="max-w-[220px]" />

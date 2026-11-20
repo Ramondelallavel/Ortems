@@ -66,7 +66,9 @@ export function AppShell({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!loading && !me) router.replace(`/login?next=${encodeURIComponent(path)}`);
   }, [loading, me, router, path]);
-  useEffect(() => setMobileNav(false), [path]);
+  useEffect(() => {
+    setMobileNav(false);
+  }, [path]);
 
   useHotkeys({
     "?": () => setHelp(true),
@@ -149,7 +151,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           options={LOCALES.map((l) => ({ value: l.code, label: l.code.toUpperCase() }))}
           className="!h-7 shrink-0 !bg-navy-900 !text-white !border-white/15 !w-[58px]"
         />
-        <button onClick={() => setAccount(true)} className="h-7 px-1.5 shrink-0 rounded-[3px] flex items-center gap-2 text-[12px] text-white/80 hover:bg-navy-900 hover:text-white" aria-label={t("acct.title")} title={`${t("acct.title")} · ${me.roles.join(", ")}`}>
+        <button onClick={() => setAccount(true)} className="h-7 px-1.5 shrink-0 rounded-[3px] flex items-center gap-2 text-[12px] text-white/80 hover:bg-navy-900 hover:text-white" aria-label={`${me.full_name} — ${t("acct.title")}`} title={`${t("acct.title")} · ${me.roles.join(", ")}`}>
           <Icon name="user" size={14} />
           <span className="hidden sm:inline max-w-[140px] truncate">{me.full_name}</span>
         </button>

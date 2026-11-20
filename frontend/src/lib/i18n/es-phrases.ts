@@ -911,5 +911,12 @@ const es: Record<string, string> = {
   "Short materials: {materials}. Operations: {ops}": "Materiales en falta: {materials}. Operaciones: {ops}",
   "Waiting operations: {ops}": "Operaciones en espera: {ops}",
   "Operations: {ops}": "Operaciones: {ops}",
+  "This screen could not be displayed": "No se ha podido mostrar esta pantalla",
+  "The data it received is not in the expected form. The rest of the application keeps working: try again, or open another screen.": "Los datos recibidos no tienen la forma esperada. El resto de la aplicación sigue funcionando: inténtalo de nuevo o abre otra pantalla.",
+  "Reload the page": "Recargar la página",
+  "Flags": "Indicadores",
+  "Locked": "Bloqueado",
+  "Select": "Seleccionar",
+  "Details": "Detalles",
 };
 export default es;

@@ -83,7 +83,9 @@ export default function MaterialsPage() {
                       <th className="!text-right">{t("Shortfall")}</th>
                       <th className="!text-right">{t("Orders")}</th>
                       <th className="!text-right">{t("Replenishment lead time")}</th>
-                      <th />
+                      <th>
+                        <span className="sr-only">{t("Details")}</span>
+                      </th>
                     </tr>
                   </thead>
                   <tbody>
@@ -119,7 +121,9 @@ export default function MaterialsPage() {
                       <th className="!text-right">{t("Operations")}</th>
                       <th className="!text-right">{t("Waiting (working time)")}</th>
                       <th className="!text-right">{t("Orders")}</th>
-                      <th />
+                      <th>
+                        <span className="sr-only">{t("Details")}</span>
+                      </th>
                     </tr>
                   </thead>
                   <tbody>

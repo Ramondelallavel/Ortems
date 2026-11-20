@@ -85,7 +85,7 @@ export function RunDialog({ open, onClose, scenarioId, onStarted }: { open: bool
         </Field>
         <Field label={t("Time budget")} hint={custom ? t("{s} s (custom)", { s: custom }) : `${limits[profile]} s`}>
           <div className="flex gap-2">
-            <Select value={profile} onChange={setProfile} className="flex-1" options={Object.keys(limits).map((k) => ({ value: k, label: `${t(k.charAt(0) + k.slice(1).toLowerCase())} · ${limits[k]} s` }))} />
+            <Select ariaLabel={t("Time budget")} value={profile} onChange={setProfile} className="flex-1" options={Object.keys(limits).map((k) => ({ value: k, label: `${t(k.charAt(0) + k.slice(1).toLowerCase())} · ${limits[k]} s` }))} />
             <input className="mx-input w-[80px]" type="number" min={1} max={3600} placeholder="s" aria-label={t("Custom time limit in seconds")} value={custom} onChange={(e) => setCustom(e.target.value)} />
           </div>
         </Field>

@@ -80,7 +80,7 @@ export default function EntityPage() {
         title={title}
         subtitle={
           <>
-            <Link href="/master-data" className="text-blue-500 hover:underline">
+            <Link href="/master-data" className="text-blue-500 underline">
               {t("nav.masterData")}
             </Link>{" "}
             · {list.data ? t("md.records", { n: list.data.total }) : ""}
@@ -184,7 +184,9 @@ function Editor({ entity, schema, id, onSaved, onError, onDirty }: { entity: str
   const children: any[] = schema.children || [];
   const dirty = dirtyKids.size > 0 || JSON.stringify(form) !== base;
   useUnsavedWarning(dirty);
-  useLayoutEffect(() => onDirty(dirty), [dirty, onDirty]); // before the next key press (Escape closes)
+  useLayoutEffect(() => {
+    onDirty(dirty);
+  }, [dirty, onDirty]); // before the next key press (Escape closes)
   useEffect(() => {
     if (row.data) {
       setForm(row.data);

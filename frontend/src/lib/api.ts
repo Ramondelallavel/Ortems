@@ -61,7 +61,19 @@ export async function api<T = any>(path: string, opts: { method?: string; body?:
   }
   if (opts.raw && res.ok) return res as unknown as T;
   const ct = res.headers.get("content-type") || "";
-  const data = ct.includes("application/json") ? await res.json().catch(() => null) : null;
+  let data: any = null;
+  let unreadable = false;
+  if (ct.includes("application/json")) {
+    try {
+      data = await res.json();
+    } catch {
+      unreadable = true; // cut off, or not JSON after all
+    }
+  } else if (res.ok && res.status !== 204 && res.status !== 205) {
+    // a success that is not JSON (a proxy's HTML page, for example) is not an answer of the API
+    unreadable = !!(await res.text().catch(() => "")).trim();
+  }
+  if (res.ok && unreadable) throw new ApiError(res.status, "BAD_RESPONSE", "The server answered with something that is not valid data (a proxy or gateway page, or a response that was cut off).");
   if (!res.ok) {
     const err = (data && (data.error || data.detail)) || {};
     const code = typeof err === "object" && err.code ? err.code : `HTTP_${res.status}`;

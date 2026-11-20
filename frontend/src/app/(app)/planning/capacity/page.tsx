@@ -11,6 +11,18 @@ import { SectionData } from "@/components/data/SectionData";
 const STATE_GLYPH: Record<string, string> = { UNDERLOADED: "○", BALANCED: "●", HIGH_LOAD: "◆", OVERLOADED: "▲", UNAVAILABLE: "✕" };
 const PAGE = 100;
 
+/** Text colour with the better contrast on a heat-map cell: white on the dark blues, ink on the light ones. */
+function readableOn(hex: string): string {
+  const c = hex.replace("#", "");
+  const [r, g, b] = [0, 2, 4].map((i) => {
+    const v = parseInt(c.slice(i, i + 2), 16) / 255;
+    return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+  });
+  const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  const ink = 0.03; // INK.primary is a very dark navy-grey
+  return (1.05) / (lum + 0.05) >= (lum + 0.05) / (ink + 0.05) ? "#fff" : INK.primary;
+}
+
 export default function CapacityPage() {
   const { t, plant } = useSession();
   const { selected } = useScenarioSelection();
@@ -104,7 +116,7 @@ export default function CapacityPage() {
           </>
         }
       />
-      <div className="flex-1 overflow-auto mx-scroll p-3 space-y-3">
+      <div className="flex-1 overflow-auto mx-scroll p-3 space-y-3" tabIndex={0} role="region" aria-label={t("nav.capacity")}>
         {!planId && <div className="text-slate-600 p-4">{t("No plan yet.")}</div>}
         <ErrorState error={load.error} onRetry={load.reload} />
         {planId && !load.data && <Loading />}
@@ -127,7 +139,7 @@ export default function CapacityPage() {
                 </div>
               }
             >
-              <div className="overflow-auto mx-scroll max-h-[520px]">
+              <div className="overflow-auto mx-scroll max-h-[520px]" tabIndex={0} role="region" aria-label={t("Resources")}>
                 <table className="border-separate border-spacing-[2px] text-[11px]" role="grid" aria-label={t("Capacity heatmap: utilisation per resource and period")}>
                   <thead>
                     <tr>
@@ -149,7 +161,6 @@ export default function CapacityPage() {
                         {r.buckets.map((b: any, i: number) => {
                           const u = b.requirement_utilization ?? b.utilization;
                           const bg = b.state === "UNAVAILABLE" ? "#dde2e8" : u === null || u === undefined ? "#f6f7f9" : SEQ_BLUE[Math.min(SEQ_BLUE.length - 1, Math.floor(Math.min(u, 1) * (SEQ_BLUE.length - 1)))];
-                          const dark = u !== null && u !== undefined && u > 0.55;
                           const over = b.state === "OVERLOADED";
                           return (
                             <td
@@ -157,7 +168,7 @@ export default function CapacityPage() {
                               title={`${r.code} · ${labels[i]}: ${t(`heat.${b.state}`)} — ${t("scheduled {s} h, requirement {r} h, capacity {c} h", { s: num(b.scheduled / 60, 1), r: num(b.requirement / 60, 1), c: num(b.capacity / 60, 1) })}`}
                               onClick={() => setFocus(r.id)}
                               className="min-w-[34px] h-[22px] text-center tabular cursor-pointer rounded-[2px]"
-                              style={{ background: bg, color: dark ? "#fff" : INK.primary, outline: over ? `2px solid ${STATUS.bad}` : undefined, outlineOffset: -2 }}
+                              style={{ background: bg, color: readableOn(bg), outline: over ? `2px solid ${STATUS.bad}` : undefined, outlineOffset: -2 }}
                             >
                               {b.state === "UNAVAILABLE" ? "✕" : u === null || u === undefined ? "" : `${over ? "▲" : ""}${Math.round(u * 100)}`}
                             </td>
