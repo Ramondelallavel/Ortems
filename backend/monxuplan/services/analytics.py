@@ -83,6 +83,10 @@ def _expand_capacity_row(r: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+_BUCKET_MINUTES = {"hour": 60, "shift": 480, "day": 1440, "week": 10080, "month": 43200}
+MAX_WINDOW_BUCKETS = 1500
+
+
 def capacity_profile(s: Session, plan: Plan, bucket: str, start=None, end=None) -> dict[str, Any]:
     """Compact capacity profile of a plan: the stored read model for the plan horizon, computed from
     a replay of the plan for other windows (and for plans stored before the read models)."""
@@ -93,7 +97,16 @@ def capacity_profile(s: Session, plan: Plan, bucket: str, start=None, end=None) 
     from monxuplan_engine.views import capacity_view
 
     cp, res = replay(s, plan)
-    return capacity_view(res, bucket, cp.axis.to_min(start) if start else None, cp.axis.to_min(end) if end else None)
+    try:
+        a = cp.axis.to_min(start) if start else None
+        b = cp.axis.to_min(end) if end else None
+    except (OverflowError, ValueError) as exc:
+        raise ValidationFailed("The window is outside the dates the planner can represent.", code="WINDOW_OUT_OF_RANGE") from exc
+    # the engine stops at MAX_BUCKETS silently; a window that large is a mistake worth saying out loud
+    lo, hi = (cp.as_of if a is None else a), (cp.h_end if b is None else b)
+    if (hi - lo) // _BUCKET_MINUTES[bucket] > MAX_WINDOW_BUCKETS:
+        raise ValidationFailed(f"The window holds more than {MAX_WINDOW_BUCKETS} {bucket} buckets: narrow it or use a coarser bucket.", code="WINDOW_TOO_LARGE", context={"max_buckets": MAX_WINDOW_BUCKETS})
+    return capacity_view(res, bucket, a, b)
 
 
 def _peak_load(r: dict[str, Any]) -> float:

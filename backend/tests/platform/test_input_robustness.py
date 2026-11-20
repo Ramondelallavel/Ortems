@@ -193,3 +193,24 @@ def test_an_administrator_cannot_lock_themselves_out(client):
     # the same change on someone else's account stays possible
     r = admin.patch(f"/users/{uid}", json={"roles": ["VIEWER"]})
     assert r.status_code == 200, r.text
+
+
+@pytest.mark.parametrize(
+    ("params", "code"),
+    [
+        ({"start": "0001-01-01T00:00:00+05:00"}, "WINDOW_OUT_OF_RANGE"),  # cannot be converted to UTC
+        ({"start": "0001-01-01T00:00:00Z"}, "WINDOW_TOO_LARGE"),
+        ({"start": "0168-10-27T14:47:18"}, "WINDOW_TOO_LARGE"),
+        ({"start": "2000-01-01T00:00:00Z", "end": "2100-01-01T00:00:00Z", "bucket": "hour"}, "WINDOW_TOO_LARGE"),
+    ],
+)
+def test_capacity_window_outside_reason_is_a_client_error(planner, base_plan, params, code):
+    """Found by fuzzing `/capacity/load`: year 1 overflowed (500) and year 168 silently produced 5000
+    empty buckets for every resource (a request that never finished)."""
+    r = planner.get("/capacity/load", params={"plan_id": base_plan["id"], **params})
+    assert r.status_code == 422 and r.json()["error"]["code"] == code, (r.status_code, r.text[:300])
+
+
+def test_capacity_window_inside_the_horizon_still_works(planner, base_plan):
+    r = planner.get("/capacity/load", params={"plan_id": base_plan["id"], "start": "2026-01-01T00:00:00Z", "end": "2026-12-31T00:00:00Z", "bucket": "week"})
+    assert r.status_code == 200, r.text[:300]
