@@ -338,7 +338,7 @@ def flow_orders(b, rep: Report):
         dlg = page.get_by_role("dialog")
         dlg.get_by_label("Number").fill(number)
         prod = dlg.get_by_label("Product")
-        expect(prod.locator("option")).not_to_have_count(1, timeout=15000)
+        expect(prod.locator("option").nth(1)).to_be_attached(timeout=15000)
         prod.select_option(index=1)
         due = (datetime.now() + timedelta(days=12)).strftime("%Y-%m-%dT%H:%M")
         dlg.get_by_label("Due (plant time)").fill(due)
@@ -459,7 +459,8 @@ def flow_shopfloor(b, rep: Report):
     def operator():
         page.goto(BASE + "/shopfloor/operator")
         sel = page.get_by_label("Operator — Resource")
-        expect(sel.locator("option")).not_to_have_count(1, timeout=15000)
+        # at least one machine besides the placeholder (an absent select has zero options, not one)
+        expect(sel.locator("option").nth(1)).to_be_attached(timeout=20000)
         values = sel.locator("option").evaluate_all("os => os.map(o => o.value).filter(Boolean)")
         found = False
         for v in values:
