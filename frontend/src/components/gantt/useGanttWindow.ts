@@ -39,7 +39,7 @@ export function useGanttWindow(planId: string | null, plan: { operations: number
     if (!enabled || !planId || !span) return;
     const ctl = new AbortController();
     api<GanttData>(`/plans/${planId}/gantt`, { query: { operations: false, start: new Date(span.a).toISOString(), end: new Date(span.b).toISOString() }, signal: ctl.signal })
-      .then((d) => setBase(d))
+      .then((d) => !ctl.signal.aborted && setBase(d))
       .catch((e) => e?.name !== "AbortError" && setError(e instanceof ApiError ? e : new ApiError(0, "ERROR", String(e))));
     return () => ctl.abort();
   }, [enabled, planId, span, tick]);

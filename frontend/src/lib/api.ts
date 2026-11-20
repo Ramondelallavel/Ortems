@@ -66,12 +66,16 @@ export async function api<T = any>(path: string, opts: { method?: string; body?:
   if (ct.includes("application/json")) {
     try {
       data = await res.json();
-    } catch {
+    } catch (e) {
+      // the caller gave up (the screen changed its filter) while the body was still arriving: that is
+      // a cancellation, not a damaged answer
+      if (opts.signal?.aborted || (e as Error)?.name === "AbortError") throw new DOMException("aborted", "AbortError");
       unreadable = true; // cut off, or not JSON after all
     }
   } else if (res.ok && res.status !== 204 && res.status !== 205) {
     // a success that is not JSON (a proxy's HTML page, for example) is not an answer of the API
     unreadable = !!(await res.text().catch(() => "")).trim();
+    if (opts.signal?.aborted) throw new DOMException("aborted", "AbortError");
   }
   if (res.ok && unreadable) throw new ApiError(res.status, "BAD_RESPONSE", "The server answered with something that is not valid data (a proxy or gateway page, or a response that was cut off).");
   if (!res.ok) {

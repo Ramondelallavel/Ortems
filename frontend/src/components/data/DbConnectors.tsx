@@ -14,6 +14,15 @@ type Conn = { id?: string; code: string; name: string; is_active: boolean; has_p
 const EMPTY: Conn = { code: "", name: "", is_active: true, settings: { dialect: "postgresql", host: "", port: null, database: "", username: "", sources: [], sync_every_minutes: null } };
 
 /** Database connectors: connection, sources (table or SELECT → MonxuPlan table, with column mapping), sync. */
+/** The API explains in English why a driver is unavailable; the two fixed forms are translated here. */
+function driverReason(reason: string | null | undefined, t: (k: string, p?: Record<string, string | number>) => string): string | undefined {
+  if (!reason) return undefined;
+  const m = /^Install the driver on the server: pip install (.+)$/.exec(reason);
+  if (m) return t("Install the driver on the server: pip install {pkg}", { pkg: m[1] });
+  if (reason === "SQLite files can only be read when MONXU_ALLOW_SQLITE_SOURCES=1") return t("SQLite files can only be read when MONXU_ALLOW_SQLITE_SOURCES=1");
+  return reason;
+}
+
 export function DbConnectors() {
   const { t, plant, can } = useSession();
   const toast = useToast();
@@ -56,11 +65,11 @@ export function DbConnectors() {
       <Panel title={t("db.title")} actions={supported && can("integration:manage") ? <Button size="sm" variant="primary" icon="plus" onClick={() => setEdit(structuredClone(EMPTY))}>{t("db.new")}</Button> : null}>
         <div className="p-3 space-y-2 text-[12.5px]">
           <p className="text-slate-600">{t("db.help")}</p>
-          {!supported && <p className="text-amber-600">◆ {drivers.data?.reason}</p>}
+          {!supported && <p className="text-amber-600">◆ {driverReason(drivers.data?.reason, t)}</p>}
           {supported && (
             <div className="flex flex-wrap gap-2">
               {(drivers.data?.drivers || []).map((d: any) => (
-                <Badge key={d.dialect} tone={d.installed ? "ok" : "neutral"} title={d.reason || undefined}>
+                <Badge key={d.dialect} tone={d.installed ? "ok" : "neutral"} title={driverReason(d.reason, t)}>
                   {d.label}
                   {d.installed ? "" : ` — ${t("db.noDriver")}`}
                 </Badge>

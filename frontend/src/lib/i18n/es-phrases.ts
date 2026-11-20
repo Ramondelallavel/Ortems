@@ -914,6 +914,8 @@ const es: Record<string, string> = {
   "This screen could not be displayed": "No se ha podido mostrar esta pantalla",
   "The data it received is not in the expected form. The rest of the application keeps working: try again, or open another screen.": "Los datos recibidos no tienen la forma esperada. El resto de la aplicación sigue funcionando: inténtalo de nuevo o abre otra pantalla.",
   "Reload the page": "Recargar la página",
+  "Install the driver on the server: pip install {pkg}": "Instale el controlador en el servidor: pip install {pkg}",
+  "SQLite files can only be read when MONXU_ALLOW_SQLITE_SOURCES=1": "Los archivos SQLite solo se pueden leer con MONXU_ALLOW_SQLITE_SOURCES=1",
   "Flags": "Indicadores",
   "Locked": "Bloqueado",
   "Select": "Seleccionar",

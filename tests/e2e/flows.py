@@ -158,6 +158,9 @@ def flow_auth(b, rep: Report):
         expect(page.get_by_role("heading", name="Orders")).to_be_visible()
 
     def logout():
+        # a person signs out once the screen has loaded: the orders grid is still fetching its second
+        # page right after login, and a request answered after the session ended is a correct 401
+        page.wait_for_load_state("networkidle")
         page.get_by_label("Sign out").click()
         page.wait_for_url("**/login", timeout=15000)
         page.goto(BASE + "/dashboard")

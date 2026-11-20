@@ -22,11 +22,12 @@ export function useApi<T = any>(path: string | null, query?: Record<string, any>
     setError(undefined);
     api<T>(path, { query, signal: ctl.signal })
       .then((d) => {
+        if (ctl.signal.aborted) return; // a newer request owns the state now
         setData(d);
         setLoading(false);
       })
       .catch((e) => {
-        if (e?.name === "AbortError") return;
+        if (e?.name === "AbortError" || ctl.signal.aborted) return;
         setError(e instanceof ApiError ? e : new ApiError(0, "ERROR", String(e)));
         setLoading(false);
       });
