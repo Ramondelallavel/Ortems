@@ -191,7 +191,7 @@ class UserPatch(BaseModel):
     full_name: str | None = None
     email: str | None = None
     is_active: bool | None = None
-    roles: list[str] | None = None
+    roles: list[str] | None = Field(default=None, min_length=1)
     plant_ids: list[uuid.UUID] | None = None
     locale: str | None = Field(default=None, pattern="^(en|es|fr|de|pt)$")
     unlock: bool = False
@@ -226,6 +226,9 @@ def update_user(user_id: uuid.UUID, body: UserPatch, ctx: Ctx = Depends(get_ctx)
         existing = next(iter(before["plant_ids"]), None)
         plants = body.plant_ids if body.plant_ids is not None else [uuid.UUID(p) for p in before["plant_ids"]] if existing else []
         _check_roles(ctx, body.roles, plants)
+        if u.id == ctx.user_id and not any("admin:users" in ROLES[r][1] for r in body.roles):
+            # nobody is left to undo it: an administrator cannot take their own user administration away
+            raise ValidationFailed("You cannot remove your own user-administration rights.", code="SELF_LOCKOUT")
         _set_roles(s, ctx, u, body.roles, plants)
     elif body.plant_ids is not None:
         raise ValidationFailed("Give the roles together with the plants.", code="ROLES_REQUIRED")

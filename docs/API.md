@@ -38,7 +38,7 @@ curl -s localhost:8000/api/v1/plants -H "Authorization: Bearer $TOKEN"
 | Status | Typical codes |
 |---|---|
 | 400/422 | `VALIDATION_FAILED` (with `context.fields`), `INVALID_MOVE`, `IMPORT_BLOCKED` |
-| 422 | `VALUE_NOT_ALLOWED` (text or number the database cannot store), `INVALID_SCENARIO_CHANGE` (a stored change refers to something that no longer exists; `context.detail` names it), `BAD_FILE` (unreadable CSV/XLSX/zip) |
+| 422 | `VALUE_NOT_ALLOWED` (text or number the database cannot store), `INVALID_SCENARIO_CHANGE` (a stored change refers to something that no longer exists; `context.detail` names it), `BAD_FILE` (unreadable CSV/XLSX/zip), `SELF_LOCKOUT` (an administrator removing their own user-administration rights) |
 | 409 | `INTEGRITY_ERROR` (a uniqueness or reference rule lost a race), `DUPLICATE_SCENARIO` |
 | 401 | `NOT_AUTHENTICATED`, `SESSION_EXPIRED`, `INVALID_TOKEN`, `INVALID_API_KEY` |
 | 403 | `NO_PERMISSION`, `NO_PLANT_ACCESS`, `CSRF`, `FROZEN_OPERATION` |

@@ -171,3 +171,25 @@ def test_master_data_rejects_non_finite_numbers(planner):
     for bad in ("NaN", "inf", "-Infinity"):
         r = planner.patch(f"/master-data/items/{row['id']}", json={"version": row["version"], "unit_cost": bad})
         assert r.status_code == 422, (bad, r.status_code, r.text[:200])
+
+
+def test_an_administrator_cannot_lock_themselves_out(client):
+    """Found by fuzzing `PATCH /users/{id}`: `roles: []` stripped the caller's own roles and
+    nobody was left able to give them back."""
+    from conftest import Api
+
+    admin = Api(client, "admin")
+    name = f"lockout-{uuid.uuid4().hex[:8]}"
+    created = admin.ok(admin.post("/users", json={"username": name, "email": f"{name}@example.com", "full_name": "Lockout Test", "password": "Correct-Horse-9", "roles": ["COMPANY_ADMIN"]}), 201)
+    me = Api(client, name, password="Correct-Horse-9")
+    uid = created["id"]
+    # an empty role list is not a valid change for anyone
+    r = me.patch(f"/users/{uid}", json={"roles": []})
+    assert r.status_code == 422 and r.json()["error"]["code"] == "VALIDATION_FAILED", r.text
+    # dropping the user-administration rights from one's own account is refused with its own code
+    r = me.patch(f"/users/{uid}", json={"roles": ["VIEWER"]})
+    assert r.status_code == 422 and r.json()["error"]["code"] == "SELF_LOCKOUT", r.text
+    assert me.get("/users").status_code == 200  # still an administrator
+    # the same change on someone else's account stays possible
+    r = admin.patch(f"/users/{uid}", json={"roles": ["VIEWER"]})
+    assert r.status_code == 200, r.text
